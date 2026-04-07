@@ -63,7 +63,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_USERNAME",
+        "owner": "HwigwanJi",
         "repo": "nost",
         "releaseType": "release"
       }
