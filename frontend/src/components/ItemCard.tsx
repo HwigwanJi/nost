@@ -28,6 +28,7 @@ interface ItemCardProps {
   isNodeAnchor?: boolean;
   isDeckAnchor?: boolean;
   nodeBadges?: number[];
+  deckBadges?: number[];
   onPinModeClick?: () => void;
   onNodeModeClick?: () => void;
   onDeckModeClick?: () => void;
@@ -114,7 +115,7 @@ export function ItemCard({
   item, space, closeAfter, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, searchQuery = '',
   activeMode = 'normal', isNodeLinked = false, isNodeAnchor = false, isDeckAnchor = false,
-  nodeBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch: _onNodeGroupLaunch, onDeckGroupLaunch: _onDeckGroupLaunch,
+  nodeBadges, deckBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch: _onNodeGroupLaunch, onDeckGroupLaunch: _onDeckGroupLaunch,
   isInactive = false, onInactiveClick,
   monitorCount = 1, onSetMonitor,
   allItems = [], onConvertToContainer, onConvertFromContainer, onEditSlots,
@@ -469,8 +470,8 @@ export function ItemCard({
       data-card
       style={{
         ...style,
-        background: isNodeAnchor ? 'var(--accent-dim)' : isDeckAnchor ? 'rgba(249,115,22,0.12)' : 'var(--surface)',
-        borderColor: isNodeLinked ? 'var(--accent)' : isDeckAnchor ? '#f97316' : item.isContainer ? 'var(--accent)' : 'var(--border-rgba)',
+        background: isNodeAnchor ? 'var(--accent-dim)' : 'var(--surface)',
+        borderColor: isNodeLinked ? 'var(--accent)' : item.isContainer ? 'var(--accent)' : 'var(--border-rgba)',
         borderStyle: item.isContainer ? 'dashed' : 'solid',
       }}
       {...attributes}
@@ -498,8 +499,8 @@ export function ItemCard({
         if (!item.isContainer) (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-focus)';
       }}
       onMouseLeave={e => {
-        (e.currentTarget as HTMLDivElement).style.background = isNodeAnchor ? 'var(--accent-dim)' : isDeckAnchor ? 'rgba(249,115,22,0.12)' : 'var(--surface)';
-        (e.currentTarget as HTMLDivElement).style.borderColor = isNodeLinked ? 'var(--accent)' : isDeckAnchor ? '#f97316' : item.isContainer ? 'var(--accent)' : 'var(--border-rgba)';
+        (e.currentTarget as HTMLDivElement).style.background = isNodeAnchor ? 'var(--accent-dim)' : 'var(--surface)';
+        (e.currentTarget as HTMLDivElement).style.borderColor = isNodeLinked ? 'var(--accent)' : item.isContainer ? 'var(--accent)' : 'var(--border-rgba)';
       }}
     >
       {/* Container badge */}
@@ -588,14 +589,22 @@ export function ItemCard({
       {/* Pin dot */}
       {pinned && <span style={{ position:'absolute', bottom:5, right:5, width:5, height:5, borderRadius:'50%', background:'var(--accent)', opacity:0.55 }} />}
 
-      {/* Node badges */}
-      {nodeBadges && nodeBadges.length > 0 && !isNodeAnchor && (
+      {/* Node + Deck badges */}
+      {((nodeBadges && nodeBadges.length > 0 && !isNodeAnchor) || (deckBadges && deckBadges.length > 0)) && (
         <div style={{ position:'absolute', top:5, left:5, display:'flex' }}>
-          {nodeBadges.map((idx, i) => (
-            <span key={idx} style={{ width:14, height:14, borderRadius:'50%', background:'var(--accent)', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', marginLeft: i>0 ? -5 : 0, border:'1.5px solid rgba(120,120,140,0.25)', position:'relative', zIndex:nodeBadges.length-i }}>
+          {nodeBadges && !isNodeAnchor && nodeBadges.map((idx, i) => (
+            <span key={`n${idx}`} style={{ width:14, height:14, borderRadius:'50%', background:'var(--accent)', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', marginLeft: i>0 ? -5 : 0, border:'1.5px solid rgba(120,120,140,0.25)', position:'relative', zIndex:20-(i) }}>
               {idx}
             </span>
           ))}
+          {deckBadges && deckBadges.map((idx, i) => {
+            const offset = (nodeBadges && !isNodeAnchor ? nodeBadges.length : 0) + i;
+            return (
+              <span key={`d${idx}`} style={{ width:14, height:14, borderRadius:'50%', background:'#f97316', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', marginLeft: offset>0 ? -5 : 0, border:'1.5px solid rgba(120,120,140,0.25)', position:'relative', zIndex:10-i }}>
+                {idx}
+              </span>
+            );
+          })}
         </div>
       )}
 

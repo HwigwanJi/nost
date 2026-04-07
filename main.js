@@ -251,6 +251,16 @@ function createWindow() {
   ipcMain.once('renderer-ready', showMainWindow);
   setTimeout(showMainWindow, 5000);
 
+  // Loading status relay: renderer → loading window
+  ipcMain.on('set-loading-status', (_, msg) => {
+    if (loadingWindow && !loadingWindow.isDestroyed()) {
+      const safe = JSON.stringify(String(msg));
+      loadingWindow.webContents.executeJavaScript(
+        `var el=document.querySelector('.sub'); if(el) el.textContent=${safe};`
+      ).catch(() => {});
+    }
+  });
+
   // Auto-hide on focus loss
   mainWindow.on('blur', () => {
     const settings = store.get('appData')?.settings ?? {};
@@ -591,7 +601,8 @@ ConvertTo-Json -InputObject @($result) -Compress -Depth 2`.trim();
       // Two-phase scan:
       // 1) Shell.Application COM → enumerate ALL Explorer windows with real folder paths
       // 2) Get-Process → all other visible windows
-      const psCommand = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+      const psCommand = `$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -1729,13 +1740,32 @@ app.whenReady().then(() => {
   const appVersion = app.getVersion();
   const contextMenu = Menu.buildFromTemplate([
     { label: `버전 ${appVersion}`, enabled: false },
-    { label: '업데이트 확인', click: () => {
+    { label: '업데이트 확인', click: async () => {
         if (!app.isPackaged) {
           dialog.showMessageBox({ type: 'info', title: '업데이트', message: '개발 모드에서는 업데이트를 확인할 수 없습니다.' });
           return;
         }
-        autoUpdater.checkForUpdates().catch(() => {});
-        dialog.showMessageBox({ type: 'info', title: '업데이트 확인', message: '업데이트를 확인 중입니다...' });
+        const result = await new Promise((resolve) => {
+          function cleanup() {
+            autoUpdater.removeListener('update-not-available', onNotAvailable);
+            autoUpdater.removeListener('update-available', onAvailable);
+            autoUpdater.removeListener('error', onErr);
+          }
+          const onNotAvailable = () => { cleanup(); resolve({ status: 'up-to-date' }); };
+          const onAvailable = (info) => { cleanup(); resolve({ status: 'available', version: info.version }); };
+          const onErr = (err) => { cleanup(); resolve({ status: 'error', message: err.message }); };
+          autoUpdater.once('update-not-available', onNotAvailable);
+          autoUpdater.once('update-available', onAvailable);
+          autoUpdater.once('error', onErr);
+          autoUpdater.checkForUpdates().catch(err => { cleanup(); resolve({ status: 'error', message: err.message }); });
+        });
+        if (result.status === 'up-to-date') {
+          dialog.showMessageBox({ type: 'info', title: '업데이트', message: `최신 버전입니다. (v${app.getVersion()})` });
+        } else if (result.status === 'available') {
+          dialog.showMessageBox({ type: 'info', title: '업데이트 발견', message: `새 버전 v${result.version}이 있습니다.\n백그라운드에서 다운로드 중입니다.` });
+        } else {
+          dialog.showMessageBox({ type: 'warning', title: '업데이트 오류', message: `업데이트 확인 실패:\n${result.message ?? '알 수 없는 오류'}` });
+        }
     }},
     { type: 'separator' },
     { label: '종료', click: () => { app.isQuitting = true; app.quit(); } }

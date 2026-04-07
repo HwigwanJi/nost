@@ -78,6 +78,7 @@ export function useAppData() {
   // On mount: load from electron-store (migrating from localStorage if needed)
   useEffect(() => {
     setLoadingProgress(60); // React mounted
+    electronAPI.setLoadingStatus('데이터 불러오는 중...');
     electronAPI.storeLoad().then(stored => {
       if (stored && typeof stored === 'object' && 'spaces' in (stored as AppData)) {
         setDataRaw(migrateData(stored as AppData));
@@ -88,6 +89,7 @@ export function useAppData() {
         electronAPI.storeSave(localData);
       }
       setLoadingProgress(90); // data ready
+      electronAPI.setLoadingStatus('화면 그리는 중...');
       requestAnimationFrame(() => requestAnimationFrame(dismissLoadingScreen)); // after first paint
     });
   }, []);

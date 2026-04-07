@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import type { Space, LauncherItem, AppMode, NodeGroup } from '../types';
+import type { Space, LauncherItem, AppMode, NodeGroup, Deck } from '../types';
 import { ItemCard } from './ItemCard';
 import {
   SortableContext,
@@ -42,6 +42,7 @@ interface SpaceAccordionProps {
   onNodeModeClick?: (itemId: string) => void;
   onNodeGroupLaunch?: (groupId: string) => void;
   deckItems?: string[];
+  decks?: Deck[];                    // full deck list for badge computation
   deckAnchorItemIds?: Set<string>;   // IDs of saved deck anchor cards (for normal-mode click)
   onDeckModeClick?: (itemId: string) => void;
   onDeckGroupLaunch?: (itemId: string) => void;
@@ -96,6 +97,7 @@ export function SpaceAccordion({
   onNodeModeClick,
   onNodeGroupLaunch,
   deckItems: _deckItems = [],
+  decks = [],
   deckAnchorItemIds,
   onDeckModeClick,
   onDeckGroupLaunch,
@@ -129,6 +131,19 @@ export function SpaceAccordion({
     });
     return map;
   }, [nodeGroups]);
+
+  // Build map: itemId → [deckIdx1, ...] (1-based)
+  const deckBadgeMap = useMemo(() => {
+    const map = new Map<string, number[]>();
+    decks.forEach((d, i) => {
+      d.itemIds.forEach(id => {
+        const arr = map.get(id) ?? [];
+        arr.push(i + 1);
+        map.set(id, arr);
+      });
+    });
+    return map;
+  }, [decks]);
 
   useEffect(() => {
     if (isRenaming) inputRef.current?.focus();
@@ -346,6 +361,7 @@ export function SpaceAccordion({
                   isNodeAnchor={nodeBuilding.includes(item.id)}
                   isDeckAnchor={deckAnchorItemIds?.has(item.id) ?? false}
                   nodeBadges={nodeBadgeMap.get(item.id)}
+                  deckBadges={deckBadgeMap.get(item.id)}
                   onPinModeClick={() => onPinModeClick?.(item.id)}
                   onNodeModeClick={() => onNodeModeClick?.(item.id)}
                   onDeckModeClick={() => onDeckModeClick?.(item.id)}

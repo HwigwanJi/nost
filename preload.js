@@ -42,4 +42,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   identifyMonitors: () => ipcRenderer.invoke('identify-monitors'),
   openGuide: () => ipcRenderer.send('open-guide'),
   signalReady: () => ipcRenderer.send('renderer-ready'),
+  setLoadingStatus: (msg) => ipcRenderer.send('set-loading-status', msg),
 });

@@ -1240,6 +1240,7 @@ export default function App() {
                             onNodeModeClick={handleNodeBuildingClick}
                             onNodeGroupLaunch={handleNodeGroupLaunch}
                             deckItems={deckItems}
+                            decks={decks}
                             deckAnchorItemIds={deckAnchorItemIds}
                             onDeckModeClick={handleDeckBuildingClick}
                             onDeckGroupLaunch={itemId => {

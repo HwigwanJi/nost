@@ -65,6 +65,7 @@ export interface ElectronAPI {
   identifyMonitors: () => Promise<{ count: number }>;
   openGuide: () => void;
   signalReady: () => void;
+  setLoadingStatus: (msg: string) => void;
 }
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
@@ -112,4 +113,5 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   identifyMonitors: async () => ({ count: 1 }),
   openGuide: noop,
   signalReady: noop,
+  setLoadingStatus: noop,
 };
