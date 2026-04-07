@@ -1166,28 +1166,35 @@ public class QL3{[DllImport("user32.dll")] public static extern bool ShowWindow(
 
   // ── Run tile PS only (no launching) ────────────────────────
   ipcMain.handle('run-tile-ps', async (event, { identifiers, waitMs = 800, monitor = 0 }) => {
-    // ── Resolve target monitor work area via Electron (reliable ordering) ──
-    // Electron workArea = 96-DPI per-monitor logical px.
-    // DPI-unaware Win32 (no SetProcessDPIAware) uses the same coordinate space.
-    // Do NOT multiply by scaleFactor — use workArea values directly.
+    // ── Resolve target monitor work area via Electron — use PHYSICAL pixels ──
+    // Same approach as maximize-window: SetProcessDPIAware in PS + workArea * scaleFactor.
+    // This avoids the bug where Update-AutoMonitor (System.Windows.Forms.Screen) would
+    // override coords with physical-pixel values in a DPI-unaware context, causing wrong tiling.
     const { screen } = require('electron');
     const displays = screen.getAllDisplays();
-    let targetWA;
+    let targetWA, scaleFactor;
     {
       const disp = (monitor >= 1 && monitor <= displays.length)
         ? displays[monitor - 1]
         : screen.getPrimaryDisplay();
       const wa = disp.workArea;
+      const sf = disp.scaleFactor || 1;
+      scaleFactor = sf;
+      // Convert to physical pixels (same as maximize-window)
       targetWA = {
-        x:      Math.round(wa.x),
-        y:      Math.round(wa.y),
-        width:  Math.round(wa.width),
-        height: Math.round(wa.height),
+        x:      Math.round(wa.x * sf),
+        y:      Math.round(wa.y * sf),
+        width:  Math.round(wa.width  * sf),
+        height: Math.round(wa.height * sf),
       };
     }
     const count = identifiers.length;
-    const colWidthBase = Math.floor(targetWA.width / count);
-    const wa = targetWA; // alias for browser resize logic below
+    // Browser resize uses logical pixels (SSE to Chrome extension)
+    const { screen: _scrLogical } = require('electron');
+    const _dispLogical = (monitor >= 1 && monitor <= displays.length) ? displays[monitor - 1] : _scrLogical.getPrimaryDisplay();
+    const waLogical = _dispLogical.workArea;
+    const colWidthBaseLogical = Math.floor(waLogical.width / count);
+    const wa = waLogical; // alias: browser resize keeps logical px (Chrome extension coords)
 
     // ── Find Chrome tab matching an identifier ─────────────
     const findTab = (item) => {
@@ -1263,6 +1270,7 @@ public class TileWin32b {
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndAfter, int X, int Y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
     public struct RECT { public int Left, Top, Right, Bottom; }
     public static void SnapLeft(IntPtr hWnd) {
@@ -1281,12 +1289,11 @@ public class TileWin32b {
 "@
     }
 } catch { exit 1 }
-# NO SetProcessDPIAware: keep DPI-unaware so Win32 coords = Electron workArea (96-DPI logical)
-# Work area passed directly from Electron (correct monitor, correct coordinate space)
+# SetProcessDPIAware: use physical pixels — consistent with maximize-window approach
+[TileWin32b]::SetProcessDPIAware() | Out-Null
+# Work area in physical pixels, passed directly from Electron (workArea * scaleFactor)
 $screenWidth = ${psScreenW}; $screenHeight = ${psScreenH}; $screenX = ${psScreenX}; $screenY = ${psScreenY}
 $targetMonitorIdx = ${monitorIndex}
-# For Auto mode: Update-AutoMonitor will override these after first window found
-try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop } catch {}
 $items = '${itemsJson}' | ConvertFrom-Json
 $count = @($items).Count
 if ($count -lt 1) { exit }
@@ -1315,19 +1322,8 @@ function Tile-Hwnd($hwnd, $idx) {
     [TileWin32b]::SetForegroundWindow($hwnd) | Out-Null
 }
 function Update-AutoMonitor($hwnd) {
-    if ($script:autoMonitorSet) { return }
-    $rect = New-Object TileWin32b+RECT
-    [TileWin32b]::GetWindowRect($hwnd, [ref]$rect) | Out-Null
-    $cx = [int](($rect.Left + $rect.Right) / 2)
-    $cy = [int](($rect.Top + $rect.Bottom) / 2)
-    foreach ($scr in [System.Windows.Forms.Screen]::AllScreens) {
-        $b = $scr.WorkingArea
-        if ($cx -ge $b.X -and $cx -lt ($b.X + $b.Width) -and $cy -ge $b.Y -and $cy -lt ($b.Y + $b.Height)) {
-            $script:screenX = $b.X; $script:screenY = $b.Y
-            $script:screenWidth = $b.Width; $script:screenHeight = $b.Height
-            break
-        }
-    }
+    # No-op: screen coords are passed as physical pixels from Electron (workArea * scaleFactor).
+    # WinForms Screen override removed — it could mismatch DPI context and corrupt coords.
     $script:autoMonitorSet = $true
 }
 function Find-Hwnd($item) {
@@ -1764,7 +1760,18 @@ app.whenReady().then(() => {
         } else if (result.status === 'available') {
           dialog.showMessageBox({ type: 'info', title: '업데이트 발견', message: `새 버전 v${result.version}이 있습니다.\n백그라운드에서 다운로드 중입니다.` });
         } else {
-          dialog.showMessageBox({ type: 'warning', title: '업데이트 오류', message: `업데이트 확인 실패:\n${result.message ?? '알 수 없는 오류'}` });
+          // Extract a short human-readable error (avoid dumping full HTTP response)
+          let errMsg = result.message ?? '알 수 없는 오류';
+          // Grab just the status code + first meaningful line
+          const m404 = errMsg.match(/404/);
+          const mStatus = errMsg.match(/"method:\s*\w+[^"]*"/);
+          if (m404) {
+            errMsg = '업데이트 정보를 찾을 수 없습니다 (404).\n최신 릴리즈에 업데이트 파일이 없을 수 있습니다.';
+          } else {
+            const firstLine = errMsg.split('\n')[0].trim();
+            errMsg = firstLine.length > 120 ? firstLine.substring(0, 120) + '...' : firstLine;
+          }
+          dialog.showMessageBox({ type: 'warning', title: '업데이트 오류', message: `업데이트 확인에 실패했습니다:\n\n${errMsg}` });
         }
     }},
     { type: 'separator' },
