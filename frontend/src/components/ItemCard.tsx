@@ -114,7 +114,7 @@ export function ItemCard({
   item, space, closeAfter, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, searchQuery = '',
   activeMode = 'normal', isNodeLinked = false, isNodeAnchor = false, isDeckAnchor = false,
-  nodeBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch, onDeckGroupLaunch,
+  nodeBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch: _onNodeGroupLaunch, onDeckGroupLaunch,
   isInactive = false, onInactiveClick,
   monitorCount = 1, onSetMonitor,
   allItems = [], onConvertToContainer, onConvertFromContainer, onEditSlots,
@@ -388,8 +388,6 @@ export function ItemCard({
     if (activeMode === 'deck') { onDeckModeClick?.(); return; }
     if (isInactive && item.type === 'window') { onInactiveClick?.(); return; }
 
-    // Node-linked card: click launches the whole node group (not just this card)
-    if (isNodeLinked && onNodeGroupLaunch) { onNodeGroupLaunch(); return; }
     // Deck-anchor: click launches the saved deck (only fires in normal mode when isDeckAnchor reflects saved decks)
     if (isDeckAnchor && onDeckGroupLaunch) { onDeckGroupLaunch(); return; }
 
