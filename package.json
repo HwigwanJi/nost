@@ -1,0 +1,85 @@
+{
+  "name": "nost",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "electron-dev": "set ELECTRON_RENDERER_URL=http://127.0.0.1:5173&& electron .",
+    "build:frontend": "cd frontend && npm run build",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "release": "npm run build:frontend && electron-builder",
+    "make-icon": "electron make-icon-main.js"
+  },
+  "build": {
+    "appId": "com.antigravity.nost",
+    "productName": "nost",
+    "copyright": "Copyright © 2025 Antigravity",
+    "files": [
+      "main.js",
+      "preload.js",
+      "icon.png",
+      "frontend/dist/**/*"
+    ],
+    "extraResources": [
+      "chrome-extension/**/*",
+      "guide.md"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "nost",
+      "installerLanguages": [
+        "ko_KR",
+        "en_US"
+      ],
+      "language": "1042"
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "."
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_USERNAME",
+        "repo": "nost",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^41.1.0",
+    "electron-builder": "^26.8.1",
+    "electron-packager": "^17.1.2"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.3"
+  }
+}

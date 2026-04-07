@@ -1,0 +1,27 @@
+node_modules/
+release/
+dist/
+frontend/node_modules/
+frontend/dist/
+assets/
+
+# Build artifacts
+*.zip
+QuickLauncher-Final/
+QuickLauncher-TabBridge.zip
+QuickLauncher_1.0.0.zip
+quick-launcher.zip
+
+# Dev helpers
+make-icon-main.js
+make-icon.html
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+PROJECT_NOTES.md
+walkthrough.md
+설명서.txt
