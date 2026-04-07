@@ -452,6 +452,7 @@ export default function App() {
       setDeckItems([]);
     }
 
+    dismissToast(); // always clear previous mode toast before switching
     setActiveMode(mode);
     if (mode === 'pin') {
       showToast('📌 고정 모드 — 카드 클릭하면 핀 토글', { persistent: true });
@@ -465,9 +466,6 @@ export default function App() {
       setDeckBuilding(true);
       setDeckItems([]);
       showToast('🗂 덱 편집 — 카드를 클릭해서 덱에 추가', { persistent: true });
-    }
-    if (mode === 'normal') {
-      dismissToast();
     }
   }, [showToast, dismissToast]);
 
@@ -535,8 +533,9 @@ export default function App() {
     setNodeEditMode(true);
     setNodeBuilding([]);
     setActiveMode('node');
+    dismissToast();
     showToast('🔗 노드 편집 — 카드를 순서대로 클릭 (최대 3개)', { persistent: true });
-  }, [showToast]);
+  }, [showToast, dismissToast]);
 
   const handleCancelNodeEdit = useCallback(() => {
     setNodeEditMode(false);
@@ -586,8 +585,9 @@ export default function App() {
     setDeckBuilding(false);
     setDeckItems([]);
     setActiveMode('normal');
+    dismissToast();
     showToast(`✅ "${name}" 덱 저장됨`);
-  }, [deckItems, store, showToast]);
+  }, [deckItems, store, showToast, dismissToast]);
 
   const handleDeckLaunch = useCallback(async (deckId: string) => {
     const deck = (data.decks ?? []).find(d => d.id === deckId);

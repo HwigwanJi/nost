@@ -114,7 +114,7 @@ export function ItemCard({
   item, space, closeAfter, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, searchQuery = '',
   activeMode = 'normal', isNodeLinked = false, isNodeAnchor = false, isDeckAnchor = false,
-  nodeBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch: _onNodeGroupLaunch, onDeckGroupLaunch,
+  nodeBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch: _onNodeGroupLaunch, onDeckGroupLaunch: _onDeckGroupLaunch,
   isInactive = false, onInactiveClick,
   monitorCount = 1, onSetMonitor,
   allItems = [], onConvertToContainer, onConvertFromContainer, onEditSlots,
@@ -387,9 +387,6 @@ export function ItemCard({
     if (activeMode === 'node') { onNodeModeClick?.(); return; }
     if (activeMode === 'deck') { onDeckModeClick?.(); return; }
     if (isInactive && item.type === 'window') { onInactiveClick?.(); return; }
-
-    // Deck-anchor: click launches the saved deck (only fires in normal mode when isDeckAnchor reflects saved decks)
-    if (isDeckAnchor && onDeckGroupLaunch) { onDeckGroupLaunch(); return; }
 
     // All cards (including containers): short click = launch normally
     if (item.type === 'window' || item.type === 'app' || item.type === 'folder') {
