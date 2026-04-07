@@ -62,10 +62,9 @@ export function ContainerSlotPicker({
   const [search, setSearch] = useState('');
   const [pendingNewItems, setPendingNewItems] = useState<PendingNewItem[]>([]);
   const [pendingRemovals, setPendingRemovals] = useState<PendingRemoval[]>([]);
-  const [confirmRemoval, setConfirmRemoval] = useState<{
-    item: LauncherItem; spaceId: string; dir: SlotDir
-  } | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
+  // Track which assigned items should be hidden from their space (default: true = hidden)
+  const [slotHideMap, setSlotHideMap] = useState<Record<string, boolean>>({});
 
   // Scan state
   const [scanResults, setScanResults] = useState<{ windows: WindowEntry[]; tabs: ChromeTab[] } | null>(null);
@@ -107,7 +106,7 @@ export function ContainerSlotPicker({
       setSearch('');
       setPendingNewItems([]);
       setPendingRemovals([]);
-      setConfirmRemoval(null);
+      setSlotHideMap({});
       setScanResults(null);
       setNewTitle(''); setNewType('url'); setNewValue('');
     }
@@ -155,6 +154,7 @@ export function ContainerSlotPicker({
       const isPending = pendingNewItems.some(p => p.id === itemId);
       if (isPending) setPendingNewItems(prev => prev.filter(p => p.id !== itemId));
       setPendingRemovals(prev => prev.filter(r => r.itemId !== itemId));
+      setSlotHideMap(prev => { const n = {...prev}; delete n[itemId]; return n; });
     }
     setSlots(prev => { const n = {...prev}; delete n[dir]; return n; });
   };
@@ -167,15 +167,23 @@ export function ContainerSlotPicker({
 
   const handlePickExisting = (item: LauncherItem, sourceSpaceId: string) => {
     if (!activeDir || assignedIds.has(item.id)) return;
-    setConfirmRemoval({ item, spaceId: sourceSpaceId, dir: activeDir });
+    assignSlot(activeDir, item.id);
+    // Default: hide from space (can be toggled off by user)
+    setSlotHideMap(prev => ({ ...prev, [item.id]: true }));
+    setPendingRemovals(prev => [...prev.filter(r => r.itemId !== item.id), { spaceId: sourceSpaceId, itemId: item.id }]);
   };
 
-  const confirmPickExisting = (remove: boolean) => {
-    if (!confirmRemoval) return;
-    const { item, spaceId, dir } = confirmRemoval;
-    assignSlot(dir, item.id);
-    if (remove) setPendingRemovals(prev => [...prev.filter(r => r.itemId !== item.id), { spaceId, itemId: item.id }]);
-    setConfirmRemoval(null);
+  const toggleSlotHide = (itemId: string, hide: boolean) => {
+    setSlotHideMap(prev => ({ ...prev, [itemId]: hide }));
+    if (hide) {
+      // Find space for this item
+      const sourceSpace = allSpaces.find(s => s.items.some(i => i.id === itemId));
+      if (sourceSpace) {
+        setPendingRemovals(prev => [...prev.filter(r => r.itemId !== itemId), { spaceId: sourceSpace.id, itemId }]);
+      }
+    } else {
+      setPendingRemovals(prev => prev.filter(r => r.itemId !== itemId));
+    }
   };
 
   const handlePickScanWindow = (entry: WindowEntry) => {
@@ -184,7 +192,9 @@ export function ContainerSlotPicker({
     setPendingNewItems(prev => [...prev, { id, item: {
       title: entry.MainWindowTitle, type: entry.ExePath ? 'app' : 'window',
       value: entry.ExePath ?? entry.MainWindowTitle, exePath: entry.ExePath, clickCount: 0,
+      hiddenInSpace: true,  // hidden by default
     }}]);
+    setSlotHideMap(prev => ({ ...prev, [id]: true }));
     assignSlot(activeDir, id);
   };
 
@@ -193,7 +203,9 @@ export function ContainerSlotPicker({
     const id = genId();
     setPendingNewItems(prev => [...prev, { id, item: {
       title: t.title, type: 'browser', value: t.url, clickCount: 0,
+      hiddenInSpace: true,  // hidden by default
     }}]);
+    setSlotHideMap(prev => ({ ...prev, [id]: true }));
     assignSlot(activeDir, id);
   };
 
@@ -202,9 +214,17 @@ export function ContainerSlotPicker({
     const id = genId();
     setPendingNewItems(prev => [...prev, { id, item: {
       title: newTitle.trim(), type: newType, value: newValue.trim(), clickCount: 0,
+      hiddenInSpace: true,  // hidden by default
     }}]);
+    setSlotHideMap(prev => ({ ...prev, [id]: true }));
     assignSlot(activeDir, id);
     setNewTitle(''); setNewValue('');
+  };
+
+  // Toggle hide for pending new items
+  const toggleNewItemHide = (id: string, hide: boolean) => {
+    setSlotHideMap(prev => ({ ...prev, [id]: hide }));
+    setPendingNewItems(prev => prev.map(p => p.id === id ? { ...p, item: { ...p.item, hiddenInSpace: hide } } : p));
   };
 
   const pickPath = async () => {
@@ -259,24 +279,6 @@ export function ContainerSlotPicker({
         </div>
       )}
 
-      {/* Confirm removal modal */}
-      {confirmRemoval && (
-        <div style={{ position:'fixed', inset:0, zIndex:99993, display:'flex', alignItems:'center', justifyContent:'center' }}>
-          <div style={{ background:'var(--bg-rgba)', backdropFilter:'blur(40px)', border:'1px solid var(--border-rgba)', borderRadius:14, padding:24, width:320, boxShadow:'0 20px 60px rgba(0,0,0,0.4)', fontFamily:'inherit', color:'var(--text-color)' }}>
-            <div style={{ fontSize:14, fontWeight:700, marginBottom:8 }}>스페이스에서 숨기기?</div>
-            <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:20, lineHeight:1.6 }}>
-              <strong>"{confirmRemoval.item.title}"</strong>을 컨테이너 슬롯에 추가합니다.<br/>
-              원래 스페이스 그리드에서는 숨길까요?<br/>
-              <span style={{ fontSize:10, color:'var(--text-dim)' }}>숨겨도 컨테이너에서 정상 사용됩니다.</span>
-            </div>
-            <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
-              <button onClick={() => setConfirmRemoval(null)} style={{ padding:'6px 14px', borderRadius:8, border:'1px solid var(--border-rgba)', background:'transparent', color:'var(--text-muted)', fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>취소</button>
-              <button onClick={() => confirmPickExisting(false)} style={{ padding:'6px 14px', borderRadius:8, border:'1px solid var(--border-rgba)', background:'transparent', color:'var(--text-color)', fontSize:12, cursor:'pointer', fontFamily:'inherit' }}>스페이스 유지</button>
-              <button onClick={() => confirmPickExisting(true)} style={{ padding:'6px 14px', borderRadius:8, border:'none', background:'var(--accent)', color:'#fff', fontSize:12, cursor:'pointer', fontFamily:'inherit', fontWeight:600 }}>숨기고 추가</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Main dialog — fixed size */}
       <div style={{
@@ -376,13 +378,36 @@ export function ContainerSlotPicker({
               <>
                 {/* Active slot header */}
                 <div style={{ flexShrink:0, padding:'12px 16px 0' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:activeDirItem ? 6 : 10 }}>
                     <span className="material-symbols-rounded" style={{ fontSize:15, color:'var(--accent)' }}>{DIR_ICONS[activeDir]}</span>
                     <span style={{ fontSize:12, fontWeight:700, color:'var(--accent)' }}>{DIR_LABELS[activeDir]} 슬롯</span>
                     {activeDirItem && (
-                      <span style={{ fontSize:10, color:'var(--text-muted)', marginLeft:4 }}>— {activeDirItem.title}</span>
+                      <span style={{ fontSize:10, color:'var(--text-muted)', marginLeft:4, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>— {activeDirItem.title}</span>
                     )}
                   </div>
+                  {/* Visibility toggle for assigned slot item */}
+                  {activeDirItem && (
+                    <label style={{ display:'flex', alignItems:'center', gap:7, padding:'6px 10px', borderRadius:8, background:'var(--surface)', border:'1px solid var(--border-rgba)', cursor:'pointer', marginBottom:10, userSelect:'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={slotHideMap[activeDirItem.id] !== false}
+                        onChange={e => {
+                          const hide = e.target.checked;
+                          const isPending = pendingNewItems.some(p => p.id === activeDirItem.id);
+                          if (isPending) toggleNewItemHide(activeDirItem.id, hide);
+                          else toggleSlotHide(activeDirItem.id, hide);
+                        }}
+                        style={{ width:13, height:13, accentColor:'var(--accent)', cursor:'pointer' }}
+                      />
+                      <span className="material-symbols-rounded" style={{ fontSize:13, color:'var(--text-muted)' }}>
+                        {slotHideMap[activeDirItem.id] !== false ? 'visibility_off' : 'visibility'}
+                      </span>
+                      <span style={{ fontSize:11, color:'var(--text-color)', fontWeight:500 }}>스페이스에서 숨기기</span>
+                      <span style={{ fontSize:9, color:'var(--text-dim)', marginLeft:'auto' }}>
+                        {slotHideMap[activeDirItem.id] !== false ? '그리드에 미표시' : '그리드에 표시'}
+                      </span>
+                    </label>
+                  )}
 
                   {/* Tab bar */}
                   <div style={{ display:'flex', gap:4, background:'var(--surface)', borderRadius:8, padding:3, marginBottom:12 }}>

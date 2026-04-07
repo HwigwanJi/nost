@@ -1,53 +1,71 @@
-import type { ToastAction, ToastState } from '../hooks/useToastQueue';
+import type { ToastAction, ToastItem } from '../hooks/useToastQueue';
 
 interface ToastOverlayProps {
-  toast: ToastState;
-  onPause: () => void;
-  onResume: () => void;
-  onDismiss: () => void;
+  toasts: ToastItem[];
+  onPause:   (id: number) => void;
+  onResume:  (id: number) => void;
+  onDismiss: (id?: number) => void;
 }
 
-export function ToastOverlay({ toast, onPause, onResume, onDismiss }: ToastOverlayProps) {
-  if (!toast) return null;
+function Spinner() {
+  return (
+    <span style={{
+      display: 'inline-block',
+      width: 13,
+      height: 13,
+      border: '2px solid rgba(255,255,255,0.3)',
+      borderTopColor: '#fff',
+      borderRadius: '50%',
+      animation: 'toastSpin 0.7s linear infinite',
+      flexShrink: 0,
+    }} />
+  );
+}
 
-  const isPersistent = toast.persistent;
-  const bg = isPersistent ? 'var(--accent)' : 'var(--text-color)';
-  const fg = '#fff';
+function ToastBubble({ item, onPause, onResume, onDismiss, offsetY }: {
+  item: ToastItem;
+  onPause:   () => void;
+  onResume:  () => void;
+  onDismiss: () => void;
+  offsetY: number;
+}) {
+  const isPersistent = item.persistent;
+  const isSpinner    = item.spinner;
 
   return (
     <div
       onMouseEnter={onPause}
       onMouseLeave={onResume}
       style={{
-        position: 'fixed',
-        bottom: 20,
+        position: 'absolute',
+        bottom: 0,
         left: '50%',
-        transform: 'translateX(-50%)',
-        background: bg,
-        color: fg,
-        padding: '7px 10px',
+        transform: `translateX(-50%) translateY(-${offsetY}px)`,
+        background: 'var(--accent)',
+        color: '#fff',
+        padding: '7px 12px',
         borderRadius: 20,
         fontSize: 12,
         fontWeight: 500,
-        zIndex: 9999,
         pointerEvents: 'all',
-        boxShadow: isPersistent
-          ? '0 4px 20px rgba(0,0,0,0.3), 0 0 0 1px rgba(255,255,255,0.1)'
-          : '0 4px 16px rgba(0,0,0,0.2)',
-        animation: 'fadeInUp 0.2s ease-out',
+        boxShadow: '0 4px 20px rgba(0,0,0,0.25), 0 0 0 1px rgba(255,255,255,0.12)',
+        animation: 'toastFadeInUp 0.18s ease-out',
         display: 'flex',
         alignItems: 'center',
-        gap: 6,
+        gap: 7,
         maxWidth: 360,
         minWidth: 0,
+        whiteSpace: 'nowrap',
+        transition: 'transform 0.2s ease',
       }}
     >
+      {isSpinner && <Spinner />}
+
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
-        {toast.msg}
+        {item.msg}
       </span>
 
-      {/* ESC badge for persistent toasts */}
-      {isPersistent && (
+      {isPersistent && !isSpinner && (
         <kbd style={{
           padding: '2px 6px',
           background: 'rgba(255,255,255,0.22)',
@@ -65,9 +83,9 @@ export function ToastOverlay({ toast, onPause, onResume, onDismiss }: ToastOverl
         </kbd>
       )}
 
-      {toast.actions && toast.actions.length > 0 && (
+      {item.actions && item.actions.length > 0 && (
         <>
-          {toast.actions.map((action: ToastAction, i) => (
+          {item.actions.map((action: ToastAction, i) => (
             <button
               key={i}
               onClick={action.onClick}
@@ -112,5 +130,50 @@ export function ToastOverlay({ toast, onPause, onResume, onDismiss }: ToastOverl
         </>
       )}
     </div>
+  );
+}
+
+const BUBBLE_HEIGHT = 36;   // estimated height per toast
+const BUBBLE_GAP    = 8;    // gap between toasts
+
+export function ToastOverlay({ toasts, onPause, onResume, onDismiss }: ToastOverlayProps) {
+  if (toasts.length === 0) return null;
+
+  return (
+    <>
+      <style>{`
+        @keyframes toastSpin { to { transform: rotate(360deg); } }
+        @keyframes toastFadeInUp {
+          from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+          to   { opacity: 1; transform: translateX(-50%) translateY(0);   }
+        }
+      `}</style>
+      {/* Stack container anchored to bottom-center */}
+      <div style={{
+        position: 'fixed',
+        bottom: 20,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        zIndex: 9999,
+        pointerEvents: 'none',
+        width: 0,
+        height: (BUBBLE_HEIGHT + BUBBLE_GAP) * toasts.length,
+      }}>
+        {toasts.map((item, idx) => {
+          // idx 0 = oldest (bottom), last = newest (top)
+          const offsetY = idx * (BUBBLE_HEIGHT + BUBBLE_GAP);
+          return (
+            <ToastBubble
+              key={item.id}
+              item={item}
+              offsetY={offsetY}
+              onPause={() => onPause(item.id)}
+              onResume={() => onResume(item.id)}
+              onDismiss={() => onDismiss(item.id)}
+            />
+          );
+        })}
+      </div>
+    </>
   );
 }

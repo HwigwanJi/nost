@@ -43,6 +43,7 @@ interface SpaceAccordionProps {
   onNodeGroupLaunch?: (groupId: string) => void;
   deckItems?: string[];
   onDeckModeClick?: (itemId: string) => void;
+  onDeckGroupLaunch?: (itemId: string) => void;
   // Inactive window props
   inactiveWindowIds?: Set<string>;
   onWindowInactiveClick?: (item: LauncherItem) => void;
@@ -55,6 +56,9 @@ interface SpaceAccordionProps {
   onConvertFromContainer?: (itemId: string) => void;
   onEditSlots?: (itemId: string, dir?: string) => void;
   onShowToast?: (msg: string) => void;
+  onLaunchAndPosition?: (item: LauncherItem, closeAfter: boolean, monitor?: number) => Promise<void>;
+  monitorDirections?: Record<number, string>;
+  onOpenMonitorSettings?: () => void;
 }
 
 const SPACE_COLORS = [
@@ -92,6 +96,7 @@ export function SpaceAccordion({
   onNodeGroupLaunch,
   deckItems = [],
   onDeckModeClick,
+  onDeckGroupLaunch,
   inactiveWindowIds,
   onWindowInactiveClick,
   monitorCount = 1,
@@ -101,6 +106,9 @@ export function SpaceAccordion({
   onConvertFromContainer,
   onEditSlots,
   onShowToast,
+  onLaunchAndPosition,
+  monitorDirections,
+  onOpenMonitorSettings,
 }: SpaceAccordionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -343,6 +351,7 @@ export function SpaceAccordion({
                     const group = nodeGroups.find(g => g.itemIds.includes(item.id));
                     if (group) onNodeGroupLaunch?.(group.id);
                   }}
+                  onDeckGroupLaunch={() => onDeckGroupLaunch?.(item.id)}
                   isInactive={inactiveWindowIds?.has(item.id) ?? false}
                   onInactiveClick={() => onWindowInactiveClick?.(item)}
                   monitorCount={monitorCount}
@@ -352,6 +361,9 @@ export function SpaceAccordion({
                   onConvertFromContainer={onConvertFromContainer ? () => onConvertFromContainer(item.id) : undefined}
                   onEditSlots={onEditSlots ? (dir) => onEditSlots(item.id, dir) : undefined}
                   onShowToast={onShowToast}
+                  onLaunchAndPosition={onLaunchAndPosition}
+                  monitorDirections={monitorDirections}
+                  onOpenMonitorSettings={onOpenMonitorSettings}
                 />
               ))}
 

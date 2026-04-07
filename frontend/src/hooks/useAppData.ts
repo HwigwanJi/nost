@@ -318,13 +318,27 @@ export function useAppData() {
       );
     }
 
-    // 2. Mark removed items as hidden in their own spaces
+    // 2. Mark all slot-assigned items as hiddenInSpace across all spaces.
+    //    Collect every itemId currently in the final slots.
+    const slotItemIds = new Set(Object.values(slots).filter(Boolean) as string[]);
+    // Also include explicitly removed items (they keep their hiddenInSpace even if re-assigned elsewhere)
     for (const { spaceId, itemId } of removals) {
+      slotItemIds.add(itemId);
+      // Apply to the specific space for removals (fast path)
       nextSpaces = nextSpaces.map(s =>
         s.id === spaceId
           ? { ...s, items: s.items.map(i => i.id === itemId ? { ...i, hiddenInSpace: true } : i) }
           : s
       );
+    }
+    // Sweep all spaces for any slot item not already handled above
+    for (const itemId of slotItemIds) {
+      if (!removals.some(r => r.itemId === itemId)) {
+        nextSpaces = nextSpaces.map(s => ({
+          ...s,
+          items: s.items.map(i => i.id === itemId ? { ...i, hiddenInSpace: true } : i),
+        }));
+      }
     }
 
     // 3. Update the container item's slots

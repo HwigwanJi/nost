@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 
 export type ToastAction = {
   label: string;
@@ -7,100 +7,129 @@ export type ToastAction = {
   danger?: boolean;
 };
 
-type ToastQueueItem = {
+export type ToastItem = {
+  id: number;
   msg: string;
   actions?: ToastAction[];
-  duration?: number;
   persistent?: boolean;
+  spinner?: boolean;
+  /** internal: timestamp for ordering */
+  createdAt: number;
 };
 
-export type ToastState = {
-  msg: string;
-  id: number;
-  actions?: ToastAction[];
-  persistent?: boolean;
-} | null;
+export type ToastState = ToastItem | null; // kept for ToastOverlay compat
 
 export function useToastQueue() {
-  const [toast, setToast] = useState<ToastState>(null);
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toastQueueRef = useRef<ToastQueueItem[]>([]);
-  const toastActiveRef = useRef(false);
-  const advanceQueueRef = useRef<(() => void) | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  // Map from toast id → dismiss timer
+  const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+  // For pipeline: track the "current spinner" id so immediate replaces it
+  const spinnerIdRef = useRef<number | null>(null);
 
-  const clearToastTimer = useCallback(() => {
-    if (toastTimerRef.current) {
-      clearTimeout(toastTimerRef.current);
-      toastTimerRef.current = null;
-    }
+  const clearTimer = useCallback((id: number) => {
+    const t = timersRef.current.get(id);
+    if (t) { clearTimeout(t); timersRef.current.delete(id); }
   }, []);
 
-  const advanceQueue = useCallback(() => {
-    if (toastQueueRef.current.length === 0) {
-      toastActiveRef.current = false;
-      setToast(null);
-      return;
-    }
+  const removeToast = useCallback((id: number) => {
+    clearTimer(id);
+    setToasts(prev => prev.filter(t => t.id !== id));
+    if (spinnerIdRef.current === id) spinnerIdRef.current = null;
+  }, [clearTimer]);
 
-    const { msg, actions, duration, persistent } = toastQueueRef.current.shift()!;
-    setToast({ msg, id: Date.now(), actions, persistent });
-
-    if (persistent) {
-      // Never auto-dismiss persistent toasts — wait for explicit dismissToast()
-      return;
-    }
-    const nextDuration = duration ?? (actions?.length ? 5000 : 900);
-    toastTimerRef.current = setTimeout(() => advanceQueueRef.current?.(), nextDuration);
-  }, []);
-
-  useEffect(() => {
-    advanceQueueRef.current = advanceQueue;
-  }, [advanceQueue]);
+  const scheduleRemove = useCallback((id: number, duration: number) => {
+    clearTimer(id);
+    const t = setTimeout(() => removeToast(id), duration);
+    timersRef.current.set(id, t);
+  }, [clearTimer, removeToast]);
 
   const showToast = useCallback((
     msg: string,
-    options?: { actions?: ToastAction[]; duration?: number; persistent?: boolean }
+    options?: {
+      actions?: ToastAction[];
+      duration?: number;
+      persistent?: boolean;
+      spinner?: boolean;
+      /**
+       * When true: replaces the current spinner toast (pipeline progress updates).
+       * If there is no active spinner toast, adds a new toast normally.
+       */
+      immediate?: boolean;
+    }
   ) => {
-    toastQueueRef.current.push({
-      msg,
-      actions: options?.actions,
-      duration: options?.duration,
-      persistent: options?.persistent,
-    });
+    const isPersistent = options?.persistent;
+    const isSpinner    = options?.spinner;
+    const isImmediate  = options?.immediate;
+    const defaultDur   = options?.actions?.length ? 5000 : 1800;
+    const duration     = options?.duration ?? defaultDur;
 
-    if (!toastActiveRef.current) {
-      toastActiveRef.current = true;
-      clearToastTimer();
-      advanceQueueRef.current?.();
+    const id = Date.now() + Math.random(); // unique
+
+    if (isImmediate && spinnerIdRef.current !== null) {
+      // Replace existing spinner toast in-place (pipeline step update)
+      const prevId = spinnerIdRef.current;
+      clearTimer(prevId);
+      const newItem: ToastItem = { id, msg, actions: options?.actions, persistent: isPersistent, spinner: isSpinner, createdAt: Date.now() };
+      setToasts(prev => prev.map(t => t.id === prevId ? newItem : t));
+      if (isSpinner || isPersistent) {
+        spinnerIdRef.current = id;
+      } else {
+        spinnerIdRef.current = null;
+        scheduleRemove(id, duration);
+      }
+      return;
     }
-  }, [clearToastTimer]);
 
-  const dismissToast = useCallback(() => {
-    clearToastTimer();
-    setToast(null);
+    // Normal: push new toast
+    const newItem: ToastItem = { id, msg, actions: options?.actions, persistent: isPersistent, spinner: isSpinner, createdAt: Date.now() };
+    setToasts(prev => [...prev, newItem]);
 
-    if (toastQueueRef.current.length > 0) {
-      advanceQueueRef.current?.();
+    if (isSpinner || isPersistent) {
+      spinnerIdRef.current = id;
     } else {
-      toastActiveRef.current = false;
+      scheduleRemove(id, duration);
     }
-  }, [clearToastTimer]);
+  }, [clearTimer, scheduleRemove]);
 
-  const pauseToast = useCallback(() => {
-    clearToastTimer();
-  }, [clearToastTimer]);
+  const dismissToast = useCallback((id?: number) => {
+    if (id !== undefined) {
+      removeToast(id);
+    } else if (spinnerIdRef.current !== null) {
+      removeToast(spinnerIdRef.current);
+    } else {
+      // dismiss the newest toast
+      setToasts(prev => {
+        if (prev.length === 0) return prev;
+        const last = prev[prev.length - 1];
+        clearTimer(last.id);
+        return prev.slice(0, -1);
+      });
+    }
+  }, [removeToast, clearTimer]);
 
-  const resumeToast = useCallback((duration = 3000) => {
-    clearToastTimer();
-    if (!toast) return;
-    if (toast.persistent) return; // don't resume-dismiss persistent toasts
-    toastTimerRef.current = setTimeout(dismissToast, duration);
-  }, [clearToastTimer, dismissToast, toast]);
+  // Pause/resume for hover (operates on the last non-spinner toast)
+  const pauseToast = useCallback((id?: number) => {
+    if (id !== undefined) clearTimer(id);
+  }, [clearTimer]);
 
-  useEffect(() => () => clearToastTimer(), [clearToastTimer]);
+  const resumeToast = useCallback((id?: number, duration = 3000) => {
+    const target = id ?? (() => {
+      // find latest non-persistent, non-spinner toast
+      const candidates = toasts.filter(t => !t.persistent && !t.spinner);
+      return candidates[candidates.length - 1]?.id;
+    })();
+    if (target === undefined) return;
+    const t = toasts.find(t => t.id === target);
+    if (!t || t.persistent || t.spinner) return;
+    scheduleRemove(target, duration);
+  }, [clearTimer, scheduleRemove, toasts]);
+
+  // Legacy compat: single ToastState (last item, or null)
+  const toast: ToastState = toasts.length > 0 ? toasts[toasts.length - 1] : null;
 
   return {
-    toast,
+    toast,    // legacy single-toast compat
+    toasts,   // full stack for ToastOverlay
     showToast,
     dismissToast,
     pauseToast,

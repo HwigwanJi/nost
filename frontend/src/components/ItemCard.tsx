@@ -32,6 +32,7 @@ interface ItemCardProps {
   onNodeModeClick?: () => void;
   onDeckModeClick?: () => void;
   onNodeGroupLaunch?: () => void;
+  onDeckGroupLaunch?: () => void;
   isInactive?: boolean;
   onInactiveClick?: () => void;
   monitorCount?: number;
@@ -41,6 +42,9 @@ interface ItemCardProps {
   onConvertFromContainer?: () => void;
   onEditSlots?: (dir?: SlotDir) => void;
   onShowToast?: (msg: string) => void;
+  onLaunchAndPosition?: (item: LauncherItem, closeAfter: boolean, monitor?: number) => Promise<void>;
+  monitorDirections?: Record<number, string>;
+  onOpenMonitorSettings?: () => void;
 }
 
 type SlotDir = 'up' | 'down' | 'left' | 'right';
@@ -110,11 +114,12 @@ export function ItemCard({
   item, space, closeAfter, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, searchQuery = '',
   activeMode = 'normal', isNodeLinked = false, isNodeAnchor = false, isDeckAnchor = false,
-  nodeBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch: _onNodeGroupLaunch,
+  nodeBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch, onDeckGroupLaunch,
   isInactive = false, onInactiveClick,
   monitorCount = 1, onSetMonitor,
   allItems = [], onConvertToContainer, onConvertFromContainer, onEditSlots,
-  onShowToast,
+  onShowToast: _onShowToast, onLaunchAndPosition,
+  monitorDirections, onOpenMonitorSettings,
 }: ItemCardProps) {
   const [loading, setLoading] = useState(false);
   const [imageIconFailed, setImageIconFailed] = useState(false);
@@ -157,14 +162,23 @@ export function ItemCard({
     if (!holdOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (holdMonitorMode) {
-        // WASD spatially matches button layout: W=top(auto) D=right(1) A=left(2) S=bottom(3)
         const key = e.key.toLowerCase();
-        if (key === 'w') { e.preventDefault(); e.stopImmediatePropagation(); launchOnMonitorRef.current(undefined); closeHoldPopup(); }
-        else if (key === 'd') { e.preventDefault(); e.stopImmediatePropagation(); if (monitorCount >= 1) { launchOnMonitorRef.current(1); closeHoldPopup(); } }
-        else if (key === 'a') { e.preventDefault(); e.stopImmediatePropagation(); if (monitorCount >= 2) { launchOnMonitorRef.current(2); closeHoldPopup(); } }
-        else if (key === 's') { e.preventDefault(); e.stopImmediatePropagation(); if (monitorCount >= 3) { launchOnMonitorRef.current(3); closeHoldPopup(); } }
-        else if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); setHoldMonitorMode(false); }
-        else { e.preventDefault(); e.stopImmediatePropagation(); } // block all other keys too
+        // Build dir→monitor map from settings (fallback: 1→d, 2→a, 3→s)
+        const DEFAULT_DIRS: Record<number, string> = { 1:'d', 2:'a', 3:'s' };
+        const effDirs = monitorDirections ?? DEFAULT_DIRS;
+        const usedDirs = new Set(Object.values(effDirs).filter(d => d !== 'c'));
+        // Reverse map: key → monitor number
+        const keyToMonitor: Record<string, number> = {};
+        for (const [mStr, dir] of Object.entries(effDirs)) {
+          if (dir !== 'c') keyToMonitor[dir] = Number(mStr);
+        }
+        if (key === 'escape') { e.preventDefault(); e.stopImmediatePropagation(); setHoldMonitorMode(false); return; }
+        e.preventDefault(); e.stopImmediatePropagation();
+        // 'w' = Auto (if not taken by a monitor)
+        if (key === 'w' && !usedDirs.has('w')) { launchOnMonitorRef.current(undefined); closeHoldPopup(); }
+        else if (key in keyToMonitor && keyToMonitor[key] <= monitorCount) {
+          launchOnMonitorRef.current(keyToMonitor[key]); closeHoldPopup();
+        }
         return;
       }
       const dirMap: Record<string, SlotDir> = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right' };
@@ -220,28 +234,36 @@ export function ItemCard({
     const slotItem = allItems.find(i => i.id === slotItemId);
     if (!slotItem) return;
     closeHoldPopup();
-    switch (slotItem.type) {
-      case 'url': case 'browser': electronAPI.openUrl(slotItem.value, closeAfter); break;
-      case 'folder':  electronAPI.openPath(slotItem.value, closeAfter); break;
-      case 'window':  electronAPI.focusWindow(slotItem.value, closeAfter); break;
-      case 'app':     electronAPI.launchOrFocusApp(slotItem.value, closeAfter, slotItem.monitor); break;
-      case 'text':    electronAPI.copyText(slotItem.value, closeAfter); break;
-      case 'cmd':     electronAPI.runCmd(slotItem.value, closeAfter); break;
+    if (onLaunchAndPosition) {
+      onLaunchAndPosition(slotItem, closeAfter);
+    } else {
+      switch (slotItem.type) {
+        case 'url': case 'browser': electronAPI.openUrl(slotItem.value, closeAfter); break;
+        case 'folder':  electronAPI.openPath(slotItem.value, closeAfter); break;
+        case 'window':  electronAPI.focusWindow(slotItem.value, closeAfter); break;
+        case 'app':     electronAPI.launchOrFocusApp(slotItem.value, closeAfter, slotItem.monitor); break;
+        case 'text':    electronAPI.copyText(slotItem.value, closeAfter); break;
+        case 'cmd':     electronAPI.runCmd(slotItem.value, closeAfter); break;
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allItems, closeAfter]);
+  }, [allItems, closeAfter, onLaunchAndPosition]);
 
   const executeLaunchNoClose = useCallback(() => {
     onClickCountIncrement();
-    switch (item.type) {
-      case 'url': case 'browser': electronAPI.openUrl(item.value, false); break;
-      case 'folder':  electronAPI.openPath(item.value, false); break;
-      case 'window':  electronAPI.focusWindow(item.value, false); break;
-      case 'app':     electronAPI.launchOrFocusApp(item.value, false, item.monitor); break;
-      case 'text':    electronAPI.copyText(item.value, false); break;
-      case 'cmd':     electronAPI.runCmd(item.value, false); break;
+    if (onLaunchAndPosition) {
+      onLaunchAndPosition(item, false);
+    } else {
+      switch (item.type) {
+        case 'url': case 'browser': electronAPI.openUrl(item.value, false); break;
+        case 'folder':  electronAPI.openPath(item.value, false); break;
+        case 'window':  electronAPI.focusWindow(item.value, false); break;
+        case 'app':     electronAPI.launchOrFocusApp(item.value, false, item.monitor); break;
+        case 'text':    electronAPI.copyText(item.value, false); break;
+        case 'cmd':     electronAPI.runCmd(item.value, false); break;
+      }
     }
-  }, [item, onClickCountIncrement]);
+  }, [item, onClickCountIncrement, onLaunchAndPosition]);
 
   // doHoldAction — safe to call from event handlers (uses current closure via inline def)
   // We store a ref so global handlers (added once) always call the latest version
@@ -249,39 +271,18 @@ export function ItemCard({
   const launchOnMonitorRef = useRef<(monitor: number | undefined) => void>(() => {});
   launchOnMonitorRef.current = (monitor: number | undefined) => {
     onClickCountIncrement();
-    const monLabel = monitor ? ` · 모니터 ${monitor}` : '';
-    switch (item.type) {
-      case 'url': case 'browser': electronAPI.openUrl(item.value, closeAfter); break;
-      case 'folder':  electronAPI.openPath(item.value, closeAfter); break;
-      case 'window':
-        electronAPI.focusWindow(item.value, closeAfter).then(r => {
-          if (r.found) {
-            onShowToast?.(`↑ ${item.title}${monLabel}`);
-            if (monitor && monitor > 0) {
-              electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor });
-            }
-          } else onShowToast?.(`⚠ "${item.title}" 창을 찾을 수 없음`);
-        });
-        break;
-      case 'app':
-        electronAPI.launchOrFocusApp(item.value, closeAfter, monitor).then(r => {
-          if (r.action === 'focused') {
-            onShowToast?.(`↑ ${item.title}${monLabel}`);
-            if (monitor && monitor > 0) {
-              electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor });
-            }
-          } else if (r.action === 'launched') {
-            onShowToast?.(`▶ ${item.title}${monLabel} 실행 중`);
-            if (monitor && monitor > 0) {
-              setTimeout(() => {
-                electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor });
-              }, 2500);
-            }
-          } else onShowToast?.(`⚠ 실행 실패`);
-        });
-        break;
-      case 'text':    electronAPI.copyText(item.value, closeAfter); break;
-      case 'cmd':     electronAPI.runCmd(item.value, closeAfter); break;
+    if (onLaunchAndPosition) {
+      onLaunchAndPosition(item, closeAfter, monitor);
+    } else {
+      // Fallback: fire-and-forget without pipeline
+      switch (item.type) {
+        case 'url': case 'browser': electronAPI.openUrl(item.value, closeAfter); break;
+        case 'folder':  electronAPI.openPath(item.value, closeAfter); break;
+        case 'window':  electronAPI.focusWindow(item.value, closeAfter); break;
+        case 'app':     electronAPI.launchOrFocusApp(item.value, closeAfter, monitor); break;
+        case 'text':    electronAPI.copyText(item.value, closeAfter); break;
+        case 'cmd':     electronAPI.runCmd(item.value, closeAfter); break;
+      }
     }
   };
 
@@ -355,50 +356,29 @@ export function ItemCard({
     setLoading(true);
     onClickCountIncrement();
     try {
-      if (maximize && (item.type === 'window' || item.type === 'app')) {
-        await electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor: item.monitor });
-        return;
-      }
-      switch (item.type) {
-        case 'url': case 'browser': electronAPI.openUrl(item.value, closeAfter); break;
-        case 'folder':  electronAPI.openPath(item.value, closeAfter); break;
-        case 'window': {
-          const r = await electronAPI.focusWindow(item.value, closeAfter);
-          if (r.found) {
-            onShowToast?.(`↑ ${item.title}`);
-            if (item.monitor && item.monitor > 0) {
-              electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor: item.monitor });
-            }
-          } else onShowToast?.(`⚠ "${item.title}" 창을 찾을 수 없음`);
-          break;
+      if (onLaunchAndPosition) {
+        // Use the unified pipeline (handles polling, positioning, toasts)
+        if (maximize && (item.type === 'window' || item.type === 'app' || item.type === 'folder')) {
+          // Double-click = maximize on assigned monitor
+          await onLaunchAndPosition(item, closeAfter, item.monitor);
+        } else {
+          await onLaunchAndPosition(item, closeAfter);
         }
-        case 'app': {
-          const r = await electronAPI.launchOrFocusApp(item.value, closeAfter, item.monitor);
-          if (r.action === 'focused') {
-            onShowToast?.(`↑ ${item.title}`);
-            if (item.monitor && item.monitor > 0) {
-              electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor: item.monitor });
-            }
-          } else if (r.action === 'launched') {
-            onShowToast?.(`▶ ${item.title} 실행 중`);
-            if (item.monitor && item.monitor > 0) {
-              // Give the app time to create its main window before maximizing
-              setTimeout(() => {
-                electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor: item.monitor });
-              }, 2500);
-            }
-          } else {
-            onShowToast?.(`⚠ 실행 실패`);
-          }
-          break;
+      } else {
+        // Fallback: direct launch without pipeline
+        switch (item.type) {
+          case 'url': case 'browser': electronAPI.openUrl(item.value, closeAfter); break;
+          case 'folder':  electronAPI.openPath(item.value, closeAfter); break;
+          case 'window':  electronAPI.focusWindow(item.value, closeAfter); break;
+          case 'app':     electronAPI.launchOrFocusApp(item.value, closeAfter, item.monitor); break;
+          case 'text':    electronAPI.copyText(item.value, closeAfter); break;
+          case 'cmd':     electronAPI.runCmd(item.value, closeAfter); break;
         }
-        case 'text':    electronAPI.copyText(item.value, closeAfter); break;
-        case 'cmd':     electronAPI.runCmd(item.value, closeAfter); break;
       }
     } finally {
-      setTimeout(() => setLoading(false), 600);
+      setLoading(false);
     }
-  }, [item, closeAfter, loading, onClickCountIncrement, onShowToast]);
+  }, [item, closeAfter, loading, onClickCountIncrement, onLaunchAndPosition]);
 
   const handleClick = useCallback(() => {
     if (monitorBadgeClickedRef.current) { monitorBadgeClickedRef.current = false; return; }
@@ -408,8 +388,12 @@ export function ItemCard({
     if (activeMode === 'deck') { onDeckModeClick?.(); return; }
     if (isInactive && item.type === 'window') { onInactiveClick?.(); return; }
 
+    // Node/Deck anchor: click launches the whole group
+    if (isNodeAnchor) { onNodeGroupLaunch?.(); return; }
+    if (isDeckAnchor) { onDeckGroupLaunch?.(); return; }
+
     // All cards (including containers): short click = launch normally
-    if (item.type === 'window' || item.type === 'app') {
+    if (item.type === 'window' || item.type === 'app' || item.type === 'folder') {
       if (clickTimerRef.current) {
         clearTimeout(clickTimerRef.current);
         clickTimerRef.current = null;
@@ -696,29 +680,82 @@ export function ItemCard({
 
       {holdMonitorMode ? (
         // ── Monitor picker sub-mode ────────────────────────────
-        <>
-          {/* Circular backdrop — ensures buttons are visible on any background */}
-          <div style={{ position:'absolute', left:'50%', top:'50%', transform:'translate(-50%,-50%)', width:190, height:190, borderRadius:'50%', background:'rgba(0,0,0,0.32)', backdropFilter:'blur(12px)', pointerEvents:'none', zIndex:0 }} />
-          <MonitorHoldBtn label="C" subLabel="자동" hint="W" active={item.monitor === undefined}
-            position={{ bottom:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' }}
-            onClick={() => { launchOnMonitorRef.current(undefined); closeHoldPopup(); }} />
-          {([1, 2, 3] as const).map((n, i) => {
-            const positions = [
-              { left:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
-              { right:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
-              { top:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' },
-            ];
-            const hints = ['D', 'A', 'S'];
-            return (
-              <MonitorHoldBtn key={n} label={String(n)} subLabel={n===1?'주 모니터':`모니터 ${n}`}
-                hint={hints[i]} active={item.monitor === n} disabled={n > monitorCount} position={positions[i]}
-                onClick={() => { launchOnMonitorRef.current(n); closeHoldPopup(); }} />
-            );
-          })}
-          <div style={{ position:'absolute', left:'50%', bottom:-22, transform:'translateX(-50%)', whiteSpace:'nowrap', fontSize:9, color:'var(--text-dim)', pointerEvents:'none' }}>
-            이번 한 번만 · Esc
-          </div>
-        </>
+        (() => {
+          // Direction → CSS position constants
+          const DIR_POS: Record<string, React.CSSProperties> = {
+            w: { bottom:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' },
+            d: { left:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
+            a: { right:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
+            s: { top:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' },
+          };
+          const DIR_HINT: Record<string, string> = { w:'W', a:'A', s:'S', d:'D' };
+          const DEFAULT_DIRS: Record<number, string> = { 1:'d', 2:'a', 3:'s' };
+          const effDirs = monitorDirections ?? DEFAULT_DIRS;
+          const usedDirs = new Set(Object.values(effDirs).filter(d => d !== 'c'));
+          const showAuto = !usedDirs.has('w');
+          return (
+            <>
+              {/* Glassmorphism circular backdrop */}
+              <div style={{
+                position:'absolute', left:'50%', top:'50%', transform:'translate(-50%,-50%)',
+                width:190, height:190, borderRadius:'50%',
+                background:'var(--bg-rgba, rgba(18,18,28,0.5))',
+                backdropFilter:'blur(28px) saturate(160%)',
+                WebkitBackdropFilter:'blur(28px) saturate(160%)',
+                border:'1px solid rgba(255,255,255,0.1)',
+                boxShadow:'0 8px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.12)',
+                pointerEvents:'none', zIndex:0,
+              }} />
+
+              {/* Auto (C) button — top, shown only if 'w' not taken by a monitor */}
+              {showAuto && (
+                <MonitorHoldBtn label="C" subLabel="자동" hint="W" active={item.monitor === undefined}
+                  position={DIR_POS.w}
+                  onClick={() => { launchOnMonitorRef.current(undefined); closeHoldPopup(); }} />
+              )}
+
+              {/* Monitor buttons — positioned by configured direction */}
+              {([1, 2, 3] as const).map(n => {
+                const dir = effDirs[n] ?? DEFAULT_DIRS[n] ?? 'd';
+                if (dir === 'c' || !DIR_POS[dir]) return null;
+                return (
+                  <MonitorHoldBtn key={n} label={String(n)} subLabel={n===1?'주 모니터':`모니터 ${n}`}
+                    hint={DIR_HINT[dir] ?? ''} active={item.monitor === n} disabled={n > monitorCount}
+                    position={DIR_POS[dir]}
+                    onClick={() => { launchOnMonitorRef.current(n); closeHoldPopup(); }} />
+                );
+              })}
+
+              {/* Settings icon — 5 o'clock position */}
+              <button
+                data-hold-popup
+                onPointerDown={e => e.stopPropagation()}
+                onClick={() => { closeHoldPopup(); setTimeout(() => onOpenMonitorSettings?.(), 50); }}
+                title="모니터 설정"
+                style={{
+                  position:'absolute',
+                  left:'calc(50% + 45px)', top:'calc(50% + 78px)',
+                  transform:'translate(-50%,-50%)',
+                  width:20, height:20, borderRadius:'50%',
+                  background:'var(--bg-rgba, rgba(18,18,28,0.7))',
+                  backdropFilter:'blur(12px)',
+                  border:'1px solid rgba(255,255,255,0.15)',
+                  display:'flex', alignItems:'center', justifyContent:'center',
+                  cursor:'pointer', pointerEvents:'auto', zIndex:2,
+                  opacity:0.55, transition:'opacity 0.1s',
+                }}
+                onMouseEnter={e => (e.currentTarget.style.opacity='1')}
+                onMouseLeave={e => (e.currentTarget.style.opacity='0.55')}
+              >
+                <span className="material-symbols-rounded" style={{ fontSize:11, color:'var(--text-muted)' }}>settings</span>
+              </button>
+
+              <div style={{ position:'absolute', left:'50%', bottom:-22, transform:'translateX(-50%)', whiteSpace:'nowrap', fontSize:9, color:'var(--text-dim)', pointerEvents:'none' }}>
+                이번 한 번만 · Esc
+              </div>
+            </>
+          );
+        })()
       ) : (
         // ── 4-direction icon buttons ───────────────────────────
         DIRS.map(dir => {

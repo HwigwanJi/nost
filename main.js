@@ -10,8 +10,71 @@ const { autoUpdater } = require('electron-updater');
 const store = new Store({ name: 'nost-data' });
 
 let mainWindow;
+let loadingWindow = null;
 let tray = null;
 let currentShortcut = 'Alt+4';
+
+// ── Splash / Loading window ─────────────────────────────────
+function createLoadingWindow() {
+  loadingWindow = new BrowserWindow({
+    width: 300,
+    height: 180,
+    show: true,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    center: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+
+  const html = encodeURIComponent(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:100%; height:100%; background:transparent; }
+body {
+  background: rgba(255,255,255,0.72);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.9);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,1);
+  border-radius: 8px;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  height: 100vh;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  overflow: hidden;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+.logo {
+  font-size: 34px; font-weight: 800;
+  letter-spacing: -2px;
+  background: linear-gradient(135deg, #6366f1 0%, #818cf8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.sub  { font-size: 11px; color: rgba(80,80,120,0.55); margin-top: 5px; letter-spacing: 0.5px; font-weight: 500; }
+.ring {
+  margin-top: 22px;
+  width: 22px; height: 22px;
+  border: 2.5px solid rgba(99,102,241,0.18);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+</style></head>
+<body>
+  <div class="logo">nost</div>
+  <div class="sub">시작하는 중...</div>
+  <div class="ring"></div>
+</body></html>`);
+
+  loadingWindow.loadURL(`data:text/html;charset=utf-8,${html}`);
+}
 
 // ── Single Instance Lock ────────────────────────────────────
 // If user launches app again while it's already running (hidden),
@@ -177,6 +240,11 @@ function createWindow() {
   const showMainWindow = () => {
     if (windowShown) return;
     windowShown = true;
+    // Close splash first (smooth swap)
+    if (loadingWindow && !loadingWindow.isDestroyed()) {
+      loadingWindow.close();
+      loadingWindow = null;
+    }
     mainWindow.show();
     mainWindow.focus();
   };
@@ -1353,19 +1421,24 @@ foreach ($delayMs in $settlePasses) {
 
   // ── Maximize a specific window by title/path (DPI-aware, fills work area) ──
   ipcMain.handle('maximize-window', async (event, { item, monitor = 0 }) => {
-    // Electron workArea = 96-DPI per-monitor logical px = DPI-unaware Win32 space.
-    // Use workArea values directly — no scaleFactor multiplication.
+    // Compute target rectangle from Electron display info.
+    // Electron workArea is in 96-DPI logical px. For DPI-unaware Win32, this matches.
+    // But we also pass scaleFactor so the PS script can use SetProcessDPIAware()
+    // and compute the real physical-pixel rect (robust across mixed-DPI setups).
     const { screen } = require('electron');
     const displays = screen.getAllDisplays();
     const disp = (monitor >= 1 && monitor <= displays.length)
       ? displays[monitor - 1]
       : screen.getPrimaryDisplay();
     const wa = disp.workArea;
-    const border = 8;
-    const psX  = Math.round(wa.x)      - border;
-    const psY  = Math.round(wa.y)      - border;
-    const psW  = Math.round(wa.width)  + border * 2;
-    const psH  = Math.round(wa.height) + border * 2;
+    const sf = disp.scaleFactor || 1;
+
+    // Physical-pixel coordinates (for DPI-aware mode)
+    const border = 8; // invisible shadow border on Win10/11
+    const psX  = Math.round(wa.x * sf) - border;
+    const psY  = Math.round(wa.y * sf) - border;
+    const psW  = Math.round(wa.width  * sf) + border * 2;
+    const psH  = Math.round(wa.height * sf) + border * 2;
 
     const itemJson = JSON.stringify(item)
       .replace(/[^\x00-\x7F]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
@@ -1380,11 +1453,13 @@ public class MaxWin32 {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndAfter, int X, int Y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 }
 "@
     }
-} catch { exit 1 }
-# NO SetProcessDPIAware: keep DPI-unaware so Win32 coords = Electron workArea (96-DPI logical)
+} catch { Write-Output "FAIL"; exit 1 }
+# Become DPI-aware so MoveWindow/SetWindowPos use real physical pixels
+[MaxWin32]::SetProcessDPIAware() | Out-Null
 $item = '${itemJson}' | ConvertFrom-Json
 $hwnd = $null
 if ($item.type -eq 'app') {
@@ -1408,19 +1483,26 @@ elseif ($item.type -eq 'url' -or $item.type -eq 'browser') {
     if ($proc) { $hwnd = $proc.MainWindowHandle }
 }
 if ($hwnd -and [long]$hwnd -gt 0) {
+    # Restore from minimized/maximized state first
     [MaxWin32]::ShowWindow($hwnd, 9) | Out-Null
     Start-Sleep -Milliseconds 150
+    # Move + resize to fill target monitor work area (physical pixels, DPI-aware)
     [MaxWin32]::MoveWindow($hwnd, ${psX}, ${psY}, ${psW}, ${psH}, $true) | Out-Null
     Start-Sleep -Milliseconds 50
+    # Reinforce with SetWindowPos (SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOZORDER)
     [MaxWin32]::SetWindowPos($hwnd, [IntPtr]::Zero, ${psX}, ${psY}, ${psW}, ${psH}, 0x0064) | Out-Null
     [MaxWin32]::SetForegroundWindow($hwnd) | Out-Null
+    Write-Output "OK"
+} else {
+    Write-Output "NOTFOUND"
 }`;
     const tmpPs = path.join(os.tmpdir(), `ql_max_${Date.now()}.ps1`);
     fs.writeFileSync(tmpPs, '\ufeff' + psCode, 'utf8');
     return new Promise((resolve) => {
-      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${tmpPs}"`, { shell: false }, (err) => {
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${tmpPs}"`, { shell: false }, (err, stdout) => {
         fs.unlink(tmpPs, () => {});
-        resolve({ success: !err });
+        const out = (stdout || '').trim();
+        resolve({ success: !err && out === 'OK' });
       });
     });
   });
@@ -1589,6 +1671,9 @@ $obj.SendKeys("{ENTER}")
 }
 
 app.whenReady().then(() => {
+  // Show splash immediately so there's visual feedback during cold-start
+  createLoadingWindow();
+
   // CSP Headers
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({

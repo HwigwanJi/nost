@@ -16,6 +16,7 @@ import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
 import { useTileOverlay } from './hooks/useTileOverlay';
+import { useLaunchPipeline } from './hooks/useLaunchPipeline';
 import { electronAPI } from './electronBridge';
 import type { LauncherItem, Space, AppMode } from './types';
 import {
@@ -107,7 +108,8 @@ export default function App() {
   const [deckBuilding, setDeckBuilding] = useState(false);
   const [deckItems, setDeckItems] = useState<string[]>([]);
   const { tileOverlayGroup, tileOverlayLeaving, showTileOverlay, dismissTileOverlay } = useTileOverlay();
-  const { toast, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
+  const { toasts, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
+  const { launchAndPosition } = useLaunchPipeline({ showToast, dismissToast });
 
 
   // ── Toast notification — FIFO queue (non-overlapping) ────
@@ -382,16 +384,8 @@ export default function App() {
   // ── Item launcher (shared between card clicks & commands) ─
   const launchItem = useCallback((item: LauncherItem, spaceId: string) => {
     store.incrementClickCount(spaceId, item.id);
-    const close = data.settings.closeAfterOpen;
-    switch (item.type) {
-      case 'url': case 'browser': electronAPI.openUrl(item.value, close); break;
-      case 'folder':  electronAPI.openPath(item.value, close); break;
-      case 'app':     electronAPI.launchOrFocusApp(item.value, close, item.monitor); break;
-      case 'window':  electronAPI.focusWindow(item.value, close); break;
-      case 'text':    electronAPI.copyText(item.value, close); break;
-      case 'cmd':     electronAPI.runCmd(item.value, close); break;
-    }
-  }, [store, data.settings.closeAfterOpen]);
+    launchAndPosition(item, data.settings.closeAfterOpen);
+  }, [store, data.settings.closeAfterOpen, launchAndPosition]);
 
   const handleSetMonitor = useCallback((spaceId: string, itemId: string, monitor: number | undefined) => {
     const space = data.spaces.find(s => s.id === spaceId);
@@ -824,6 +818,28 @@ export default function App() {
       return;
     }
 
+    // ── Drop onto an existing NodeGroupCard ──────────────
+    if (overId.startsWith('drop-node-group-')) {
+      const groupId = overId.replace('drop-node-group-', '');
+      const group = nodeGroups.find(g => g.id === groupId);
+      if (group && !group.itemIds.includes(activeId) && group.itemIds.length < 3) {
+        store.updateNodeGroup(groupId, { itemIds: [...group.itemIds, activeId] });
+        showToast(`✅ 노드 "${group.name}"에 추가됨`);
+      }
+      return;
+    }
+
+    // ── Drop onto an existing DeckCard ───────────────────
+    if (overId.startsWith('drop-deck-')) {
+      const deckId = overId.replace('drop-deck-', '');
+      const deck = decks.find(d => d.id === deckId);
+      if (deck && !deck.itemIds.includes(activeId)) {
+        store.updateDeck(deckId, { itemIds: [...deck.itemIds, activeId] });
+        showToast(`✅ 덱 "${deck.name}"에 추가됨`);
+      }
+      return;
+    }
+
     const sourceSpace = data.spaces.find(s => s.items.some(i => i.id === activeId));
     if (!sourceSpace) return;
 
@@ -1229,6 +1245,10 @@ export default function App() {
                             onNodeGroupLaunch={handleNodeGroupLaunch}
                             deckItems={deckItems}
                             onDeckModeClick={handleDeckBuildingClick}
+                            onDeckGroupLaunch={itemId => {
+                              const deck = (data.decks ?? []).find(d => d.itemIds.includes(itemId));
+                              if (deck) handleDeckLaunch(deck.id);
+                            }}
                             inactiveWindowIds={inactiveWindowIds}
                             onWindowInactiveClick={handleWindowInactiveClick}
                             monitorCount={monitorCount}
@@ -1238,6 +1258,9 @@ export default function App() {
                             onConvertFromContainer={itemId => handleConvertFromContainer(space.id, itemId)}
                             onEditSlots={(itemId, dir) => handleEditSlots(space.id, itemId, dir)}
                             onShowToast={showToast}
+                            onLaunchAndPosition={launchAndPosition}
+                            monitorDirections={data.settings.monitorDirections as Record<number, string> | undefined}
+                            onOpenMonitorSettings={() => openSettingsTab('monitor')}
                           />
                         )}
                       </SortableSpace>
@@ -1321,7 +1344,7 @@ export default function App() {
 
       {/* ── Toast ────────────────────────────────────────────── */}
       <ToastOverlay
-        toast={toast}
+        toasts={toasts}
         onPause={pauseToast}
         onResume={resumeToast}
         onDismiss={dismissToast}

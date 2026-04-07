@@ -224,6 +224,7 @@ export function NodePanel({
                   key={group.id}
                   group={group} items={items} allItems={allItems} monitorCount={monitorCount}
                   isRenaming={renamingId === group.id} renameDraft={renameDraft}
+                  draggingItemId={draggingItemId}
                   onLaunch={() => onLaunchGroup(group.id)}
                   onDelete={() => onDeleteGroup(group.id)}
                   onStartRename={() => { setRenamingId(group.id); setRenameDraft(group.name); }}
@@ -280,6 +281,7 @@ export function NodePanel({
                 <DeckCard
                   key={deck.id}
                   deck={deck} items={items} monitorCount={monitorCount}
+                  draggingItemId={draggingItemId}
                   onLaunch={() => onLaunchDeck(deck.id)}
                   onDelete={() => onDeleteDeck(deck.id)}
                   onUpdateDeck={onUpdateDeck}
@@ -410,11 +412,13 @@ function SortableNodeItem({ item, index, editing, onRemove }: {
 /* ── Individual node group card ─────────────────────────────── */
 function NodeGroupCard({
   group, items, allItems, monitorCount, isRenaming, renameDraft,
+  draggingItemId,
   onLaunch, onDelete, onStartRename, onRenameDraftChange,
   onRenameConfirm, onRenameCancel, onReorderItems, onSetMonitor,
 }: {
   group: NodeGroup; items: LauncherItem[]; allItems: LauncherItem[]; monitorCount: number;
   isRenaming: boolean; renameDraft: string;
+  draggingItemId?: string | null;
   onLaunch: () => void; onDelete: () => void; onStartRename: () => void;
   onRenameDraftChange: (v: string) => void; onRenameConfirm: () => void;
   onRenameCancel: () => void; onReorderItems: (itemIds: string[]) => void;
@@ -425,6 +429,13 @@ function NodeGroupCard({
   const [pickerQuery, setPickerQuery] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
   const [showMonitorPicker, setShowMonitorPicker] = useState(false);
+
+  // dnd-kit droppable — registers with App-level DndContext (absorbs right-click dragged cards)
+  const { isOver: isDndOver, setNodeRef: setDropRef } = useDroppable({
+    id: `drop-node-group-${group.id}`,
+    disabled: !draggingItemId || group.itemIds.length >= 3 || group.itemIds.includes(draggingItemId ?? ''),
+  });
+  const isAbsorbing = !!draggingItemId && isDndOver;
   const pickerInputRef = useRef<HTMLInputElement>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
@@ -483,19 +494,34 @@ function NodeGroupCard({
 
   return (
     <div
+      ref={setDropRef}
       onClick={!editing && !isRenaming ? onLaunch : undefined}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       style={{
         margin: '4px 6px', borderRadius: 10,
-        border: `1px solid ${isDragOver ? 'var(--accent)' : editing ? 'var(--accent)' : 'var(--border-rgba)'}`,
-        background: isDragOver ? 'var(--accent-dim)' : editing ? 'var(--accent-dim)' : 'var(--surface)',
+        border: `1px solid ${isAbsorbing ? 'var(--accent)' : isDragOver ? 'var(--accent)' : editing ? 'var(--accent)' : 'var(--border-rgba)'}`,
+        background: isAbsorbing ? 'var(--accent-dim)' : isDragOver ? 'var(--accent-dim)' : editing ? 'var(--accent-dim)' : 'var(--surface)',
+        boxShadow: isAbsorbing ? '0 0 0 2px var(--accent), 0 4px 18px rgba(99,102,241,0.28)' : 'none',
         outline: isDragOver ? '2px dashed var(--accent)' : 'none',
         outlineOffset: -3,
+        transform: isAbsorbing ? 'scale(1.015)' : 'none',
         transition: 'all 0.15s', overflow: 'hidden', cursor: editing ? 'default' : 'pointer', position: 'relative',
       }}
     >
+      {/* Absorption overlay — shows when a card is dragged over */}
+      {isAbsorbing && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 10,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          background: 'var(--accent-dim)', borderRadius: 10,
+          pointerEvents: 'none',
+        }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'var(--accent)' }}>add_circle</span>
+          <span style={{ fontSize: 9, color: 'var(--accent)', fontWeight: 700, marginTop: 3 }}>노드에 추가</span>
+        </div>
+      )}
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 10px 5px', gap: 4 }}>
         <span className="material-symbols-rounded" style={{ fontSize: 12, color: 'var(--accent)', flexShrink: 0 }}>hub</span>
@@ -650,22 +676,6 @@ function NodeGroupCard({
             </div>
           )}
 
-          {/* ── Drag-drop hint ────────────────────── */}
-          <div style={{
-            margin: '0 6px 5px', padding: '5px 8px',
-            borderRadius: 6,
-            border: `1.5px dashed ${isDragOver ? 'var(--accent)' : 'var(--border-rgba)'}`,
-            background: isDragOver ? 'var(--accent-dim)' : 'transparent',
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
-            transition: 'all 0.13s',
-            fontSize: 9, color: isDragOver ? 'var(--accent)' : 'var(--text-dim)',
-            pointerEvents: 'none',
-          }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 11 }}>
-              {isDragOver ? 'add_circle' : 'drag_indicator'}
-            </span>
-            {isDragOver ? '카드 추가' : '카드를 여기로 드래그'}
-          </div>
 
         </div>
       )}
@@ -674,8 +684,9 @@ function NodeGroupCard({
 }
 
 /* ── Deck card ──────────────────────────────────────────────── */
-function DeckCard({ deck, items, monitorCount, onLaunch, onDelete, onUpdateDeck }: {
+function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelete, onUpdateDeck }: {
   deck: Deck; items: LauncherItem[]; monitorCount: number;
+  draggingItemId?: string | null;
   onLaunch: () => void; onDelete: () => void;
   onUpdateDeck: (deckId: string, patch: Partial<Pick<Deck, 'name' | 'itemIds' | 'monitor'>>) => void;
 }) {
@@ -684,6 +695,13 @@ function DeckCard({ deck, items, monitorCount, onLaunch, onDelete, onUpdateDeck 
   const [renameDraft, setRenameDraft] = useState('');
   const [showMonitorPicker, setShowMonitorPicker] = useState(false);
 
+  // dnd-kit droppable — absorbs right-click dragged cards into this deck
+  const { isOver: isDndOver, setNodeRef: setDropRef } = useDroppable({
+    id: `drop-deck-${deck.id}`,
+    disabled: !draggingItemId || deck.itemIds.includes(draggingItemId ?? ''),
+  });
+  const isAbsorbing = !!draggingItemId && isDndOver;
+
   // Auto-start rename as soon as editing opens
   useEffect(() => {
     if (editing) { setRenameDraft(deck.name); setRenaming(true); }
@@ -691,9 +709,30 @@ function DeckCard({ deck, items, monitorCount, onLaunch, onDelete, onUpdateDeck 
 
   return (
     <div
+      ref={setDropRef}
       onClick={!editing ? onLaunch : undefined}
-      style={{ margin: '4px 6px', borderRadius: 10, border: `1px solid ${editing ? DECK_COLOR : 'var(--border-rgba)'}`, background: editing ? 'rgba(249,115,22,0.06)' : 'var(--surface)', transition: 'all 0.15s', overflow: 'hidden', cursor: editing ? 'default' : 'pointer' }}
+      style={{
+        margin: '4px 6px', borderRadius: 10,
+        border: `1px solid ${isAbsorbing ? DECK_COLOR : editing ? DECK_COLOR : 'var(--border-rgba)'}`,
+        background: isAbsorbing ? 'rgba(249,115,22,0.12)' : editing ? 'rgba(249,115,22,0.06)' : 'var(--surface)',
+        boxShadow: isAbsorbing ? `0 0 0 2px ${DECK_COLOR}, 0 4px 18px rgba(249,115,22,0.28)` : 'none',
+        transform: isAbsorbing ? 'scale(1.015)' : 'none',
+        transition: 'all 0.15s', overflow: 'hidden', cursor: editing ? 'default' : 'pointer',
+        position: 'relative',
+      }}
     >
+      {/* Absorption overlay */}
+      {isAbsorbing && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 10,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          background: 'rgba(249,115,22,0.1)', borderRadius: 10,
+          pointerEvents: 'none',
+        }}>
+          <span className="material-symbols-rounded" style={{ fontSize: 20, color: DECK_COLOR }}>add_circle</span>
+          <span style={{ fontSize: 9, color: DECK_COLOR, fontWeight: 700, marginTop: 3 }}>덱에 추가</span>
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 10px 5px', gap: 4 }}>
         <span className="material-symbols-rounded" style={{ fontSize: 12, color: DECK_COLOR, flexShrink: 0 }}>stacks</span>
         {renaming ? (
@@ -799,18 +838,6 @@ function NodeDropZone({ id, draggingItemId, children }: { id: string; draggingIt
       transform: showHighlight ? 'scale(1.01)' : 'none',
     }}>
       {children}
-      {!!draggingItemId && !isOver && (
-        <div style={{
-          padding: '8px 0',
-          textAlign: 'center',
-          fontSize: 10,
-          color: 'var(--text-dim)',
-          borderTop: '1px dashed var(--border-rgba)',
-          marginTop: 4,
-        }}>
-          여기에 드롭하여 추가
-        </div>
-      )}
     </div>
   );
 }
@@ -826,18 +853,6 @@ function DeckDropZone({ id, draggingItemId, children }: { id: string; draggingIt
       transform: showHighlight ? 'scale(1.01)' : 'none',
     }}>
       {children}
-      {!!draggingItemId && !isOver && (
-        <div style={{
-          padding: '8px 0',
-          textAlign: 'center',
-          fontSize: 10,
-          color: 'var(--text-dim)',
-          borderTop: `1px dashed var(--border-rgba)`,
-          marginTop: 4,
-        }}>
-          여기에 드롭하여 추가
-        </div>
-      )}
     </div>
   );
 }
