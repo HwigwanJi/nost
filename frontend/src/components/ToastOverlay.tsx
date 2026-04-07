@@ -11,36 +11,28 @@ function Spinner() {
   return (
     <span style={{
       display: 'inline-block',
+      flexShrink: 0,
       width: 13,
       height: 13,
       border: '2px solid rgba(255,255,255,0.3)',
       borderTopColor: '#fff',
       borderRadius: '50%',
       animation: 'toastSpin 0.7s linear infinite',
-      flexShrink: 0,
     }} />
   );
 }
 
-function ToastBubble({ item, onPause, onResume, onDismiss, offsetY }: {
+function ToastBubble({ item, onPause, onResume, onDismiss }: {
   item: ToastItem;
   onPause:   () => void;
   onResume:  () => void;
   onDismiss: () => void;
-  offsetY: number;
 }) {
-  const isPersistent = item.persistent;
-  const isSpinner    = item.spinner;
-
   return (
     <div
       onMouseEnter={onPause}
       onMouseLeave={onResume}
       style={{
-        position: 'absolute',
-        bottom: 0,
-        left: '50%',
-        transform: `translateX(-50%) translateY(-${offsetY}px)`,
         background: 'var(--accent)',
         color: '#fff',
         padding: '7px 12px',
@@ -55,17 +47,17 @@ function ToastBubble({ item, onPause, onResume, onDismiss, offsetY }: {
         gap: 7,
         maxWidth: 360,
         minWidth: 0,
-        whiteSpace: 'nowrap',
-        transition: 'transform 0.2s ease',
+        width: 'max-content',
+        flexShrink: 0,
       }}
     >
-      {isSpinner && <Spinner />}
+      {item.spinner && <Spinner />}
 
       <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>
         {item.msg}
       </span>
 
-      {isPersistent && !isSpinner && (
+      {item.persistent && !item.spinner && (
         <kbd style={{
           padding: '2px 6px',
           background: 'rgba(255,255,255,0.22)',
@@ -133,9 +125,6 @@ function ToastBubble({ item, onPause, onResume, onDismiss, offsetY }: {
   );
 }
 
-const BUBBLE_HEIGHT = 36;   // estimated height per toast
-const BUBBLE_GAP    = 8;    // gap between toasts
-
 export function ToastOverlay({ toasts, onPause, onResume, onDismiss }: ToastOverlayProps) {
   if (toasts.length === 0) return null;
 
@@ -144,11 +133,17 @@ export function ToastOverlay({ toasts, onPause, onResume, onDismiss }: ToastOver
       <style>{`
         @keyframes toastSpin { to { transform: rotate(360deg); } }
         @keyframes toastFadeInUp {
-          from { opacity: 0; transform: translateX(-50%) translateY(8px); }
-          to   { opacity: 1; transform: translateX(-50%) translateY(0);   }
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0);   }
         }
       `}</style>
-      {/* Stack container anchored to bottom-center */}
+
+      {/*
+        Flex column-reverse: items laid out bottom-to-top.
+        oldest item (index 0) → rendered at bottom, newest → top.
+        Container anchored at bottom: 20px, centered horizontally.
+        Height is content-driven → no fixed-size math, no overlap.
+      */}
       <div style={{
         position: 'fixed',
         bottom: 20,
@@ -156,23 +151,20 @@ export function ToastOverlay({ toasts, onPause, onResume, onDismiss }: ToastOver
         transform: 'translateX(-50%)',
         zIndex: 9999,
         pointerEvents: 'none',
-        width: 0,
-        height: (BUBBLE_HEIGHT + BUBBLE_GAP) * toasts.length,
+        display: 'flex',
+        flexDirection: 'column-reverse',
+        alignItems: 'center',
+        gap: 8,
       }}>
-        {toasts.map((item, idx) => {
-          // idx 0 = oldest (bottom), last = newest (top)
-          const offsetY = idx * (BUBBLE_HEIGHT + BUBBLE_GAP);
-          return (
-            <ToastBubble
-              key={item.id}
-              item={item}
-              offsetY={offsetY}
-              onPause={() => onPause(item.id)}
-              onResume={() => onResume(item.id)}
-              onDismiss={() => onDismiss(item.id)}
-            />
-          );
-        })}
+        {toasts.map(item => (
+          <ToastBubble
+            key={item.id}
+            item={item}
+            onPause={() => onPause(item.id)}
+            onResume={() => onResume(item.id)}
+            onDismiss={() => onDismiss(item.id)}
+          />
+        ))}
       </div>
     </>
   );

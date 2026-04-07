@@ -42,6 +42,7 @@ interface SpaceAccordionProps {
   onNodeModeClick?: (itemId: string) => void;
   onNodeGroupLaunch?: (groupId: string) => void;
   deckItems?: string[];
+  deckAnchorItemIds?: Set<string>;   // IDs of saved deck anchor cards (for normal-mode click)
   onDeckModeClick?: (itemId: string) => void;
   onDeckGroupLaunch?: (itemId: string) => void;
   // Inactive window props
@@ -94,7 +95,8 @@ export function SpaceAccordion({
   onPinModeClick,
   onNodeModeClick,
   onNodeGroupLaunch,
-  deckItems = [],
+  deckItems: _deckItems = [],
+  deckAnchorItemIds,
   onDeckModeClick,
   onDeckGroupLaunch,
   inactiveWindowIds,
@@ -342,7 +344,7 @@ export function SpaceAccordion({
                   activeMode={activeMode}
                   isNodeLinked={nodeGroups.some(g => g.itemIds.includes(item.id))}
                   isNodeAnchor={nodeBuilding.includes(item.id)}
-                  isDeckAnchor={deckItems.includes(item.id)}
+                  isDeckAnchor={deckAnchorItemIds?.has(item.id) ?? false}
                   nodeBadges={nodeBadgeMap.get(item.id)}
                   onPinModeClick={() => onPinModeClick?.(item.id)}
                   onNodeModeClick={() => onNodeModeClick?.(item.id)}

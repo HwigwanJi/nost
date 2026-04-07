@@ -498,7 +498,7 @@ export default function App() {
           icon: 'launch',
           onClick: () => {
             dismissToast();
-            electronAPI.launchOrFocusApp(item.exePath!, data.settings.closeAfterOpen);
+            launchAndPosition(item, data.settings.closeAfterOpen);
           },
         });
       } else {
@@ -568,6 +568,11 @@ export default function App() {
   const nodeGroups = useMemo(() => data.nodeGroups ?? [], [data.nodeGroups]);
   const decks = useMemo(() => data.decks ?? [], [data.decks]);
   const allItems = useMemo(() => data.spaces.flatMap(s => s.items), [data.spaces]);
+  // Set of item IDs that are the anchor (first item) of a saved deck with ≥1 items
+  const deckAnchorItemIds = useMemo(
+    () => new Set(decks.map(d => d.itemIds[0]).filter(Boolean)),
+    [decks],
+  );
 
   const handleDeckBuildingClick = useCallback((itemId: string) => {
     setDeckItems(prev =>
@@ -918,16 +923,9 @@ export default function App() {
     const firstItem = firstSpace?.items[0];
     if (!firstItem) return;
     store.incrementClickCount(firstSpace.id, firstItem.id);
-    switch (firstItem.type) {
-      case 'url':
-      case 'browser': electronAPI.openUrl(firstItem.value, data.settings.closeAfterOpen); break;
-      case 'folder':  electronAPI.openPath(firstItem.value, data.settings.closeAfterOpen); break;
-      case 'app':     electronAPI.launchOrFocusApp(firstItem.value, data.settings.closeAfterOpen); break;
-      case 'window':  electronAPI.focusWindow(firstItem.value, data.settings.closeAfterOpen); break;
-      case 'text':    electronAPI.copyText(firstItem.value, data.settings.closeAfterOpen); break;
-    }
+    launchAndPosition(firstItem, data.settings.closeAfterOpen);
     setQuery('');
-  }, [isSlashMode, slashSuggestions, slashSelectedIdx, filteredSpaces, data.settings.closeAfterOpen, store]);
+  }, [isSlashMode, slashSuggestions, slashSelectedIdx, filteredSpaces, data.settings.closeAfterOpen, store, launchAndPosition]);
 
   // ── First-run welcome popup ────────────────────────────────
   const [showWelcome, setShowWelcome] = useState(false);
@@ -1226,10 +1224,8 @@ export default function App() {
                             onEditItem={item => openEditItem(item, space.id)}
                             onDeleteItem={itemId => store.deleteItem(space.id, itemId)}
                             onIncrementClick={itemId => {
-                            store.incrementClickCount(space.id, itemId);
-                            const item = space.items.find(i => i.id === itemId);
-                            if (item?.type === 'text') showToast(`📋 "${item.title}" 복사됨`);
-                          }}
+                              store.incrementClickCount(space.id, itemId);
+                            }}
                             onSortByUsage={() => store.sortSpaceByUsage(space.id)}
                             onTogglePin={itemId => handleTogglePin(space, itemId)}
                             onQuickAdd={() => openQuickAdd(space.id)}
@@ -1244,6 +1240,7 @@ export default function App() {
                             onNodeModeClick={handleNodeBuildingClick}
                             onNodeGroupLaunch={handleNodeGroupLaunch}
                             deckItems={deckItems}
+                            deckAnchorItemIds={deckAnchorItemIds}
                             onDeckModeClick={handleDeckBuildingClick}
                             onDeckGroupLaunch={itemId => {
                               const deck = (data.decks ?? []).find(d => d.itemIds.includes(itemId));

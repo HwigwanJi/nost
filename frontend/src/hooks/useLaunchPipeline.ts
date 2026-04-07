@@ -53,27 +53,37 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
     const needsPositioning = POSITIONABLE_TYPES.has(item.type)
                               && !!targetMonitor && targetMonitor > 0;
 
-    // ── text / cmd: always fire-and-forget (never positionable) ──
+    // ── text: clipboard copy ─────────────────────────────────
     if (item.type === 'text') {
       electronAPI.copyText(item.value, closeAfter);
-      return;
-    }
-    if (item.type === 'cmd') {
-      electronAPI.runCmd(item.value, closeAfter);
+      showToast(`📋 "${item.title}" 복사됨`, { duration: 1800 });
       return;
     }
 
-    // ── url / browser: fire-and-forget if no positioning ──
+    // ── cmd: fire-and-forget shell command ───────────────────
+    if (item.type === 'cmd') {
+      electronAPI.runCmd(item.value, closeAfter);
+      showToast(`▶ "${item.title}"`, { duration: 1800 });
+      return;
+    }
+
+    // ── url / browser: open browser (+ optional positioning) ──
     if (item.type === 'url' || item.type === 'browser') {
       electronAPI.openUrl(item.value, needsPositioning ? false : closeAfter);
-      if (!needsPositioning) return;
+      if (!needsPositioning) {
+        showToast(`🌐 "${item.title}"`, { duration: 1800 });
+        return;
+      }
       // Fall through to positioning pipeline below
     }
 
-    // ── folder: open then optionally position ──
+    // ── folder: open explorer (+ optional positioning) ───────
     if (item.type === 'folder') {
       electronAPI.openPath(item.value, needsPositioning ? false : closeAfter);
-      if (!needsPositioning) return;
+      if (!needsPositioning) {
+        showToast(`📁 "${item.title}"`, { duration: 1800 });
+        return;
+      }
       // Fall through to positioning pipeline below
     }
 
@@ -98,7 +108,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         }
 
         if (!needsPositioning) {
-          dismissToast();
+          showToast(`▶ "${item.title}"`, { immediate: true, duration: 1800 });
           return;
         }
 
@@ -136,7 +146,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         if (r.action === 'focused') {
           // App already running — window exists immediately
           if (!needsPositioning) {
-            dismissToast();
+            showToast(`▶ "${item.title}"`, { immediate: true, duration: 1800 });
             return;
           }
 

@@ -388,9 +388,10 @@ export function ItemCard({
     if (activeMode === 'deck') { onDeckModeClick?.(); return; }
     if (isInactive && item.type === 'window') { onInactiveClick?.(); return; }
 
-    // Node/Deck anchor: click launches the whole group
-    if (isNodeAnchor) { onNodeGroupLaunch?.(); return; }
-    if (isDeckAnchor) { onDeckGroupLaunch?.(); return; }
+    // Node-linked card: click launches the whole node group (not just this card)
+    if (isNodeLinked && onNodeGroupLaunch) { onNodeGroupLaunch(); return; }
+    // Deck-anchor: click launches the saved deck (only fires in normal mode when isDeckAnchor reflects saved decks)
+    if (isDeckAnchor && onDeckGroupLaunch) { onDeckGroupLaunch(); return; }
 
     // All cards (including containers): short click = launch normally
     if (item.type === 'window' || item.type === 'app' || item.type === 'folder') {
