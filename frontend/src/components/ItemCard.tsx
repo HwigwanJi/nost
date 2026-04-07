@@ -617,12 +617,6 @@ export function ItemCard({
         <HighlightText text={item.title} query={searchQuery} />
       </span>
 
-      {item.type === 'text' && item.value.length > 0 && (
-        <span className="w-full text-center leading-tight" style={{ fontSize:'9px', color:'var(--text-dim)', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical', overflow:'hidden' }}>
-          {item.value}
-        </span>
-      )}
-
       {(pinned || space.color) && (
         <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: pinned ? 'var(--accent)' : space.color, opacity: pinned ? 0.45 : 0.6 }} />
       )}
