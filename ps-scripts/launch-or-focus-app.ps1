@@ -24,10 +24,49 @@ if ($proc) {
 
     # Detect WindowsApps (Store/MSIX) — launch via AUMID
     if ($target -match '\\WindowsApps\\') {
-        $startApp = Get-StartApps | Where-Object { $_.Name -ieq $exeName } | Select-Object -First 1
-        if ($startApp) {
-            Start-Process explorer.exe "shell:AppsFolder\$($startApp.AppID)"
-            $launched = $true
+        # Method 1: Get-StartApps (most reliable when available)
+        try {
+            $startApp = Get-StartApps -ErrorAction Stop | Where-Object { $_.Name -ieq $exeName } | Select-Object -First 1
+            if ($startApp) {
+                Start-Process explorer.exe "shell:AppsFolder\$($startApp.AppID)"
+                $launched = $true
+            }
+        } catch {}
+
+        # Method 2: Extract AUMID from path + Get-AppxPackage
+        if (-not $launched) {
+            try {
+                $pkg = Get-AppxPackage | Where-Object {
+                    $_.InstallLocation -and $target.StartsWith($_.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)
+                } | Select-Object -First 1
+                if ($pkg) {
+                    $manifest = Get-AppxPackageManifest -Package $pkg
+                    $appId = $manifest.Package.Applications.Application.Id
+                    if ($appId) {
+                        Start-Process explorer.exe "shell:AppsFolder\$($pkg.PackageFamilyName)!$appId"
+                        $launched = $true
+                    }
+                }
+            } catch {}
+        }
+
+        # Method 3: Parse PackageFamilyName from folder path directly
+        if (-not $launched) {
+            try {
+                # Path: ...\WindowsApps\Name_Version_Arch__PublisherId\...
+                $folderName = ($target -split '\\WindowsApps\\')[1] -split '\\' | Select-Object -First 1
+                if ($folderName -match '^(.+?)_[\d.]+_.*?__(.+)$') {
+                    $pkgName = $Matches[1]
+                    $publisherId = $Matches[2]
+                    $familyName = "${pkgName}_${publisherId}"
+                    # Try common app IDs
+                    foreach ($aid in @($pkgName, 'App', 'app')) {
+                        Start-Process explorer.exe "shell:AppsFolder\${familyName}!${aid}" -ErrorAction Stop
+                        $launched = $true
+                        break
+                    }
+                }
+            } catch {}
         }
     }
 

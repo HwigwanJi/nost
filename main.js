@@ -276,7 +276,7 @@ function registerShortcut(newShortcut) {
 }
 
 function createWindow() {
-  // Restore last window bounds; first launch defaults to 75% of primary monitor
+  // First launch: 75% centered. After that: restore last bounds.
   const savedBounds = store.get('windowBounds');
   let initWidth, initHeight, initX, initY;
   if (savedBounds) {
@@ -285,7 +285,6 @@ function createWindow() {
     initX = savedBounds.x;
     initY = savedBounds.y;
   } else {
-    // First launch: 75% of primary display, centered
     const { screen } = require('electron');
     const wa = screen.getPrimaryDisplay().workArea;
     initWidth = Math.round(wa.width * 0.75);

@@ -25,3 +25,6 @@ Thumbs.db
 PROJECT_NOTES.md
 walkthrough.md
 설명서.txt
+create_release.ps1
+upload_assets.ps1
+get_token.ps1
