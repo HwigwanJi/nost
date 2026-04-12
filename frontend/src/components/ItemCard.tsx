@@ -1,7 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import type { LauncherItem, Space, AppMode } from '../types';
+import { Icon } from '@/components/ui/Icon';
+import type { LauncherItem, Space } from '../types';
 import { electronAPI } from '../electronBridge';
+import { useAppState, useAppActions } from '../contexts/AppContext';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -16,36 +18,15 @@ import { CSS } from '@dnd-kit/utilities';
 interface ItemCardProps {
   item: LauncherItem;
   space: Space;
-  closeAfter: boolean;
   onEdit: (item: LauncherItem) => void;
   onDelete: (itemId: string) => void;
   onClickCountIncrement: () => void;
   pinned: boolean;
   onTogglePin: () => void;
-  searchQuery?: string;
-  activeMode?: AppMode;
-  isNodeLinked?: boolean;
-  isNodeAnchor?: boolean;
-  isDeckAnchor?: boolean;
-  nodeBadges?: number[];
-  deckBadges?: number[];
-  onPinModeClick?: () => void;
-  onNodeModeClick?: () => void;
-  onDeckModeClick?: () => void;
-  onNodeGroupLaunch?: () => void;
-  onDeckGroupLaunch?: () => void;
-  isInactive?: boolean;
-  onInactiveClick?: () => void;
-  monitorCount?: number;
   onSetMonitor?: (monitor: number | undefined) => void;
-  allItems?: LauncherItem[];
   onConvertToContainer?: () => void;
   onConvertFromContainer?: () => void;
   onEditSlots?: (dir?: SlotDir) => void;
-  onShowToast?: (msg: string) => void;
-  onLaunchAndPosition?: (item: LauncherItem, closeAfter: boolean, monitor?: number) => Promise<void>;
-  monitorDirections?: Record<number, string>;
-  onOpenMonitorSettings?: () => void;
 }
 
 type SlotDir = 'up' | 'down' | 'left' | 'right';
@@ -112,15 +93,9 @@ function getTypeIcon(type: LauncherItem['type']) {
 }
 
 export function ItemCard({
-  item, space, closeAfter, onEdit, onDelete, onClickCountIncrement,
-  pinned, onTogglePin, searchQuery = '',
-  activeMode = 'normal', isNodeLinked = false, isNodeAnchor = false, isDeckAnchor = false,
-  nodeBadges, deckBadges, onPinModeClick, onNodeModeClick, onDeckModeClick, onNodeGroupLaunch: _onNodeGroupLaunch, onDeckGroupLaunch: _onDeckGroupLaunch,
-  isInactive = false, onInactiveClick,
-  monitorCount = 1, onSetMonitor,
-  allItems = [], onConvertToContainer, onConvertFromContainer, onEditSlots,
-  onShowToast: _onShowToast, onLaunchAndPosition,
-  monitorDirections, onOpenMonitorSettings,
+  item, space, onEdit, onDelete, onClickCountIncrement,
+  pinned, onTogglePin, onSetMonitor,
+  onConvertToContainer, onConvertFromContainer, onEditSlots,
 }: ItemCardProps) {
   const [loading, setLoading] = useState(false);
   const [imageIconFailed, setImageIconFailed] = useState(false);
@@ -146,6 +121,40 @@ export function ItemCard({
   const monitorBadgeClickedRef = useRef(false);
   const globalMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
   const globalUpRef = useRef<((e: PointerEvent) => void) | null>(null);
+
+  // ── Context ──────────────────────────────────────────────────
+  const {
+    activeMode = 'normal', nodeGroups = [], nodeBuilding = [], decks = [],
+    deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, allItems = [],
+    monitorDirections, closeAfter, searchQuery = '',
+  } = useAppState();
+  const {
+    launchAndPosition: onLaunchAndPosition,
+    openMonitorSettings: onOpenMonitorSettings,
+    onPinModeClick: onPinModeClickCtx, onNodeModeClick: onNodeModeClickCtx,
+    onDeckModeClick: onDeckModeClickCtx,
+    onWindowInactiveClick: onWindowInactiveClickCtx,
+  } = useAppActions();
+
+  // ── Derived values from context ──────────────────────────────
+  const isNodeLinked = nodeGroups.some(g => g.itemIds.includes(item.id));
+  const isNodeAnchor = nodeBuilding.includes(item.id);
+  const isDeckAnchor = deckAnchorItemIds?.has(item.id) ?? false;
+  const nodeBadges = (() => {
+    const arr: number[] = [];
+    nodeGroups.forEach((g, i) => { if (g.itemIds.includes(item.id)) arr.push(i + 1); });
+    return arr.length ? arr : undefined;
+  })();
+  const deckBadges = (() => {
+    const arr: number[] = [];
+    decks.forEach((d, i) => { if (d.itemIds.includes(item.id)) arr.push(i + 1); });
+    return arr.length ? arr : undefined;
+  })();
+  const isInactive = inactiveWindowIds?.has(item.id) ?? false;
+  const onPinModeClick = () => onPinModeClickCtx(item.id);
+  const onNodeModeClick = () => onNodeModeClickCtx(item.id);
+  const onDeckModeClick = () => onDeckModeClickCtx(item.id);
+  const onInactiveClick = () => onWindowInactiveClickCtx(item);
 
   // Sync holdDir to ref
   useEffect(() => { holdDirRef.current = holdDir; }, [holdDir]);
@@ -384,10 +393,10 @@ export function ItemCard({
   const handleClick = useCallback(() => {
     if (monitorBadgeClickedRef.current) { monitorBadgeClickedRef.current = false; return; }
     if (wasHoldRef.current || holdOpen) return;
-    if (activeMode === 'pin') { onPinModeClick?.(); return; }
-    if (activeMode === 'node') { onNodeModeClick?.(); return; }
-    if (activeMode === 'deck') { onDeckModeClick?.(); return; }
-    if (isInactive && item.type === 'window') { onInactiveClick?.(); return; }
+    if (activeMode === 'pin') { onPinModeClick(); return; }
+    if (activeMode === 'node') { onNodeModeClick(); return; }
+    if (activeMode === 'deck') { onDeckModeClick(); return; }
+    if (isInactive && item.type === 'window') { onInactiveClick(); return; }
 
     // All cards (including containers): short click = launch normally
     if (item.type === 'window' || item.type === 'app' || item.type === 'folder') {
@@ -401,7 +410,8 @@ export function ItemCard({
     } else {
       executeLaunch(false);
     }
-  }, [activeMode, item, isInactive, holdOpen, onPinModeClick, onNodeModeClick, onInactiveClick, executeLaunch]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMode, item, isInactive, holdOpen, executeLaunch]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button === 2) {
@@ -505,7 +515,7 @@ export function ItemCard({
     >
       {/* Container badge */}
       {item.isContainer && (
-        <span className="material-symbols-rounded" style={{ position:'absolute', top:5, right:5, fontSize:10, color:'var(--accent)', opacity:0.7 }}>grid_view</span>
+        <Icon name="grid_view" size={10} color="var(--accent)" style={{ position:'absolute', top:5, right:5, opacity:0.7 }} />
       )}
 
       {/* Container slot dots */}
@@ -610,11 +620,11 @@ export function ItemCard({
 
       {/* Icon */}
       {loading ? (
-        <span className="material-symbols-rounded animate-spin" style={{ fontSize:28, color:accentColor }}>sync</span>
+        <Icon name="sync" size={28} color={accentColor} className="animate-spin" />
       ) : item.iconType === 'image' && item.icon && !imageIconFailed ? (
         <img src={item.icon} alt="" className="w-8 h-8 rounded-md object-cover" onError={() => setImageIconFailed(true)} />
       ) : (
-        <span className="material-symbols-rounded" style={{ fontSize:28, color:accentColor }}>{icon}</span>
+        <Icon name={icon} size={28} color={accentColor} />
       )}
 
       <span className="text-[11.5px] font-medium leading-tight text-center line-clamp-2 w-full" style={{ color:'var(--text-color)' }}>
@@ -672,9 +682,7 @@ export function ItemCard({
         onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
         onMouseLeave={e => (e.currentTarget.style.opacity = '0.7')}
       >
-        <span className="material-symbols-rounded" style={{ fontSize:13, color:'var(--text-muted)' }}>
-          {holdMonitorMode ? 'arrow_back' : 'close'}
-        </span>
+        <Icon name={holdMonitorMode ? 'arrow_back' : 'close'} size={13} color="var(--text-muted)" />
       </button>
 
       {holdMonitorMode ? (
@@ -746,7 +754,7 @@ export function ItemCard({
                 onMouseEnter={e => (e.currentTarget.style.opacity='1')}
                 onMouseLeave={e => (e.currentTarget.style.opacity='0.55')}
               >
-                <span className="material-symbols-rounded" style={{ fontSize:11, color:'var(--text-muted)' }}>settings</span>
+                <Icon name="settings" size={11} color="var(--text-muted)" />
               </button>
 
               <div style={{ position:'absolute', left:'50%', bottom:-22, transform:'translateX(-50%)', whiteSpace:'nowrap', fontSize:9, color:'var(--text-dim)', pointerEvents:'none' }}>
@@ -800,15 +808,15 @@ export function ItemCard({
               {item.isContainer && slotItem && (
                 slotItem.iconType === 'image' && slotItem.icon
                   ? <img src={slotItem.icon} alt="" style={{ width:22, height:22, borderRadius:4, objectFit:'cover' }} />
-                  : <span className="material-symbols-rounded" style={{ fontSize:22, color: isSelected ? '#fff' : 'var(--text-muted)' }}>{slotItem.icon ?? getTypeIcon(slotItem.type)}</span>
+                  : <Icon name={slotItem.icon ?? getTypeIcon(slotItem.type)} size={22} color={isSelected ? '#fff' : 'var(--text-muted)'} />
               )}
               {/* Container: empty slot → direction arrow */}
               {item.isContainer && !slotItem && (
-                <span className="material-symbols-rounded" style={{ fontSize:18, color:'var(--text-dim)' }}>{DIR_ICONS[dir]}</span>
+                <Icon name={DIR_ICONS[dir]} size={18} color="var(--text-dim)" />
               )}
               {/* Card action → action icon */}
               {cardAction && (
-                <span className="material-symbols-rounded" style={{ fontSize:20, color: isSelected ? '#fff' : 'var(--text-muted)' }}>{cardAction.icon}</span>
+                <Icon name={cardAction.icon} size={20} color={isSelected ? '#fff' : 'var(--text-muted)'} />
               )}
             </div>
           );
@@ -855,10 +863,10 @@ export function ItemCard({
 
         <ContextMenuContent>
           <ContextMenuItem onClick={() => onEdit(item)} className="gap-2 cursor-pointer">
-            <span className="material-symbols-rounded text-sm">edit</span>카드 수정
+            <Icon name="edit" className="text-sm" />카드 수정
           </ContextMenuItem>
           <ContextMenuItem onClick={onTogglePin} className="gap-2 cursor-pointer">
-            <span className="material-symbols-rounded text-sm">{pinned ? 'push_pin' : 'keep'}</span>
+            <Icon name={pinned ? 'push_pin' : 'keep'} className="text-sm" />
             {pinned ? '핀 해제' : '위치 고정'}
           </ContextMenuItem>
 
@@ -866,17 +874,17 @@ export function ItemCard({
 
           {!item.isContainer && onConvertToContainer && (
             <ContextMenuItem onClick={onConvertToContainer} className="gap-2 cursor-pointer">
-              <span className="material-symbols-rounded text-sm">grid_view</span>컨테이너로 전환
+              <Icon name="grid_view" className="text-sm" />컨테이너로 전환
             </ContextMenuItem>
           )}
           {item.isContainer && (
             <>
               <ContextMenuItem onClick={() => onEditSlots?.()} className="gap-2 cursor-pointer">
-                <span className="material-symbols-rounded text-sm">tune</span>슬롯 편집
+                <Icon name="tune" className="text-sm" />슬롯 편집
               </ContextMenuItem>
               {onConvertFromContainer && (
                 <ContextMenuItem onClick={onConvertFromContainer} className="gap-2 cursor-pointer">
-                  <span className="material-symbols-rounded text-sm">grid_off</span>일반 카드로 전환
+                  <Icon name="grid_off" className="text-sm" />일반 카드로 전환
                 </ContextMenuItem>
               )}
             </>
@@ -884,7 +892,7 @@ export function ItemCard({
 
           <ContextMenuSeparator />
           <ContextMenuItem onClick={() => onDelete(item.id)} className="gap-2 cursor-pointer text-red-400 focus:text-red-400 focus:bg-red-500/10">
-            <span className="material-symbols-rounded text-sm">delete</span>삭제
+            <Icon name="delete" className="text-sm" />삭제
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>

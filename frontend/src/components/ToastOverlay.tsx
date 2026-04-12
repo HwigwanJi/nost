@@ -1,4 +1,5 @@
 import type { ToastAction, ToastItem } from '../hooks/useToastQueue';
+import { Icon } from '@/components/ui/Icon';
 
 interface ToastOverlayProps {
   toasts: ToastItem[];
@@ -98,7 +99,7 @@ function ToastBubble({ item, onPause, onResume, onDismiss }: {
                 whiteSpace: 'nowrap',
               }}
             >
-              <span className="material-symbols-rounded" style={{ fontSize: 11 }}>{action.icon}</span>
+              <Icon name={action.icon} size={11} />
               {action.label}
             </button>
           ))}
@@ -117,7 +118,7 @@ function ToastBubble({ item, onPause, onResume, onDismiss }: {
               flexShrink: 0,
             }}
           >
-            <span className="material-symbols-rounded" style={{ fontSize: 11 }}>close</span>
+            <Icon name="close" size={11} />
           </button>
         </>
       )}

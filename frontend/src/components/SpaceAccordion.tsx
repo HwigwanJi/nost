@@ -1,6 +1,9 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import type { Space, LauncherItem, AppMode, NodeGroup, Deck } from '../types';
+import { useState, useRef, useEffect } from 'react';
+import { Icon } from '@/components/ui/Icon';
+import type { Space, LauncherItem } from '../types';
 import { ItemCard } from './ItemCard';
+import { GhostCard } from './GhostCard';
+import { useAppState } from '../contexts/AppContext';
 import {
   SortableContext,
   rectSortingStrategy,
@@ -31,36 +34,17 @@ interface SpaceAccordionProps {
   onAddItem: () => void;
   onScanItem: () => void;
   onToggleCollapse: () => void;
-  closeAfter: boolean;
   defaultOpen?: boolean;
-  searchQuery?: string;
-  // Mode-related props
-  activeMode?: AppMode;
-  nodeGroups?: NodeGroup[];
-  nodeBuilding?: string[];
-  onPinModeClick?: (itemId: string) => void;
-  onNodeModeClick?: (itemId: string) => void;
-  onNodeGroupLaunch?: (groupId: string) => void;
-  deckItems?: string[];
-  decks?: Deck[];                    // full deck list for badge computation
-  deckAnchorItemIds?: Set<string>;   // IDs of saved deck anchor cards (for normal-mode click)
-  onDeckModeClick?: (itemId: string) => void;
-  onDeckGroupLaunch?: (itemId: string) => void;
-  // Inactive window props
-  inactiveWindowIds?: Set<string>;
-  onWindowInactiveClick?: (item: LauncherItem) => void;
-  // Monitor
-  monitorCount?: number;
+  // Monitor (per-space override)
   onSetMonitor?: (itemId: string, monitor: number | undefined) => void;
   // Container
-  allItems?: import('../types').LauncherItem[];
   onConvertToContainer?: (itemId: string) => void;
   onConvertFromContainer?: (itemId: string) => void;
   onEditSlots?: (itemId: string, dir?: string) => void;
-  onShowToast?: (msg: string) => void;
-  onLaunchAndPosition?: (item: LauncherItem, closeAfter: boolean, monitor?: number) => Promise<void>;
-  monitorDirections?: Record<number, string>;
-  onOpenMonitorSettings?: () => void;
+  // Ghost recommendations
+  ghostItems?: import('../hooks/useGhostCards').GhostItem[];
+  onGhostAccept?: (ghost: import('../hooks/useGhostCards').GhostItem) => void;
+  onGhostDismiss?: (value: string) => void;
 }
 
 const SPACE_COLORS = [
@@ -87,63 +71,21 @@ export function SpaceAccordion({
   onAddItem,
   onScanItem,
   onToggleCollapse,
-  closeAfter,
   defaultOpen = true,
-  searchQuery = '',
-  activeMode = 'normal',
-  nodeGroups = [],
-  nodeBuilding = [],
-  onPinModeClick,
-  onNodeModeClick,
-  onNodeGroupLaunch,
-  deckItems: _deckItems = [],
-  decks = [],
-  deckAnchorItemIds,
-  onDeckModeClick,
-  onDeckGroupLaunch,
-  inactiveWindowIds,
-  onWindowInactiveClick,
-  monitorCount = 1,
   onSetMonitor,
-  allItems = [],
   onConvertToContainer,
   onConvertFromContainer,
   onEditSlots,
-  onShowToast,
-  onLaunchAndPosition,
-  monitorDirections,
-  onOpenMonitorSettings,
+  ghostItems,
+  onGhostAccept,
+  onGhostDismiss,
 }: SpaceAccordionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isRenaming, setIsRenaming] = useState(false);
   const [draft, setDraft] = useState(space.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Build map: itemId → [nodeIdx1, nodeIdx2, ...] (1-based, multiple groups possible)
-  const nodeBadgeMap = useMemo(() => {
-    const map = new Map<string, number[]>();
-    nodeGroups.forEach((g, i) => {
-      g.itemIds.forEach(id => {
-        const arr = map.get(id) ?? [];
-        arr.push(i + 1);
-        map.set(id, arr);
-      });
-    });
-    return map;
-  }, [nodeGroups]);
-
-  // Build map: itemId → [deckIdx1, ...] (1-based)
-  const deckBadgeMap = useMemo(() => {
-    const map = new Map<string, number[]>();
-    decks.forEach((d, i) => {
-      d.itemIds.forEach(id => {
-        const arr = map.get(id) ?? [];
-        arr.push(i + 1);
-        map.set(id, arr);
-      });
-    });
-    return map;
-  }, [decks]);
+  const { searchQuery } = useAppState();
 
   useEffect(() => {
     if (isRenaming) inputRef.current?.focus();
@@ -179,12 +121,7 @@ export function SpaceAccordion({
           className="flex items-center justify-center w-5 h-5 rounded transition-colors flex-shrink-0"
           style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
         >
-          <span
-            className="material-symbols-rounded transition-transform duration-200"
-            style={{ fontSize: 16, transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
-          >
-            chevron_right
-          </span>
+          <Icon name="chevron_right" size={16} className="transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} />
         </button>
 
         {/* Space icon (emoji) or color dot */}
@@ -252,11 +189,11 @@ export function SpaceAccordion({
           {/* More */}
           <DropdownMenu>
             <DropdownMenuTrigger className="action-icon-btn" title="더 보기" style={{ width: 26, height: 26, borderRadius: 6 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 15 }}>more_horiz</span>
+              <Icon name="more_horiz" size={15} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" sideOffset={4}>
               <DropdownMenuItem onClick={() => setIsRenaming(true)}>
-                <span className="material-symbols-rounded text-sm">edit</span>이름 변경
+                <Icon name="edit" className="text-sm" />이름 변경
               </DropdownMenuItem>
               {/* Emoji picker inline */}
               <div style={{ padding: '6px 8px' }}>
@@ -308,11 +245,11 @@ export function SpaceAccordion({
                 </div>
               </div>
               <DropdownMenuItem onClick={onDuplicate}>
-                <span className="material-symbols-rounded text-sm">content_copy</span>스페이스 복제
+                <Icon name="content_copy" className="text-sm" />스페이스 복제
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={onDelete} className="text-destructive">
-                <span className="material-symbols-rounded text-sm">delete</span>스페이스 삭제
+                <Icon name="delete" className="text-sm" />스페이스 삭제
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -349,39 +286,25 @@ export function SpaceAccordion({
                   key={item.id}
                   item={item}
                   space={space}
-                  closeAfter={closeAfter}
                   onEdit={onEditItem}
                   onDelete={onDeleteItem}
                   onClickCountIncrement={() => onIncrementClick(item.id)}
                   pinned={(space.pinnedIds ?? []).includes(item.id)}
                   onTogglePin={() => onTogglePin(item.id)}
-                  searchQuery={searchQuery}
-                  activeMode={activeMode}
-                  isNodeLinked={nodeGroups.some(g => g.itemIds.includes(item.id))}
-                  isNodeAnchor={nodeBuilding.includes(item.id)}
-                  isDeckAnchor={deckAnchorItemIds?.has(item.id) ?? false}
-                  nodeBadges={nodeBadgeMap.get(item.id)}
-                  deckBadges={deckBadgeMap.get(item.id)}
-                  onPinModeClick={() => onPinModeClick?.(item.id)}
-                  onNodeModeClick={() => onNodeModeClick?.(item.id)}
-                  onDeckModeClick={() => onDeckModeClick?.(item.id)}
-                  onNodeGroupLaunch={() => {
-                    const group = nodeGroups.find(g => g.itemIds.includes(item.id));
-                    if (group) onNodeGroupLaunch?.(group.id);
-                  }}
-                  onDeckGroupLaunch={() => onDeckGroupLaunch?.(item.id)}
-                  isInactive={inactiveWindowIds?.has(item.id) ?? false}
-                  onInactiveClick={() => onWindowInactiveClick?.(item)}
-                  monitorCount={monitorCount}
                   onSetMonitor={onSetMonitor ? (m) => onSetMonitor(item.id, m) : undefined}
-                  allItems={allItems}
                   onConvertToContainer={onConvertToContainer ? () => onConvertToContainer(item.id) : undefined}
                   onConvertFromContainer={onConvertFromContainer ? () => onConvertFromContainer(item.id) : undefined}
                   onEditSlots={onEditSlots ? (dir) => onEditSlots(item.id, dir) : undefined}
-                  onShowToast={onShowToast}
-                  onLaunchAndPosition={onLaunchAndPosition}
-                  monitorDirections={monitorDirections}
-                  onOpenMonitorSettings={onOpenMonitorSettings}
+                />
+              ))}
+
+              {/* Ghost recommendation cards */}
+              {ghostItems?.map(ghost => (
+                <GhostCard
+                  key={`ghost-${ghost.value}`}
+                  ghost={ghost}
+                  onAccept={() => onGhostAccept?.(ghost)}
+                  onDismiss={() => onGhostDismiss?.(ghost.value)}
                 />
               ))}
 
@@ -400,7 +323,7 @@ export function SpaceAccordion({
                   onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                 >
-                  <span className="material-symbols-rounded" style={{ fontSize: 18 }}>add</span>
+                  <Icon name="add" size={18} />
                   추가
                 </button>
                 <DropdownMenu>
@@ -414,7 +337,7 @@ export function SpaceAccordion({
                       color: 'var(--text-dim)',
                     }}
                   >
-                    <span className="material-symbols-rounded" style={{ fontSize: 14 }}>expand_more</span>
+                    <Icon name="expand_more" size={14} />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" sideOffset={4}>
                     <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
@@ -439,7 +362,7 @@ function ActionBtn({ icon, title, onClick }: { icon: string; title: string; onCl
       title={title}
       onClick={onClick}
     >
-      <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{icon}</span>
+      <Icon name={icon} size={15} />
     </button>
   );
 }

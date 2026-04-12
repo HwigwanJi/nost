@@ -1,12 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots } from '../types';
 import { electronAPI } from '../electronBridge';
+import { generateId } from '../lib/utils';
 
 const STORAGE_KEY = 'quicklauncherData';
-
-function generateId() {
-  return Math.random().toString(36).slice(2);
-}
 
 function defaultData(): AppData {
   const defaultSpace: Space = {
@@ -353,6 +350,11 @@ export function useAppData() {
     save({ ...data, spaces: nextSpaces });
   }, [data, save]);
 
+  // ── Dismissed suggestions ────────────────────────────────
+  const dismissSuggestion = useCallback((value: string) => {
+    save({ ...data, dismissedSuggestions: [...(data.dismissedSuggestions ?? []), value] });
+  }, [data, save]);
+
   // ── Settings ─────────────────────────────────────────────
   const updateSettings = useCallback((settings: AppSettings) => {
     electronAPI.setOpacity(settings.opacity);
@@ -390,5 +392,6 @@ export function useAppData() {
     updateDeck,
     deleteDeck,
     saveContainerSlots,
+    dismissSuggestion,
   };
 }

@@ -102,7 +102,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
           needsPositioning ? false : closeAfter,
         );
 
-        if (!r.found) {
+        if (!r.success) {
           showToast(`⚠ "${item.title}" 창을 찾을 수 없음`, { immediate: true, duration: 2500 });
           return;
         }
@@ -138,7 +138,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
           undefined, // don't pass monitor to main.js — we handle positioning ourselves
         );
 
-        if (r.action === 'error') {
+        if (!r.success) {
           showToast('⚠ 실행 실패', { immediate: true, duration: 2500 });
           return;
         }
@@ -165,7 +165,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
           return;
         }
 
-        // r.action === 'launched' — app just started, fall through to polling
+        // action === 'launched' — app just started, fall through to polling
         if (!needsPositioning) {
           showToast(`▶ ${item.title}`, { immediate: true, duration: 3000 });
           return;
@@ -192,9 +192,9 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
       }
 
       if (!windowFound) {
-        showToast(`⚠ ${item.title} 창을 찾을 수 없음 (시간 초과)`, {
+        showToast(`⚠ "${item.title}" ${MAX_WAIT / 1000}초 대기 후 창을 찾지 못했습니다`, {
           immediate: true,
-          duration: 3000,
+          duration: 4000,
         });
         return;
       }

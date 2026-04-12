@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
-import React from 'react';
 import { toast } from 'sonner';
 import { electronAPI } from '../electronBridge';
+import { Icon } from '@/components/ui/Icon';
 
 type Browser = 'chrome' | 'whale';
 
@@ -48,7 +48,7 @@ function StepDot({ n, active, done }: { n: number; active: boolean; done: boolea
         }`,
       }}
     >
-      {done ? <span className="material-symbols-rounded" style={{ fontSize: 13 }}>check</span> : n}
+      {done ? <Icon name="check" size={13} /> : n}
     </div>
   );
 }
@@ -124,9 +124,7 @@ function InstructionCard({
           flexShrink: 0,
         }}
       >
-        <span className="material-symbols-rounded" style={{ fontSize: 18, color: 'var(--accent, #6366f1)' }}>
-          {icon}
-        </span>
+        <Icon name={icon} size={18} color="var(--accent)" />
       </div>
       <div>
         <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-color)', marginBottom: 4 }}>{title}</div>
@@ -187,12 +185,7 @@ function ActionButton({
         letterSpacing: '0.01em',
       }}
     >
-      <span
-        className={`material-symbols-rounded${loading ? ' animate-spin' : ''}`}
-        style={{ fontSize: 15 }}
-      >
-        {loading ? 'sync' : icon}
-      </span>
+      <Icon name={loading ? 'sync' : icon} size={15} className={loading ? 'animate-spin' : undefined} />
       {label}
     </button>
   );
@@ -259,7 +252,7 @@ function CopyField({ value, label }: { value: string; label: string }) {
           e.currentTarget.style.color = 'var(--text-muted)';
         }}
       >
-        <span className="material-symbols-rounded" style={{ fontSize: 14 }}>content_copy</span>
+        <Icon name="content_copy" size={14} />
       </button>
     </div>
   );
@@ -294,7 +287,7 @@ function ClipboardReCopy() {
         fontFamily: 'inherit',
       }}
     >
-      <span className="material-symbols-rounded" style={{ fontSize: 13 }}>content_paste</span>
+      <Icon name="content_paste" size={13} />
       경로 다시 복사
     </button>
   );
@@ -358,9 +351,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
               flexShrink: 0,
             }}
           >
-            <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'var(--accent, #6366f1)' }}>
-              extension
-            </span>
+            <Icon name="extension" size={20} color="var(--accent)" />
           </div>
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-color)' }}>
@@ -399,14 +390,10 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
                   transition: 'all 0.15s',
                 }}
               >
-                <span className="material-symbols-rounded" style={{ fontSize: 16 }}>
-                  {browserIcon(b)}
-                </span>
+                <Icon name={browserIcon(b)} size={16} />
                 {browserLabel(b)}
                 {selectedBrowser === b && (
-                  <span className="material-symbols-rounded" style={{ fontSize: 13, marginLeft: 2 }}>
-                    check_circle
-                  </span>
+                  <Icon name="check_circle" size={13} style={{ marginLeft: 2 }} />
                 )}
               </button>
             ))}
@@ -450,9 +437,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
   if (phase.kind === 'launching') {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '20px 0' }}>
-        <span className="material-symbols-rounded animate-spin" style={{ fontSize: 36, color: 'var(--accent, #6366f1)' }}>
-          sync
-        </span>
+        <Icon name="sync" size={36} color="var(--accent)" className="animate-spin" />
         <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
           {browserLabel(phase.browser)} 확장 페이지를 여는 중...
         </p>
@@ -474,9 +459,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
             border: '1px solid rgba(239,68,68,0.25)',
           }}
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#ef4444', flexShrink: 0 }}>
-            error
-          </span>
+          <Icon name="error" size={18} color="#ef4444" style={{ flexShrink: 0 }} />
           <p style={{ fontSize: 12, color: '#ef4444', lineHeight: 1.5 }}>{phase.message}</p>
         </div>
         <ActionButton
@@ -509,9 +492,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
             border: '1px solid rgba(34,197,94,0.25)',
           }}
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 18, color: '#22c55e', flexShrink: 0 }}>
-            check_circle
-          </span>
+          <Icon name="check_circle" size={18} color="#22c55e" style={{ flexShrink: 0 }} />
           <div>
             <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-color)' }}>
               {b} 확장 페이지를 열었습니다
@@ -758,12 +739,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
                   flexShrink: 0,
                 }}
               >
-                <span
-                  className="material-symbols-rounded"
-                  style={{ fontSize: 13, color: item.accent ? 'var(--accent, #6366f1)' : 'var(--text-muted)' }}
-                >
-                  {item.icon}
-                </span>
+                <Icon name={item.icon} size={13} color={item.accent ? 'var(--accent)' : 'var(--text-muted)'} />
               </div>
               <span
                 style={{
@@ -819,9 +795,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <StepBar current={3} />
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '16px 0' }}>
-          <span className="material-symbols-rounded animate-spin" style={{ fontSize: 32, color: 'var(--accent, #6366f1)' }}>
-            sync
-          </span>
+          <Icon name="sync" size={32} color="var(--accent)" className="animate-spin" />
           <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>확장 연결 상태 확인 중...</p>
         </div>
       </div>
@@ -844,9 +818,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
             justifyContent: 'center',
           }}
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 30, color: '#22c55e' }}>
-            check_circle
-          </span>
+          <Icon name="check_circle" size={30} color="#22c55e" />
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-color)' }}>설치 완료!</div>

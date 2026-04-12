@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { NodeGroup, Deck, LauncherItem } from '../types';
+import { Icon } from '@/components/ui/Icon';
 import {
   DndContext,
   closestCenter,
@@ -133,7 +134,7 @@ export function NodePanel({
       }}>
         {expanded && (
           <>
-            <span className="material-symbols-rounded" style={{ fontSize: 13, color: 'var(--accent)', flexShrink: 0 }}>grid_view</span>
+            <Icon name="grid_view" size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
             <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-color)', flex: 1, whiteSpace: 'nowrap' }}>Table</span>
             {/* Filter pills */}
             {(['all', 'node', 'deck'] as const).map(f => (
@@ -161,9 +162,7 @@ export function NodePanel({
           onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
           title={expanded ? '패널 접기' : '패널 열기'}
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 14, transform: expanded ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }}>
-            chevron_right
-          </span>
+          <Icon name="chevron_right" size={14} style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(180deg)', transition: 'transform 0.2s' }} />
         </button>
       </div>
 
@@ -180,7 +179,7 @@ export function NodePanel({
           {!nodeEditMode && !deckBuilding && (
             <button onClick={onStartEdit} title="노드 추가"
               style={{ width: 24, height: 24, borderRadius: 6, background: 'transparent', border: '1px dashed var(--border-rgba)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)' }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 12 }}>hub</span>
+              <Icon name="hub" size={12} />
             </button>
           )}
           {/* Separator */}
@@ -197,7 +196,7 @@ export function NodePanel({
           {!nodeEditMode && !deckBuilding && (
             <button onClick={onStartDeckBuild} title="덱 추가"
               style={{ width: 24, height: 24, borderRadius: 6, background: 'transparent', border: '1px dashed var(--border-rgba)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)' }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 12 }}>stacks</span>
+              <Icon name="stacks" size={12} />
             </button>
           )}
         </div>
@@ -211,7 +210,7 @@ export function NodePanel({
             {/* Empty state */}
             {nodeGroups.length === 0 && decks.length === 0 && !nodeEditMode && !deckBuilding && (
               <div style={{ padding: '28px 12px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 28, color: 'var(--text-dim)', opacity: 0.4 }}>hub</span>
+                <Icon name="hub" size={28} color="var(--text-dim)" style={{ opacity: 0.4 }} />
                 <p style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 }}>아래 버튼으로<br />노드 또는 덱을 만들어보세요</p>
               </div>
             )}
@@ -246,10 +245,10 @@ export function NodePanel({
                 {nodeBuildingItems.map((item, i) => (
                   <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderBottom: i < nodeBuildingItems.length - 1 ? '1px solid var(--border-rgba)' : 'none' }}>
                     <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 700, minWidth: 12 }}>{i + 1}</span>
-                    <span className="material-symbols-rounded" style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>{getItemIcon(item.type)}</span>
+                    <Icon name={getItemIcon(item.type)} size={12} color="var(--text-muted)" style={{ flexShrink: 0 }} />
                     <span style={{ fontSize: 10, color: 'var(--text-color)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
                     <button onClick={() => onRemoveFromBuilding(item.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-dim)', lineHeight: 1 }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 12 }}>close</span>
+                      <Icon name="close" size={12} />
                     </button>
                   </div>
                 ))}
@@ -302,10 +301,10 @@ export function NodePanel({
                 {deckBuildingItems.map((item, i) => (
                   <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderBottom: i < deckBuildingItems.length - 1 ? '1px solid var(--border-rgba)' : 'none' }}>
                     <span style={{ fontSize: 10, color: DECK_COLOR, fontWeight: 700, minWidth: 12 }}>{i + 1}</span>
-                    <span className="material-symbols-rounded" style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>{getItemIcon(item.type)}</span>
+                    <Icon name={getItemIcon(item.type)} size={12} color="var(--text-muted)" style={{ flexShrink: 0 }} />
                     <span style={{ fontSize: 10, color: 'var(--text-color)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
                     <button onClick={() => onRemoveFromDeckBuilding(item.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-dim)', lineHeight: 1 }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 12 }}>close</span>
+                      <Icon name="close" size={12} />
                     </button>
                   </div>
                 ))}
@@ -338,7 +337,7 @@ export function NodePanel({
                   style={{ flex: 1, padding: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'transparent', border: '1.5px dashed var(--border-rgba)', borderRadius: 8, cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10, fontFamily: 'inherit', transition: 'all 0.15s' }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; e.currentTarget.style.color = 'var(--text-dim)'; }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 13 }}>hub</span>
+                  <Icon name="hub" size={13} />
                   {filter === 'node' || filter === 'all' ? '노드' : ''}
                 </button>
               )}
@@ -347,7 +346,7 @@ export function NodePanel({
                   style={{ flex: 1, padding: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'transparent', border: '1.5px dashed var(--border-rgba)', borderRadius: 8, cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10, fontFamily: 'inherit', transition: 'all 0.15s' }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = DECK_COLOR; e.currentTarget.style.color = DECK_COLOR; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; e.currentTarget.style.color = 'var(--text-dim)'; }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 13 }}>stacks</span>
+                  <Icon name="stacks" size={13} />
                   {filter === 'deck' || filter === 'all' ? '덱' : ''}
                 </button>
               )}
@@ -391,7 +390,7 @@ function SortableNodeItem({ item, index, editing, onRemove }: {
         </span>
       )}
       <span style={{ fontSize: 9, color: 'var(--text-dim)', minWidth: 10 }}>{index + 1}</span>
-      <span className="material-symbols-rounded" style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>{getItemIcon(item.type)}</span>
+      <Icon name={getItemIcon(item.type)} size={11} color="var(--text-muted)" style={{ flexShrink: 0 }} />
       <span style={{ fontSize: 10, color: 'var(--text-color)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{item.title}</span>
       {/* Delete button — top-right corner in edit mode */}
       {editing && onRemove && (
@@ -402,7 +401,7 @@ function SortableNodeItem({ item, index, editing, onRemove }: {
           onMouseEnter={e => (e.currentTarget.style.color = 'var(--destructive)')}
           onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 11 }}>close</span>
+          <Icon name="close" size={11} />
         </button>
       )}
     </div>
@@ -518,13 +517,13 @@ function NodeGroupCard({
           background: 'var(--accent-dim)', borderRadius: 10,
           pointerEvents: 'none',
         }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 20, color: 'var(--accent)' }}>add_circle</span>
+          <Icon name="add_circle" size={20} color="var(--accent)" />
           <span style={{ fontSize: 9, color: 'var(--accent)', fontWeight: 700, marginTop: 3 }}>노드에 추가</span>
         </div>
       )}
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 10px 5px', gap: 4 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 12, color: 'var(--accent)', flexShrink: 0 }}>hub</span>
+        <Icon name="hub" size={12} color="var(--accent)" style={{ flexShrink: 0 }} />
         {isRenaming ? (
           <input autoFocus value={renameDraft} onChange={e => onRenameDraftChange(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') onRenameConfirm(); if (e.key === 'Escape') onRenameCancel(); }}
@@ -547,11 +546,11 @@ function NodeGroupCard({
             <>
               <button onClick={e => { e.stopPropagation(); setEditing(true); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="편집">
-                <span className="material-symbols-rounded" style={{ fontSize: 11 }}>edit</span>
+                <Icon name="edit" size={11} />
               </button>
               <button onClick={e => { e.stopPropagation(); onDelete(); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="삭제">
-                <span className="material-symbols-rounded" style={{ fontSize: 11 }}>delete</span>
+                <Icon name="delete" size={11} />
               </button>
             </>
           )}
@@ -576,9 +575,7 @@ function NodeGroupCard({
           onMouseLeave={e => (e.currentTarget.style.opacity = group.monitor ? '0.85' : '0.45')}
         >
           {group.monitor ? `M${group.monitor}` : 'Auto'}
-          <span className="material-symbols-rounded" style={{ fontSize: 8, lineHeight: 1 }}>
-            {showMonitorPicker ? 'expand_more' : 'expand_less'}
-          </span>
+          <Icon name={showMonitorPicker ? 'expand_more' : 'expand_less'} size={8} style={{ lineHeight: 1 }} />
         </button>
         {showMonitorPicker && (
           <div style={{
@@ -628,7 +625,7 @@ function NodeGroupCard({
           {showPicker ? (
             <div style={{ margin: '0 6px 6px', border: '1px solid var(--border-focus)', borderRadius: 8, overflow: 'hidden', background: 'var(--surface)' }}>
               <div style={{ display: 'flex', alignItems: 'center', padding: '4px 6px', borderBottom: '1px solid var(--border-rgba)', gap: 4 }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 12, color: 'var(--text-dim)' }}>search</span>
+                <Icon name="search" size={12} color="var(--text-dim)" />
                 <input
                   ref={pickerInputRef}
                   value={pickerQuery}
@@ -639,7 +636,7 @@ function NodeGroupCard({
                 />
                 <button onClick={() => { setShowPicker(false); setPickerQuery(''); }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-dim)', lineHeight: 1 }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 12 }}>close</span>
+                  <Icon name="close" size={12} />
                 </button>
               </div>
               <div style={{ maxHeight: 110, overflowY: 'auto' }}>
@@ -656,7 +653,7 @@ function NodeGroupCard({
                     onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-hover)')}
                     onMouseLeave={e => (e.currentTarget.style.background = 'none')}
                   >
-                    <span className="material-symbols-rounded" style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>{getItemIcon(item.type)}</span>
+                    <Icon name={getItemIcon(item.type)} size={11} color="var(--text-muted)" style={{ flexShrink: 0 }} />
                     <span style={{ fontSize: 10, color: 'var(--text-color)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
                   </button>
                 ))}
@@ -670,7 +667,7 @@ function NodeGroupCard({
                 onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; e.currentTarget.style.color = 'var(--text-dim)'; }}
               >
-                <span className="material-symbols-rounded" style={{ fontSize: 12 }}>add</span>
+                <Icon name="add" size={12} />
                 카드 추가
               </button>
             </div>
@@ -729,12 +726,12 @@ function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelet
           background: 'rgba(249,115,22,0.1)', borderRadius: 10,
           pointerEvents: 'none',
         }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 20, color: DECK_COLOR }}>add_circle</span>
+          <Icon name="add_circle" size={20} color={DECK_COLOR} />
           <span style={{ fontSize: 9, color: DECK_COLOR, fontWeight: 700, marginTop: 3 }}>덱에 추가</span>
         </div>
       )}
       <div style={{ display: 'flex', alignItems: 'center', padding: '8px 10px 5px', gap: 4 }}>
-        <span className="material-symbols-rounded" style={{ fontSize: 12, color: DECK_COLOR, flexShrink: 0 }}>stacks</span>
+        <Icon name="stacks" size={12} color={DECK_COLOR} style={{ flexShrink: 0 }} />
         {renaming ? (
           <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); } if (e.key === 'Escape') setRenaming(false); }}
@@ -754,10 +751,10 @@ function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelet
           ) : (
             <>
               <button onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="편집">
-                <span className="material-symbols-rounded" style={{ fontSize: 11 }}>edit</span>
+                <Icon name="edit" size={11} />
               </button>
               <button onClick={e => { e.stopPropagation(); onDelete(); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="삭제">
-                <span className="material-symbols-rounded" style={{ fontSize: 11 }}>delete</span>
+                <Icon name="delete" size={11} />
               </button>
             </>
           )}
@@ -782,9 +779,7 @@ function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelet
           onMouseLeave={e => (e.currentTarget.style.opacity = deck.monitor ? '0.85' : '0.45')}
         >
           {deck.monitor ? `M${deck.monitor}` : 'Auto'}
-          <span className="material-symbols-rounded" style={{ fontSize: 8, lineHeight: 1 }}>
-            {showMonitorPicker ? 'expand_more' : 'expand_less'}
-          </span>
+          <Icon name={showMonitorPicker ? 'expand_more' : 'expand_less'} size={8} style={{ lineHeight: 1 }} />
         </button>
         {showMonitorPicker && (
           <div style={{
@@ -817,7 +812,7 @@ function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelet
         {items.map((item, i) => (
           <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: editing ? '4px 6px' : '2px 4px', borderRadius: editing ? 6 : 0, background: editing ? 'var(--surface)' : 'transparent', border: editing ? '1px solid var(--border-rgba)' : 'none', marginBottom: editing ? 3 : 0 }}>
             <span style={{ fontSize: 9, color: 'var(--text-dim)', minWidth: 10 }}>{i + 1}</span>
-            <span className="material-symbols-rounded" style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>{getItemIcon(item.type)}</span>
+            <Icon name={getItemIcon(item.type)} size={11} color="var(--text-muted)" style={{ flexShrink: 0 }} />
             <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{item.title}</span>
           </div>
         ))}

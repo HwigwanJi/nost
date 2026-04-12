@@ -68,6 +68,7 @@ export interface AppData {
   collapsedSpaceIds?: string[];  // UI state: which spaces are collapsed
   nodeGroups?: NodeGroup[];      // linked item groups for split-screen
   decks?: Deck[];               // sequential launch groups
+  dismissedSuggestions?: string[]; // ghost card dismissed values (permanent until reset)
 }
 
 export interface ChromeTab {

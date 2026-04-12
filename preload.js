@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_, info) => cb(info)),
   onUpdateDownloaded: (cb) => ipcRenderer.on('update-downloaded', (_, info) => cb(info)),
   readClipboard: () => ipcRenderer.invoke('read-clipboard'),
+  analyzeClipboard: () => ipcRenderer.invoke('analyze-clipboard'),
   checkWindowsAlive: (titles) => ipcRenderer.invoke('check-windows-alive', titles),
   checkFileExists: (filePath) => ipcRenderer.invoke('check-file-exists', filePath),
   checkItemsForTile: (items) => ipcRenderer.invoke('check-items-for-tile', items),
@@ -38,9 +39,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   runTilePs: (args) => ipcRenderer.invoke('run-tile-ps', args),
   snapWindow: (item, zone) => ipcRenderer.invoke('snap-window', { item, zone }),
   resizeActiveWindow: (pct) => ipcRenderer.invoke('resize-active-window', { pct }),
+  getRecentItems: () => ipcRenderer.invoke('get-recent-items'),
   getMonitors: () => ipcRenderer.invoke('get-monitors'),
   identifyMonitors: () => ipcRenderer.invoke('identify-monitors'),
+  getUserHome: () => require('os').homedir(),  // preload has access to Node modules
   openGuide: () => ipcRenderer.send('open-guide'),
   signalReady: () => ipcRenderer.send('renderer-ready'),
   setLoadingStatus: (msg) => ipcRenderer.send('set-loading-status', msg),
+  onMonitorsChanged: (cb) => ipcRenderer.on('monitors-changed', (_, monitors) => cb(monitors)),
 });

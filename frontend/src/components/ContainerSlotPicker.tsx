@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { LauncherItem, ContainerSlots, Space, WindowEntry, ChromeTab } from '../types';
 import { electronAPI } from '../electronBridge';
+import { Icon } from '@/components/ui/Icon';
 import { detectClipboardType, suggestName, DEFAULT_DOCUMENT_EXTENSIONS } from '../lib/documentExtensions';
 
 type SlotDir = 'up' | 'down' | 'left' | 'right';
@@ -293,13 +294,13 @@ export function ContainerSlotPicker({
 
         {/* Header */}
         <div style={{ display:'flex', alignItems:'center', gap:10, padding:'14px 18px 12px', borderBottom:'1px solid var(--border-rgba)', flexShrink:0 }}>
-          <span className="material-symbols-rounded" style={{ fontSize:17, color:'var(--accent)' }}>grid_view</span>
+          <Icon name="grid_view" size={17} color="var(--accent)" />
           <div style={{ flex:1 }}>
             <span style={{ fontSize:13, fontWeight:700 }}>슬롯 편집</span>
             <span style={{ fontSize:11, color:'var(--text-muted)', marginLeft:8 }}>"{containerItem.title}"</span>
           </div>
           <button onClick={handleClose} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-dim)', padding:4, borderRadius:6, display:'flex' }}>
-            <span className="material-symbols-rounded" style={{ fontSize:18 }}>close</span>
+            <Icon name="close" size={18} />
           </button>
         </div>
 
@@ -310,7 +311,7 @@ export function ContainerSlotPicker({
           <div style={{ width:180, flexShrink:0, borderRight:'1px solid var(--border-rgba)', padding:'10px 8px', display:'flex', flexDirection:'column', gap:4, overflowY:'auto', scrollbarWidth:'none' } as React.CSSProperties}>
             {/* Container card info */}
             <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', borderRadius:8, background:'var(--surface)', marginBottom:6 }}>
-              <span className="material-symbols-rounded" style={{ fontSize:16, color:'var(--accent)' }}>grid_view</span>
+              <Icon name="grid_view" size={16} color="var(--accent)" />
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:11, fontWeight:700, color:'var(--text-color)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{containerItem.title}</div>
                 <div style={{ fontSize:9, color:'var(--text-dim)' }}>컨테이너</div>
@@ -335,7 +336,7 @@ export function ContainerSlotPicker({
                   onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = isActive ? 'var(--accent-dim)' : 'transparent'; }}
                 >
                   {/* Direction icon */}
-                  <span className="material-symbols-rounded" style={{ fontSize:15, color: isActive ? 'var(--accent)' : 'var(--text-dim)', flexShrink:0 }}>{DIR_ICONS[dir]}</span>
+                  <Icon name={DIR_ICONS[dir]} size={15} color={isActive ? 'var(--accent)' : 'var(--text-dim)'} style={{ flexShrink:0 }} />
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:10, color: isActive ? 'var(--accent)' : 'var(--text-dim)', fontWeight:600, marginBottom:1 }}>{DIR_LABELS[dir]} 슬롯</div>
                     {slotItem ? (
@@ -351,7 +352,7 @@ export function ContainerSlotPicker({
                       title="슬롯 제거"
                       onMouseEnter={e => (e.currentTarget.style.color='var(--text-color)')}
                       onMouseLeave={e => (e.currentTarget.style.color='var(--text-dim)')}>
-                      <span className="material-symbols-rounded" style={{ fontSize:13 }}>close</span>
+                      <Icon name="close" size={13} />
                     </button>
                   )}
                 </button>
@@ -361,8 +362,8 @@ export function ContainerSlotPicker({
             {/* Pending summary */}
             {(pendingRemovals.length > 0 || pendingNewItems.length > 0) && (
               <div style={{ marginTop:'auto', padding:'8px 10px', borderRadius:8, background:'var(--surface)', border:'1px solid var(--border-rgba)', fontSize:10, color:'var(--text-dim)', display:'flex', flexDirection:'column', gap:3 }}>
-                {pendingNewItems.length > 0 && <div style={{ display:'flex', alignItems:'center', gap:4 }}><span className="material-symbols-rounded" style={{ fontSize:11, color:'var(--accent)' }}>add_circle</span>새 카드 {pendingNewItems.length}개</div>}
-                {pendingRemovals.length > 0 && <div style={{ display:'flex', alignItems:'center', gap:4 }}><span className="material-symbols-rounded" style={{ fontSize:11 }}>visibility_off</span>숨김 {pendingRemovals.length}개</div>}
+                {pendingNewItems.length > 0 && <div style={{ display:'flex', alignItems:'center', gap:4 }}><Icon name="add_circle" size={11} color="var(--accent)" />새 카드 {pendingNewItems.length}개</div>}
+                {pendingRemovals.length > 0 && <div style={{ display:'flex', alignItems:'center', gap:4 }}><Icon name="visibility_off" size={11} />숨김 {pendingRemovals.length}개</div>}
               </div>
             )}
           </div>
@@ -371,7 +372,7 @@ export function ContainerSlotPicker({
           <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
             {!activeDir ? (
               <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, color:'var(--text-dim)' }}>
-                <span className="material-symbols-rounded" style={{ fontSize:36, opacity:0.35 }}>touch_app</span>
+                <Icon name="touch_app" size={36} style={{ opacity:0.35 }} />
                 <span style={{ fontSize:12 }}>왼쪽에서 슬롯을 선택하세요</span>
               </div>
             ) : (
@@ -379,7 +380,7 @@ export function ContainerSlotPicker({
                 {/* Active slot header */}
                 <div style={{ flexShrink:0, padding:'12px 16px 0' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:activeDirItem ? 6 : 10 }}>
-                    <span className="material-symbols-rounded" style={{ fontSize:15, color:'var(--accent)' }}>{DIR_ICONS[activeDir]}</span>
+                    <Icon name={DIR_ICONS[activeDir]} size={15} color="var(--accent)" />
                     <span style={{ fontSize:12, fontWeight:700, color:'var(--accent)' }}>{DIR_LABELS[activeDir]} 슬롯</span>
                     {activeDirItem && (
                       <span style={{ fontSize:10, color:'var(--text-muted)', marginLeft:4, flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>— {activeDirItem.title}</span>
@@ -399,9 +400,7 @@ export function ContainerSlotPicker({
                         }}
                         style={{ width:13, height:13, accentColor:'var(--accent)', cursor:'pointer' }}
                       />
-                      <span className="material-symbols-rounded" style={{ fontSize:13, color:'var(--text-muted)' }}>
-                        {slotHideMap[activeDirItem.id] !== false ? 'visibility_off' : 'visibility'}
-                      </span>
+                      <Icon name={slotHideMap[activeDirItem.id] !== false ? 'visibility_off' : 'visibility'} size={13} color="var(--text-muted)" />
                       <span style={{ fontSize:11, color:'var(--text-color)', fontWeight:500 }}>스페이스에서 숨기기</span>
                       <span style={{ fontSize:9, color:'var(--text-dim)', marginLeft:'auto' }}>
                         {slotHideMap[activeDirItem.id] !== false ? '그리드에 미표시' : '그리드에 표시'}
@@ -418,7 +417,7 @@ export function ContainerSlotPicker({
                     ]).map(t => (
                       <button key={t.id} onClick={() => setTab(t.id)}
                         style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:5, padding:'6px 4px', borderRadius:6, border:'none', cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight: tab===t.id ? 700 : 500, background: tab===t.id ? 'var(--bg-rgba)' : 'transparent', color: tab===t.id ? 'var(--accent)' : 'var(--text-muted)', boxShadow: tab===t.id ? '0 1px 4px rgba(0,0,0,0.1)' : 'none', transition:'all 0.12s' }}>
-                        <span className="material-symbols-rounded" style={{ fontSize:13 }}>{t.icon}</span>
+                        <Icon name={t.icon} size={13} />
                         {t.label}
                       </button>
                     ))}
@@ -466,7 +465,7 @@ export function ContainerSlotPicker({
                                   })}
                                   style={{ display:'flex', alignItems:'center', gap:6, width:'100%', padding:'5px 8px 5px 4px', border:'none', background:'transparent', cursor:'pointer', fontFamily:'inherit', color:'var(--text-dim)', marginBottom:3 }}
                                 >
-                                  <span className="material-symbols-rounded" style={{ fontSize:12, transition:'transform 0.15s', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }}>expand_more</span>
+                                  <Icon name="expand_more" size={12} style={{ transition:'transform 0.15s', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)' }} />
                                   {group.icon && <span style={{ fontSize:13 }}>{group.icon}</span>}
                                   <span style={{ fontSize:10, fontWeight:700, letterSpacing:'0.05em', textTransform:'uppercase' }}>{group.spaceName}</span>
                                   <span style={{ fontSize:9, color:'var(--text-dim)', marginLeft:'auto' }}>{group.items.length}</span>
@@ -483,7 +482,7 @@ export function ContainerSlotPicker({
                                           onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = inSlot ? 'var(--accent-dim)' : 'var(--surface)'; }}>
                                           {item.iconType==='image' && item.icon
                                             ? <img src={item.icon} alt="" style={{ width:22, height:22, borderRadius:4, objectFit:'cover', flexShrink:0 }} />
-                                            : <span className="material-symbols-rounded" style={{ fontSize:20, color:'var(--text-muted)', flexShrink:0 }}>{item.icon ?? getTypeIcon(item.type)}</span>}
+                                            : <Icon name={item.icon ?? getTypeIcon(item.type)} size={20} color="var(--text-muted)" style={{ flexShrink:0 }} />}
                                           <div style={{ flex:1, minWidth:0 }}>
                                             <div style={{ fontSize:12, color:'var(--text-color)', fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.title}</div>
                                           </div>
@@ -507,7 +506,7 @@ export function ContainerSlotPicker({
                       <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:10 }}>
                         <button onClick={doScan} disabled={scanLoading}
                           style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 12px', borderRadius:8, border:'1px solid var(--border-rgba)', background:'transparent', color:'var(--text-muted)', fontSize:11, cursor: scanLoading?'default':'pointer', fontFamily:'inherit' }}>
-                          <span className={`material-symbols-rounded ${scanLoading?'animate-spin':''}`} style={{ fontSize:13 }}>refresh</span>
+                          <Icon name="refresh" size={13} className={scanLoading ? 'animate-spin' : undefined} />
                           새로고침
                         </button>
                       </div>
@@ -548,7 +547,7 @@ export function ContainerSlotPicker({
                         onMouseEnter={e => (e.currentTarget.style.opacity='0.8')}
                         onMouseLeave={e => (e.currentTarget.style.opacity='1')}
                         title="클립보드에서 자동으로 유형과 값을 감지해 채웁니다">
-                        <span className="material-symbols-rounded" style={{ fontSize:14 }}>content_paste</span>
+                        <Icon name="content_paste" size={14} />
                         클립보드에서 자동 세팅
                       </button>
                       <input value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="카드 이름"
@@ -559,7 +558,7 @@ export function ContainerSlotPicker({
                         {ITEM_TYPES.map(t => (
                           <button key={t.value} onClick={() => setNewType(t.value)}
                             style={{ display:'flex', alignItems:'center', gap:4, padding:'5px 10px', borderRadius:7, border:`1px solid ${newType===t.value?'var(--accent)':'var(--border-rgba)'}`, background: newType===t.value?'var(--accent-dim)':'transparent', color: newType===t.value?'var(--accent)':'var(--text-muted)', fontSize:11, cursor:'pointer', fontFamily:'inherit', fontWeight: newType===t.value?700:400 }}>
-                            <span className="material-symbols-rounded" style={{ fontSize:13 }}>{t.icon}</span>{t.label}
+                            <Icon name={t.icon} size={13} />{t.label}
                           </button>
                         ))}
                       </div>
@@ -572,13 +571,13 @@ export function ContainerSlotPicker({
                         {(newType==='folder'||newType==='app') && (
                           <button onClick={pickPath}
                             style={{ padding:'8px 11px', borderRadius:8, border:'1px solid var(--border-rgba)', background:'transparent', color:'var(--text-muted)', fontSize:11, cursor:'pointer', fontFamily:'inherit', display:'flex', alignItems:'center', gap:4, flexShrink:0 }}>
-                            <span className="material-symbols-rounded" style={{ fontSize:14 }}>folder_open</span>찾아보기
+                            <Icon name="folder_open" size={14} />찾아보기
                           </button>
                         )}
                       </div>
                       <button onClick={handleCreateNew} disabled={!newTitle.trim()||!newValue.trim()}
                         style={{ padding:'9px', borderRadius:8, border:'none', background: (!newTitle.trim()||!newValue.trim())?'var(--border-rgba)':'var(--accent)', color: (!newTitle.trim()||!newValue.trim())?'var(--text-dim)':'#fff', fontSize:12, cursor: (!newTitle.trim()||!newValue.trim())?'not-allowed':'pointer', fontFamily:'inherit', fontWeight:600, display:'flex', alignItems:'center', justifyContent:'center', gap:5 }}>
-                        <span className="material-symbols-rounded" style={{ fontSize:14 }}>add</span>슬롯에 추가
+                        <Icon name="add" size={14} />슬롯에 추가
                       </button>
                     </div>
                   )}
@@ -603,7 +602,7 @@ export function ContainerSlotPicker({
 function ScanSection({ label, icon }: { label: string; icon: string }) {
   return (
     <div style={{ display:'flex', alignItems:'center', gap:5, fontSize:9, fontWeight:700, letterSpacing:'0.07em', textTransform:'uppercase', color:'var(--text-dim)', margin:'6px 0 2px' }}>
-      <span className="material-symbols-rounded" style={{ fontSize:11 }}>{icon}</span>{label}
+      <Icon name={icon} size={11} />{label}
     </div>
   );
 }
@@ -622,7 +621,7 @@ function ScanItem({ icon, imageUrl, title, sub, inSlot, registered, onClick }: {
       onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = inSlot?'var(--accent-dim)':'var(--surface)'; }}>
       {imageUrl && !imgFailed
         ? <img src={imageUrl} alt="" style={{ width:20, height:20, objectFit:'contain', borderRadius:3, flexShrink:0 }} onError={() => setImgFailed(true)} />
-        : <span className="material-symbols-rounded" style={{ fontSize:20, color:'var(--text-muted)', flexShrink:0 }}>{icon}</span>}
+        : <Icon name={icon} size={20} color="var(--text-muted)" style={{ flexShrink:0 }} />}
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:12, color:'var(--text-color)', fontWeight:500, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{title}</div>
         {sub && <div style={{ fontSize:10, color:'var(--text-dim)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{sub}</div>}

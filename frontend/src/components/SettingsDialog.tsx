@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import type { AppSettings } from '../types';
+import { Icon } from '@/components/ui/Icon';
 import { electronAPI } from '../electronBridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -56,7 +57,7 @@ function Section({ children }: { children: React.ReactNode }) {
 function SectionLabel({ icon, text }: { icon: string; text: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 14, color: 'var(--text-muted)' }}>{icon}</span>
+      <Icon name={icon} size={14} color="var(--text-muted)" />
       <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-color)' }}>{text}</span>
     </div>
   );
@@ -70,7 +71,7 @@ function SwitchRow({ icon, title, description, checked, onCheckedChange }: {
     <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 14, color: 'var(--text-muted)' }}>{icon}</span>
+          <Icon name={icon} size={14} color="var(--text-muted)" />
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-color)' }}>{title}</span>
         </div>
         <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.45, paddingLeft: 20 }}>{description}</p>
@@ -210,7 +211,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
         {/* ── Title bar ─────────────────────────────────────────── */}
         <DialogHeader style={{ padding: '16px 20px 14px', borderBottom: '1px solid var(--border-rgba)', flexShrink: 0 }}>
           <DialogTitle style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 17, color: 'var(--text-muted)' }}>settings</span>
+            <Icon name="settings" size={17} color="var(--text-muted)" />
             환경설정
           </DialogTitle>
         </DialogHeader>
@@ -255,7 +256,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
                   onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
                 >
-                  <span className="material-symbols-rounded" style={{ fontSize: 16, flexShrink: 0 }}>{t.icon}</span>
+                  <Icon name={t.icon} size={16} style={{ flexShrink: 0 }} />
                   {t.label}
                 </button>
               );
@@ -283,7 +284,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                           boxShadow: form.theme === mode ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
                           transition: 'all 0.15s',
                         }}>
-                          <span className="material-symbols-rounded" style={{ fontSize: 13 }}>{mode === 'light' ? 'light_mode' : 'dark_mode'}</span>
+                          <Icon name={mode === 'light' ? 'light_mode' : 'dark_mode'} size={13} />
                           {mode === 'light' ? 'Light' : 'Dark'}
                         </button>
                       ))}
@@ -354,9 +355,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     각 모니터에 번호 오버레이를 2.5초간 표시합니다. 어느 모니터가 몇 번인지 확인하세요.
                   </p>
                   <AccentBtn onClick={handleIdentify} disabled={identifying} style={{ opacity: identifying ? 0.6 : 1 }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 15 }}>
-                      {identifying ? 'hourglass_empty' : 'monitor'}
-                    </span>
+                    <Icon name={identifying ? 'hourglass_empty' : 'monitor'} size={15} />
                     {identifying ? '표시 중...' : '모니터 번호 표시'}
                   </AccentBtn>
                 </Section>
@@ -368,7 +367,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   </p>
                   {monitors.length === 0 ? (
                     <div style={{ textAlign: 'center', padding: '20px 0', color: 'var(--text-dim)', fontSize: 12 }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 28, display: 'block', marginBottom: 6 }}>desktop_windows</span>
+                      <Icon name="desktop_windows" size={28} style={{ display: 'block', marginBottom: 6 }} />
                       불러오는 중...
                     </div>
                   ) : (
@@ -456,13 +455,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                                   <option value="none">키 없음</option>
                                   {KEY_OPTIONS.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
                                 </select>
-                                <span className="material-symbols-rounded" style={{
+                                <Icon name={opt ? opt.icon : 'keyboard_arrow_down'} size={13} style={{
                                   position: 'absolute', right: 6, top: '50%', transform: 'translateY(-50%)',
-                                  fontSize: 13, pointerEvents: 'none',
+                                  pointerEvents: 'none',
                                   color: currentKey ? 'rgba(255,255,255,0.7)' : 'var(--text-dim)',
-                                }}>
-                                  {opt ? opt.icon : 'keyboard_arrow_down'}
-                                </span>
+                                }} />
                               </div>
                             </div>
                           </div>
@@ -495,7 +492,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                           cursor: 'pointer', fontFamily: 'monospace',
                         }}>
                         .{ext}
-                        <span className="material-symbols-rounded" style={{ fontSize: 11, color: 'var(--text-dim)' }}>close</span>
+                        <Icon name="close" size={11} color="var(--text-dim)" />
                       </button>
                     ))}
                   </div>
@@ -558,10 +555,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                         transition: 'opacity 0.15s',
                       }}
                     >
-                      <span className="material-symbols-rounded" style={{
-                        fontSize: 13,
-                        animation: extStatusLoading ? 'spin 1s linear infinite' : 'none',
-                      }}>refresh</span>
+                      <Icon name="refresh" size={13} style={{ animation: extStatusLoading ? 'spin 1s linear infinite' : 'none' }} />
                     </button>
                   </div>
                   <div style={{
@@ -571,12 +565,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     border: `1px solid ${extStatus === 'connected' ? 'rgba(34,197,94,0.3)' : extStatus === 'disconnected' ? 'rgba(239,68,68,0.2)' : 'var(--border-rgba)'}`,
                     borderRadius: 8,
                   }}>
-                    <span className="material-symbols-rounded" style={{
-                      fontSize: 16,
-                      color: extStatus === 'connected' ? '#22c55e' : extStatus === 'disconnected' ? '#ef4444' : 'var(--text-dim)',
-                    }}>
-                      {extStatus === 'connected' ? 'check_circle' : extStatus === 'disconnected' ? 'cancel' : 'help'}
-                    </span>
+                    <Icon name={extStatus === 'connected' ? 'check_circle' : extStatus === 'disconnected' ? 'cancel' : 'help'} size={16} color={extStatus === 'connected' ? '#22c55e' : extStatus === 'disconnected' ? '#ef4444' : 'var(--text-dim)'} />
                     <div>
                       <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-color)' }}>
                         {extStatus === 'connected' ? '브라우저 확장 연결됨' : extStatus === 'disconnected' ? '확장 프로그램 미연결' : '상태 확인 중...'}
@@ -606,7 +595,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                         Chrome / Whale에서 탭 스캔과 타일 분할을 사용하려면 확장 프로그램이 필요합니다.
                       </p>
                       <AccentBtn onClick={() => setShowExtWizard(true)}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 15 }}>extension</span>
+                        <Icon name="extension" size={15} />
                         단계별 설치 도우미 열기
                       </AccentBtn>
                     </>
@@ -623,15 +612,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   )}
                   {(updateDownloaded || updateStatus === 'update-available') ? (
                     <AccentBtn onClick={() => electronAPI.installUpdate()} style={{ background: 'var(--accent)', color: '#fff', border: 'none' }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 15 }}>restart_alt</span>
+                      <Icon name="restart_alt" size={15} />
                       {newVersion ? `v${newVersion} 설치 — 재시작` : '재시작 후 업데이트 설치'}
                     </AccentBtn>
                   ) : (
                     <GhostBtn onClick={handleCheckUpdate} disabled={updateStatus === 'checking'}
                       style={{ opacity: updateStatus === 'checking' ? 0.6 : 1, width: '100%' }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 15 }}>
-                        {updateStatus === 'up-to-date' ? 'check_circle' : updateStatus === 'error' ? 'error' : 'refresh'}
-                      </span>
+                      <Icon name={updateStatus === 'up-to-date' ? 'check_circle' : updateStatus === 'error' ? 'error' : 'refresh'} size={15} />
                       {updateStatus === 'checking' ? '확인 중...'
                         : updateStatus === 'up-to-date' ? '최신 버전입니다'
                         : updateStatus === 'dev-mode' ? '개발 모드'
@@ -649,7 +636,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                       { label: '백업 가져오기', icon: 'download', fn: handleImport },
                     ].map(btn => (
                       <GhostBtn key={btn.label} onClick={btn.fn}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 15 }}>{btn.icon}</span>
+                        <Icon name={btn.icon} size={15} />
                         {btn.label}
                       </GhostBtn>
                     ))}

@@ -1,4 +1,5 @@
 import type { LauncherItem } from '../types';
+import { Icon } from '@/components/ui/Icon';
 
 interface TileOverlayProps {
   items: LauncherItem[];
@@ -18,11 +19,9 @@ export function TileOverlay({ items, leaving, onDismiss, onMaximize }: TileOverl
           className="node-tile-btn"
           onClick={() => onMaximize(item.id)}
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 15 }}>
-            {item.type === 'folder' ? 'folder_open' : item.type === 'app' ? 'apps' : item.type === 'url' || item.type === 'browser' ? 'language' : 'window'}
-          </span>
+          <Icon name={item.type === 'folder' ? 'folder_open' : item.type === 'app' ? 'apps' : item.type === 'url' || item.type === 'browser' ? 'language' : 'window'} size={15} />
           {item.title}
-          <span className="material-symbols-rounded" style={{ fontSize: 13, color: 'var(--text-dim)' }}>fullscreen</span>
+          <Icon name="fullscreen" size={13} color="var(--text-dim)" />
         </button>
       ))}
       <button
@@ -30,7 +29,7 @@ export function TileOverlay({ items, leaving, onDismiss, onMaximize }: TileOverl
         onClick={onDismiss}
         style={{ color: 'var(--text-dim)' }}
       >
-        <span className="material-symbols-rounded" style={{ fontSize: 14 }}>close</span>
+        <Icon name="close" size={14} />
       </button>
     </div>
   );

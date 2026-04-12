@@ -9,16 +9,72 @@ const { autoUpdater } = require('electron-updater');
 
 const store = new Store({ name: 'nost-data' });
 
+function resolvePsScriptsDir() {
+  const candidates = [
+    path.join(process.resourcesPath || '', 'ps-scripts'),
+    path.join(__dirname, 'ps-scripts'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return path.join(__dirname, 'ps-scripts'); // dev fallback
+}
+const PS_DIR = resolvePsScriptsDir();
+function ps(name) { return path.join(PS_DIR, name); }
+
+/**
+ * Resolve target monitor work area from Electron displays.
+ * Returns Electron DIP coordinates (96 DPI logical pixels) — these map 1:1 to
+ * DPI-unaware Win32 coordinates and can be passed directly to PS scripts that
+ * use SetThreadDpiAwarenessContext(UNAWARE) via _Position.ps1.
+ */
+function getMonitorWorkArea(monitorIndex) {
+  const { screen } = require('electron');
+  const displays = screen.getAllDisplays();
+  const disp = (monitorIndex >= 1 && monitorIndex <= displays.length)
+    ? displays[monitorIndex - 1]
+    : screen.getPrimaryDisplay();
+  return { wa: disp.workArea, disp };
+}
+
 let mainWindow;
 let loadingWindow = null;
 let tray = null;
 let currentShortcut = 'Alt+4';
 
+// ── Daily tips ──────────────────────────────────────────────
+const TIPS = [
+  // 기본 사용법
+  '클립보드에 URL·경로를 복사한 채로 창을 열면 바로 추가할 수 있어요',
+  '카드를 꾹 누르면 모니터 이동, 스냅, 삭제 메뉴가 열려요',
+  '노드 모드로 여러 앱을 분할화면으로 한번에 실행할 수 있어요',
+  '덱 모드로 자주 쓰는 앱 묶음을 한번에 열 수 있어요',
+  '스페이스에 색상과 아이콘을 설정해 구분하기 쉽게 만들어보세요',
+  '카드를 드래그해서 다른 스페이스로 이동시킬 수 있어요',
+  '핀 고정된 카드는 항상 맨 앞 자리를 유지해요',
+  '우클릭 드래그로 런처 창 자체를 이동할 수 있어요',
+  // 꿀팁: 슬래시 명령어
+  '/75 를 입력하면 런처 창이 화면의 75%로 보기 좋게 조정돼요 (/50, /100도 가능)',
+  '/tile 1-1 2-1 로 두 카드를 분할화면으로 바로 실행할 수 있어요',
+  '//1 을 입력하면 첫 번째 노드 그룹이 바로 실행돼요',
+  '/1-3 을 입력하면 1번 스페이스의 3번 카드가 바로 실행돼요',
+  '/clipboard 으로 클립보드 내용을 카드로 바로 저장할 수 있어요',
+  // 꿀팁: 숨겨진 기능
+  '컨테이너 카드에 앱을 배치하면 실행 시 자동으로 스냅 배치돼요',
+  '설정 → 모니터에서 방향키를 지정하면 카드에서 빠르게 모니터 이동할 수 있어요',
+  '검색창에 텍스트만 입력하면 모든 카드를 실시간 필터링해요',
+  '사용 빈도순 정렬로 자주 쓰는 앱을 맨 앞에 둘 수 있어요',
+  '스페이스를 접어두면 자주 쓰는 것만 보여 깔끔해져요',
+];
+function getRandomTip() {
+  return TIPS[Math.floor(Math.random() * TIPS.length)];
+}
+
 // ── Splash / Loading window ─────────────────────────────────
 function createLoadingWindow() {
   loadingWindow = new BrowserWindow({
     width: 300,
-    height: 180,
+    height: 210,
     show: true,
     frame: false,
     transparent: true,
@@ -58,7 +114,7 @@ body {
 }
 .sub  { font-size: 11px; color: rgba(80,80,120,0.55); margin-top: 5px; letter-spacing: 0.5px; font-weight: 500; }
 .ring {
-  margin-top: 22px;
+  margin-top: 18px;
   width: 22px; height: 22px;
   border: 2.5px solid rgba(99,102,241,0.18);
   border-top-color: #6366f1;
@@ -66,11 +122,27 @@ body {
   animation: spin 0.75s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.tip {
+  margin-top: 20px;
+  padding: 8px 14px;
+  background: rgba(99,102,241,0.07);
+  border: 1px solid rgba(99,102,241,0.15);
+  border-radius: 8px;
+  font-size: 10px;
+  color: rgba(80,80,120,0.65);
+  line-height: 1.5;
+  text-align: center;
+  max-width: 240px;
+  animation: fadeIn 0.6s ease 0.3s both;
+}
+@keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+.tip-label { font-size: 9px; color: rgba(99,102,241,0.6); font-weight: 600; letter-spacing: 0.5px; margin-bottom: 3px; }
 </style></head>
 <body>
   <div class="logo">nost</div>
-  <div class="sub">시작하는 중...</div>
+  <div class="sub" id="ql-status">시작하는 중...</div>
   <div class="ring"></div>
+  <div class="tip"><div class="tip-label">💡 팁</div>${getRandomTip()}</div>
 </body></html>`);
 
   loadingWindow.loadURL(`data:text/html;charset=utf-8,${html}`);
@@ -204,15 +276,30 @@ function registerShortcut(newShortcut) {
 }
 
 function createWindow() {
-  // Restore last window bounds, fallback to defaults
-  const savedBounds = store.get('windowBounds', { width: 650, height: 650, x: undefined, y: undefined });
+  // Restore last window bounds; first launch defaults to 75% of primary monitor
+  const savedBounds = store.get('windowBounds');
+  let initWidth, initHeight, initX, initY;
+  if (savedBounds) {
+    initWidth = savedBounds.width || 650;
+    initHeight = savedBounds.height || 650;
+    initX = savedBounds.x;
+    initY = savedBounds.y;
+  } else {
+    // First launch: 75% of primary display, centered
+    const { screen } = require('electron');
+    const wa = screen.getPrimaryDisplay().workArea;
+    initWidth = Math.round(wa.width * 0.75);
+    initHeight = Math.round(wa.height * 0.75);
+    initX = wa.x + Math.round((wa.width - initWidth) / 2);
+    initY = wa.y + Math.round((wa.height - initHeight) / 2);
+  }
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
 
   mainWindow = new BrowserWindow({
-    width: savedBounds.width || 650,
-    height: savedBounds.height || 650,
-    x: savedBounds.x,
-    y: savedBounds.y,
+    width: initWidth,
+    height: initHeight,
+    x: initX,
+    y: initY,
     minWidth: 400,
     minHeight: 400,
     show: false,
@@ -442,31 +529,7 @@ function createWindow() {
 
   // Smart folder open: focus existing Explorer window if path is already open, else open new
   ipcMain.on('open-path', (event, folderPath, closeAfter) => {
-    const psCode = `Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-$shell = New-Object -ComObject Shell.Application
-$target = $env:QL_PATH.TrimEnd('\')
-$found = $false
-foreach ($w in $shell.Windows()) {
-    try {
-        if ($w.Document -ne $null -and $w.Document.Folder.Self.Path.TrimEnd('\') -eq $target) {
-            $hwnd = [IntPtr][long]$w.HWND
-            [Win32]::ShowWindow($hwnd, 9)
-            [Win32]::SetForegroundWindow($hwnd)
-            $found = $true
-            break
-        }
-    } catch {}
-}
-if (-not $found) { Start-Process explorer.exe $env:QL_PATH }`;
-    const b64 = Buffer.from(psCode, 'utf16le').toString('base64');
-    exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, {
+    exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('open-path.ps1')}"`, {
       env: { ...process.env, QL_PATH: folderPath },
     });
     if (closeAfter) mainWindow.hide();
@@ -552,29 +615,52 @@ if (-not $found) { Start-Process explorer.exe $env:QL_PATH }`;
     return '';
   });
 
+  // Analyze clipboard for quick-add suggestion
+  ipcMain.handle('analyze-clipboard', async () => {
+    let text = clipboard.readText().trim();
+    // If no text, try file path from Explorer clipboard
+    if (!text) {
+      try {
+        const ps = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; $f=[System.Windows.Forms.Clipboard]::GetFileDropList(); if($f.Count -gt 0){$f[0]}`;
+        const b64 = Buffer.from(ps, 'utf16le').toString('base64');
+        const filePath = await new Promise((resolve) => {
+          exec(`powershell.exe -NoProfile -NonInteractive -EncodedCommand ${b64}`, { timeout: 2000, encoding: 'buffer' }, (err, stdout) => {
+            resolve(stdout ? Buffer.from(stdout).toString('utf8').trim() : '');
+          });
+        });
+        if (filePath) text = filePath;
+      } catch { /* ignore */ }
+    }
+    if (!text) return { type: 'none' };
+
+    // URL
+    if (/^https?:\/\//i.test(text)) {
+      try {
+        const u = new URL(text);
+        return { type: 'url', value: text, label: u.hostname.replace(/^www\./, '') };
+      } catch { /* fall through */ }
+    }
+
+    // Windows absolute path
+    if (/^[A-Za-z]:\\/.test(text) || text.startsWith('\\\\')) {
+      const name = text.split(/[/\\]/).filter(Boolean).pop() || text;
+      if (/\.exe$/i.test(text)) {
+        return { type: 'app', value: text, label: name.replace(/\.exe$/i, '') };
+      }
+      const hasExt = /\.[a-zA-Z0-9]{1,6}$/.test(name);
+      if (!hasExt || text.endsWith('\\') || text.endsWith('/')) {
+        return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
+      }
+    }
+
+    return { type: 'none' };
+  });
+
   // Check which window titles are currently alive (lightweight poll for inactive-card detection)
   ipcMain.handle('check-windows-alive', async (event, titles) => {
     if (!titles || !titles.length) return {};
     return new Promise((resolve) => {
-      const psCode = `
-function Strip-AppSuffix { param([string]$s) if ($s -match '^(.*?)\s+-\s+[^-]{1,30}$') { return $Matches[1].Trim() } return $s.Trim() }
-$titles = $env:QL_TITLES | ConvertFrom-Json
-$result = @()
-foreach ($t in $titles) {
-    $tBase = Strip-AppSuffix $t
-    $p = Get-Process | Where-Object {
-        $_.MainWindowHandle -ne 0 -and (
-            $_.MainWindowTitle -eq $t -or
-            (Strip-AppSuffix $_.MainWindowTitle) -eq $t -or
-            $_.MainWindowTitle -eq $tBase -or
-            (Strip-AppSuffix $_.MainWindowTitle) -eq $tBase
-        )
-    } | Select-Object -First 1
-    $result += [PSCustomObject]@{ t=$t; v=($null -ne $p) }
-}
-ConvertTo-Json -InputObject @($result) -Compress -Depth 2`.trim();
-      const b64 = Buffer.from(psCode, 'utf16le').toString('base64');
-      exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, {
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('check-windows-alive.ps1')}"`, {
         env: { ...process.env, QL_TITLES: JSON.stringify(titles) },
         shell: false,
       }, (err, stdout) => {
@@ -601,53 +687,9 @@ ConvertTo-Json -InputObject @($result) -Compress -Depth 2`.trim();
       // Two-phase scan:
       // 1) Shell.Application COM → enumerate ALL Explorer windows with real folder paths
       // 2) Get-Process → all other visible windows
-      const psCommand = `$OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class User32 {
-    [DllImport("user32.dll")]
-    public static extern bool IsWindowVisible(IntPtr hWnd);
-}
-"@
-
-# Phase 1: Explorer windows via Shell.Application (gets real folder paths)
-$shell = New-Object -ComObject Shell.Application
-$explorers = @()
-foreach ($w in $shell.Windows()) {
-    try {
-        $p = $w.Document.Folder.Self.Path
-        $n = $w.LocationName
-        $h = $w.HWND
-        if ($p -and $p -notlike 'http*' -and $p -notlike '::{*') {
-            $explorers += @{ ProcessName='explorer'; MainWindowTitle=$n; FolderPath=$p; HWND=$h }
-        }
-    } catch {}
-}
-
-# Phase 2: Non-explorer visible windows (with ExePath)
-$procs = @(Get-Process | Where-Object {
-    $_.MainWindowHandle -ne 0 -and
-    [User32]::IsWindowVisible($_.MainWindowHandle) -and
-    $_.MainWindowTitle -and
-    $_.ProcessName -ne 'explorer' -and
-    $_.ProcessName -ne 'electron' -and
-    $_.ProcessName -ne 'nost'
-} | ForEach-Object {
-    $ep = ''
-    try { $ep = $_.MainModule.FileName } catch {}
-    @{ ProcessName=$_.ProcessName; MainWindowTitle=$_.MainWindowTitle; ExePath=$ep }
-})
-
-$all = @()
-if ($explorers.Count -gt 0) { $all += $explorers }
-if ($procs.Count -gt 0) { $all += $procs }
-
-ConvertTo-Json -InputObject @{ windows=$all } -Compress -Depth 3`;
-
-      const b64 = Buffer.from(psCommand, 'utf16le').toString('base64');
-      exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, { shell: false, maxBuffer: 1024 * 1024 * 5 }, (error, stdout) => {
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('get-open-windows.ps1')}"`, {
+        shell: false, maxBuffer: 1024 * 1024 * 5,
+      }, (error, stdout) => {
         if (error) { resolve({ windows: [], browserTabs: global.chromeTabs }); return; }
         try {
           const parsed = JSON.parse(stdout.trim());
@@ -660,6 +702,22 @@ ConvertTo-Json -InputObject @{ windows=$all } -Compress -Depth 3`;
   });
 
   // ── Monitor utilities ────────────────────────────────────────
+  // ── Get recent items from Windows Recent folder ────────
+  ipcMain.handle('get-recent-items', async () => {
+    return new Promise((resolve) => {
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('get-recent-items.ps1')}"`, {
+        timeout: 5000,
+        encoding: 'buffer',
+      }, (err, stdout) => {
+        if (err) { resolve([]); return; }
+        try {
+          const text = Buffer.isBuffer(stdout) ? stdout.toString('utf8') : String(stdout);
+          resolve(JSON.parse(text.trim()));
+        } catch { resolve([]); }
+      });
+    });
+  });
+
   ipcMain.handle('get-monitors', () => {
     const { screen } = require('electron');
     const primary = screen.getPrimaryDisplay();
@@ -700,37 +758,15 @@ ConvertTo-Json -InputObject @{ windows=$all } -Compress -Depth 3`;
 
   // Smart app launch: focus if running, launch if not
   ipcMain.handle('launch-or-focus-app', async (event, exePath, closeAfter, monitor) => {
-    const psCode = `Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-$target = $env:QL_PATH
-$proc = Get-Process | Where-Object {
-    try { $_.MainModule.FileName -eq $target } catch { $false }
-} | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-
-if ($proc) {
-    $hWnd = $proc.MainWindowHandle
-    [Win32]::ShowWindow($hWnd, 9)
-    [Win32]::SetForegroundWindow($hWnd)
-    Write-Output "FOCUSED"
-} else {
-    Start-Process $target
-    Write-Output "LAUNCHED"
-}`;
     if (closeAfter) mainWindow.hide();
-    const b64 = Buffer.from(psCode, 'utf16le').toString('base64');
     const result = await new Promise((resolve) => {
-      exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, {
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('launch-or-focus-app.ps1')}"`, {
         env: { ...process.env, QL_PATH: exePath },
+        timeout: 10000,
       }, (err, stdout) => {
-        if (err) { resolve({ action: 'error', error: err.message }); return; }
+        if (err) { resolve({ success: false, error: err.message }); return; }
         const out = stdout.trim().toUpperCase();
-        resolve({ action: out.includes('FOCUSED') ? 'focused' : 'launched' });
+        resolve({ success: true, action: out.includes('FOCUSED') ? 'focused' : 'launched' });
       });
     });
 
@@ -740,38 +776,14 @@ if ($proc) {
   });
 
   ipcMain.handle('focus-window', async (event, title, closeAfter) => {
-    const psCode = `Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
-"@
-function Strip-AppSuffix { param([string]$s) if ($s -match '^(.*?)\s+-\s+[^-]{1,30}$') { return $Matches[1].Trim() } return $s.Trim() }
-$tgt = $env:QL_TITLE; $tgtBase = Strip-AppSuffix $tgt
-$process = Get-Process | Where-Object {
-    $_.MainWindowHandle -ne 0 -and (
-        $_.MainWindowTitle -eq $tgt -or
-        (Strip-AppSuffix $_.MainWindowTitle) -eq $tgt -or
-        $_.MainWindowTitle -eq $tgtBase -or
-        (Strip-AppSuffix $_.MainWindowTitle) -eq $tgtBase
-    )
-} | Select-Object -First 1
-if ($process) {
-  $hWnd = $process.MainWindowHandle
-  [Win32]::ShowWindow($hWnd, 9)
-  [Win32]::SetForegroundWindow($hWnd)
-  Write-Output "FOUND"
-} else {
-  Write-Output "NOT_FOUND"
-}`;
     if (closeAfter) mainWindow.hide();
-    const b64 = Buffer.from(psCode, 'utf16le').toString('base64');
     return new Promise((resolve) => {
-      exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, { env: { ...process.env, QL_TITLE: title } }, (err, stdout) => {
-        if (err) { resolve({ found: false, error: err.message }); return; }
-        resolve({ found: stdout.trim().toUpperCase().includes('FOUND') });
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('focus-window.ps1')}"`, {
+        env: { ...process.env, QL_TITLE: title },
+        timeout: 5000,
+      }, (err, stdout) => {
+        if (err) { resolve({ success: false, error: err.message }); return; }
+        resolve({ success: stdout.trim().toUpperCase().includes('FOUND') });
       });
     });
   });
@@ -870,133 +882,18 @@ public class QL3{[DllImport("user32.dll")] public static extern bool ShowWindow(
           width:  Math.round(_tilePri.workArea.width),
           height: Math.round(_tilePri.workArea.height),
         };
-        const psCode = `Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class TileWin32 {
-    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndAfter, int X, int Y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-"@
-# NO SetProcessDPIAware: keep process DPI-unaware so Win32 coords match Electron workArea (96-DPI logical)
-# Work area from Electron workArea (96-DPI per-monitor logical)
-$screen = [PSCustomObject]@{ X=${_twa.x}; Y=${_twa.y}; Width=${_twa.width}; Height=${_twa.height} }
-
-$items = '${JSON.stringify(identifiers).replace(/[^\x00-\x7F]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')).replace(/'/g, "''")}' | ConvertFrom-Json
-$count = $items.Count
-if ($count -lt 2) { exit }
-
-# Exact column width (last column gets remainder)
-$colWidthBase = [math]::Floor($screen.Width / $count)
-# Use long integer set for reliable HWND dedup (IntPtr comparison is unreliable in PS)
-$usedHwndInts = [System.Collections.Generic.List[long]]::new()
-
-# Windows 10/11 invisible shadow border compensation
-# Each window has an 8px transparent resize area on each side.
-# We extend the HWND rect by this amount so visible edges meet perfectly.
-$border = 8
-
-for ($i = 0; $i -lt $count; $i++) {
-    $item = $items[$i]
-    $hwnd = $null
-
-    if ($item.type -eq 'app') {
-        # Primary: match by full exe path
-        $proc = Get-Process | Where-Object {
-            try { $_.MainModule.FileName -eq $item.value } catch { $false }
-        } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        if (-not $proc) {
-            # Fallback: match by process name (basename without .exe) for 64-bit or access-denied cases
-            $exeName = [System.IO.Path]::GetFileNameWithoutExtension($item.value)
-            $proc = Get-Process -Name $exeName -ErrorAction SilentlyContinue |
-                Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        }
-        if ($proc) { $hwnd = $proc.MainWindowHandle }
-    }
-    elseif ($item.type -eq 'window') {
-        # item.value = actual window title stored at scan time; item.title = user display label
-        # Try exact match on value first
-        $proc = Get-Process | Where-Object { $_.MainWindowTitle -eq $item.value -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        # Then try exact match on title (user label, in case it was edited to match)
-        if (-not $proc -and $item.title -ne $item.value) {
-            $proc = Get-Process | Where-Object { $_.MainWindowTitle -eq $item.title -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        }
-        # Fuzzy fallback: any window whose title contains the stored value
-        if (-not $proc) {
-            $searchVal = $item.value
-            $proc = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$searchVal*" } | Select-Object -First 1
-        }
-        if ($proc) { $hwnd = $proc.MainWindowHandle }
-    }
-    elseif ($item.type -eq 'folder') {
-        $targetPath = $item.value.TrimEnd('\')
-        $comShell = New-Object -ComObject Shell.Application
-        foreach ($w in $comShell.Windows()) {
-            try {
-                if ($w.Document -ne $null -and $w.Document.Folder.Self.Path.TrimEnd('\') -eq $targetPath) {
-                    $hwnd = [IntPtr][long]$w.HWND; break
-                }
-            } catch {}
-        }
-        if (-not $hwnd) {
-            $folderLeaf = Split-Path $targetPath -Leaf
-            $proc = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq $folderLeaf } | Select-Object -First 1
-            if ($proc) { $hwnd = $proc.MainWindowHandle }
-        }
-    }
-    elseif ($item.type -eq 'url' -or $item.type -eq 'browser') {
-        # After tab detach, find the newly created browser window by matching tab title or item title
-        $searchTitle = if ($item.tabTitle -ne '') { $item.tabTitle } else { $item.title }
-        $browsers = @('chrome','msedge','firefox','opera','brave','vivaldi')
-        $proc = Get-Process -Name $browsers -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' } |
-            Where-Object { $_.MainWindowTitle -like "*$searchTitle*" } |
-            Select-Object -First 1
-        if (-not $proc) {
-            # Fallback: pick any browser window that is not the main multi-tab window
-            $proc = Get-Process -Name $browsers -ErrorAction SilentlyContinue |
-                Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' } |
-                Sort-Object -Property StartTime -Descending |
-                Select-Object -First 1
-        }
-        if ($proc) { $hwnd = $proc.MainWindowHandle }
-    }
-
-    if ($hwnd -ne $null) {
-        $hwndInt = [long]$hwnd
-        Write-Output "[$i] FOUND type=$($item.type) value='$($item.value)' hwnd=$hwndInt proc=$($proc.ProcessName)"
-        if ($hwndInt -gt 0 -and -not $usedHwndInts.Contains($hwndInt)) {
-            $usedHwndInts.Add($hwndInt)
-            # Column x position with border compensation
-            $colW = if ($i -eq $count - 1) { $screen.Width - ($colWidthBase * ($count - 1)) } else { $colWidthBase }
-            $x = $screen.X + ($i * $colWidthBase) - $border
-            $y = $screen.Y - $border
-            $w = $colW + ($border * 2)
-            $h = $screen.Height + ($border * 2)
-            Write-Output "[$i] MOVE x=$x y=$y w=$w h=$h"
-
-            [TileWin32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE: clears WS_MAXIMIZE flag
-            Start-Sleep -Milliseconds 150
-            [TileWin32]::MoveWindow($hwnd, $x, $y, $w, $h, $true) | Out-Null
-            [TileWin32]::SetWindowPos($hwnd, [IntPtr]::Zero, $x, $y, $w, $h, 0x0064) | Out-Null
-            [TileWin32]::SetForegroundWindow($hwnd) | Out-Null
-        } else {
-            Write-Output "[$i] SKIPPED (dup hwnd=$hwndInt)"
-        }
-    } else {
-        Write-Output "[$i] NOT_FOUND type=$($item.type) value='$($item.value)' title='$($item.title)'"
-    }
-}
-Write-Output "SCREEN: origin=$($screen.X),$($screen.Y) size=$($screen.Width)x$($screen.Height) colBase=$colWidthBase"`;
-        const tmpTilePs = path.join(os.tmpdir(), `ql_tilewin_${Date.now()}.ps1`);
-        fs.writeFileSync(tmpTilePs, '\ufeff' + psCode, 'utf8');
-        exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${tmpTilePs}"`, {
+        exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('tile-windows.ps1')}"`, {
           shell: false,
           maxBuffer: 1024 * 1024 * 2,
+          env: {
+            ...process.env,
+            QL_SCREEN_X: String(_twa.x),
+            QL_SCREEN_Y: String(_twa.y),
+            QL_SCREEN_W: String(_twa.width),
+            QL_SCREEN_H: String(_twa.height),
+            QL_ITEMS: JSON.stringify(identifiers),
+          },
         }, (err, stdout, stderr) => {
-          fs.unlink(tmpTilePs, () => {});
           if (stderr) console.error('tile-windows stderr:', stderr);
           if (err) console.error('tile-windows error:', err.message);
           if (stdout) console.log('tile-windows debug:\n' + stdout);
@@ -1034,38 +931,8 @@ Write-Output "SCREEN: origin=$($screen.X),$($screen.Y) size=$($screen.Width)x$($
 
     if (needsCheck.length === 0) return results;
 
-    const psCode = `
-$items = $env:QL_ITEMS | ConvertFrom-Json
-$out = @()
-foreach ($item in $items) {
-  $alive = $false
-  if ($item.type -eq 'window') {
-    $p = Get-Process | Where-Object { ($_.MainWindowTitle -eq $item.value -or $_.MainWindowTitle -eq $item.title) -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if (-not $p) {
-      $searchVal = $item.value
-      $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$searchVal*" } | Select-Object -First 1
-    }
-    $alive = $p -ne $null
-  } elseif ($item.type -eq 'app') {
-    $exeName = [System.IO.Path]::GetFileNameWithoutExtension($item.value)
-    $p = Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if (-not $p) {
-      $p = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $item.value } catch { $false } } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    }
-    $alive = $p -ne $null
-  } elseif ($item.type -eq 'folder') {
-    $comShell = New-Object -ComObject Shell.Application
-    foreach ($w in $comShell.Windows()) {
-      try { if ($w.Document.Folder.Self.Path -eq $item.value) { $alive = $true; break } } catch {}
-    }
-  }
-  $out += [PSCustomObject]@{ idx = $item.idx; alive = $alive }
-}
-$out | ConvertTo-Json -Compress`;
-
     return new Promise((resolve) => {
-      const b64 = Buffer.from(psCode.trim(), 'utf16le').toString('base64');
-      exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, {
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('check-items-for-tile.ps1')}"`, {
         env: { ...process.env, QL_ITEMS: JSON.stringify(needsCheck) },
         maxBuffer: 1024 * 1024,
       }, (err, stdout) => {
@@ -1166,35 +1033,12 @@ public class QL3{[DllImport("user32.dll")] public static extern bool ShowWindow(
 
   // ── Run tile PS only (no launching) ────────────────────────
   ipcMain.handle('run-tile-ps', async (event, { identifiers, waitMs = 800, monitor = 0 }) => {
-    // ── Resolve target monitor work area via Electron — use PHYSICAL pixels ──
-    // Same approach as maximize-window: SetProcessDPIAware in PS + workArea * scaleFactor.
-    // This avoids the bug where Update-AutoMonitor (System.Windows.Forms.Screen) would
-    // override coords with physical-pixel values in a DPI-unaware context, causing wrong tiling.
-    const { screen } = require('electron');
-    const displays = screen.getAllDisplays();
-    let targetWA, scaleFactor;
-    {
-      const disp = (monitor >= 1 && monitor <= displays.length)
-        ? displays[monitor - 1]
-        : screen.getPrimaryDisplay();
-      const wa = disp.workArea;
-      const sf = disp.scaleFactor || 1;
-      scaleFactor = sf;
-      // Convert to physical pixels (same as maximize-window)
-      targetWA = {
-        x:      Math.round(wa.x * sf),
-        y:      Math.round(wa.y * sf),
-        width:  Math.round(wa.width  * sf),
-        height: Math.round(wa.height * sf),
-      };
-    }
+    // Electron DIP coords → PS scripts via _Position.ps1 (DPI-unaware context). No scaling.
+    const { wa } = getMonitorWorkArea(monitor);
+    const targetWA = { x: wa.x, y: wa.y, width: wa.width, height: wa.height };
     const count = identifiers.length;
-    // Browser resize uses logical pixels (SSE to Chrome extension)
-    const { screen: _scrLogical } = require('electron');
-    const _dispLogical = (monitor >= 1 && monitor <= displays.length) ? displays[monitor - 1] : _scrLogical.getPrimaryDisplay();
-    const waLogical = _dispLogical.workArea;
-    const colWidthBaseLogical = Math.floor(waLogical.width / count);
-    const wa = waLogical; // alias: browser resize keeps logical px (Chrome extension coords)
+    // Browser resize also uses Electron DIP (logical px) — same as targetWA
+    const colWidthBaseLogical = Math.floor(targetWA.width / count);
 
     // ── Find Chrome tab matching an identifier ─────────────
     const findTab = (item) => {
@@ -1227,10 +1071,10 @@ public class QL3{[DllImport("user32.dll")] public static extern bool ShowWindow(
             if (done.has(i)) continue;
             const tab = findTab(identifiers[i]);
             if (tab && tabs.filter(t => t.windowId === tab.windowId).length === 1) {
-              const colW = i === count - 1 ? wa.width - colWidthBase * (count - 1) : colWidthBase;
+              const colW = i === count - 1 ? targetWA.width - colWidthBaseLogical * (count - 1) : colWidthBaseLogical;
               sseConnection.write(`data: ${JSON.stringify({
                 action: 'resize', windowId: tab.windowId, tabId: tab.id,
-                left: wa.x + i * colWidthBase, top: wa.y, width: colW, height: wa.height,
+                left: targetWA.x + i * colWidthBaseLogical, top: targetWA.y, width: colW, height: targetWA.height,
               })}\n\n`);
               done.add(i);
             }
@@ -1249,172 +1093,26 @@ public class QL3{[DllImport("user32.dll")] public static extern bool ShowWindow(
           ...item,
           isBrowser: item.type === 'url' || item.type === 'browser',
         }));
-        const itemsJson = JSON.stringify(flagged)
-          .replace(/[^\x00-\x7F]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
-          .replace(/'/g, "''");
         const monitorIndex = typeof monitor === 'number' ? monitor : 0;
         // Pass Electron-resolved work area directly to PS (avoids AllScreens ordering issues)
         const psScreenX = targetWA.x;
         const psScreenY = targetWA.y;
         const psScreenW = targetWA.width;
         const psScreenH = targetWA.height;
-        const psCode = `try {
-    if (-not ([System.Management.Automation.PSTypeName]'TileWin32b').Type) {
-        Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-using System.Threading;
-public class TileWin32b {
-    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndAfter, int X, int Y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-    [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
-    public struct RECT { public int Left, Top, Right, Bottom; }
-    public static void SnapLeft(IntPtr hWnd) {
-        ShowWindow(hWnd, 9); SetForegroundWindow(hWnd); Thread.Sleep(350);
-        keybd_event(0x5B,0,0,UIntPtr.Zero); keybd_event(0x25,0,0,UIntPtr.Zero);
-        keybd_event(0x25,0,2,UIntPtr.Zero); keybd_event(0x5B,0,2,UIntPtr.Zero);
-        Thread.Sleep(500);
-    }
-    public static void SnapRight(IntPtr hWnd) {
-        ShowWindow(hWnd, 9); SetForegroundWindow(hWnd); Thread.Sleep(350);
-        keybd_event(0x5B,0,0,UIntPtr.Zero); keybd_event(0x27,0,0,UIntPtr.Zero);
-        keybd_event(0x27,0,2,UIntPtr.Zero); keybd_event(0x5B,0,2,UIntPtr.Zero);
-        Thread.Sleep(500);
-    }
-}
-"@
-    }
-} catch { exit 1 }
-# SetProcessDPIAware: use physical pixels — consistent with maximize-window approach
-[TileWin32b]::SetProcessDPIAware() | Out-Null
-# Work area in physical pixels, passed directly from Electron (workArea * scaleFactor)
-$screenWidth = ${psScreenW}; $screenHeight = ${psScreenH}; $screenX = ${psScreenX}; $screenY = ${psScreenY}
-$targetMonitorIdx = ${monitorIndex}
-$items = '${itemsJson}' | ConvertFrom-Json
-$count = @($items).Count
-if ($count -lt 1) { exit }
-$border = 8
-$autoMonitorSet = $false
-function Get-ColLayout($idx) {
-    $colBase = [math]::Floor($screenWidth / $count)
-    $colW = if ($idx -eq $count - 1) { $screenWidth - ($colBase * ($count - 1)) } else { $colBase }
-    $x = $screenX + ($idx * $colBase) - $border
-    $y = $screenY - $border
-    $w = $colW + ($border * 2)
-    $h = $screenHeight + ($border * 2)
-    return @{ x=$x; y=$y; w=$w; h=$h }
-}
-function Tile-Hwnd($hwnd, $idx) {
-    $hwndInt = [long]$hwnd
-    if ($hwndInt -le 0) { return }
-    $c = Get-ColLayout $idx
-    # SW_RESTORE(9): removes WS_MAXIMIZE flag so MoveWindow can resize freely
-    [TileWin32b]::ShowWindow($hwnd, 9) | Out-Null
-    Start-Sleep -Milliseconds 200
-    [TileWin32b]::MoveWindow($hwnd, $c.x, $c.y, $c.w, $c.h, $true) | Out-Null
-    Start-Sleep -Milliseconds 50
-    # 0x0064 = SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED — forces style recalc
-    [TileWin32b]::SetWindowPos($hwnd, [IntPtr]::Zero, $c.x, $c.y, $c.w, $c.h, 0x0064) | Out-Null
-    [TileWin32b]::SetForegroundWindow($hwnd) | Out-Null
-}
-function Update-AutoMonitor($hwnd) {
-    # No-op: screen coords are passed as physical pixels from Electron (workArea * scaleFactor).
-    # WinForms Screen override removed — it could mismatch DPI context and corrupt coords.
-    $script:autoMonitorSet = $true
-}
-function Find-Hwnd($item) {
-    if ($item.type -eq 'app') {
-        $proc = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $item.value } catch { $false } } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        if (-not $proc) {
-            $exeName = [System.IO.Path]::GetFileNameWithoutExtension($item.value)
-            $proc = Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        }
-        if ($proc) { return $proc.MainWindowHandle }
-    } elseif ($item.type -eq 'window') {
-        $proc = Get-Process | Where-Object { $_.MainWindowTitle -eq $item.value -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        if (-not $proc -and $item.title -ne $item.value) {
-            $proc = Get-Process | Where-Object { $_.MainWindowTitle -eq $item.title -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-        }
-        if (-not $proc) {
-            $sv = $item.value
-            $proc = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$sv*" } | Select-Object -First 1
-        }
-        if ($proc) { return $proc.MainWindowHandle }
-    } elseif ($item.type -eq 'folder') {
-        $tp = $item.value.TrimEnd('\')
-        $cs = New-Object -ComObject Shell.Application
-        foreach ($w in $cs.Windows()) {
-            try { if ($w.Document -ne $null -and $w.Document.Folder.Self.Path.TrimEnd('\') -eq $tp) { return [IntPtr][long]$w.HWND } } catch {}
-        }
-        $leaf = Split-Path $tp -Leaf
-        $proc = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$leaf*" } | Select-Object -First 1
-        if ($proc) { return $proc.MainWindowHandle }
-    } elseif ($item.type -eq 'url' -or $item.type -eq 'browser') {
-        $st = if ($item.tabTitle -ne '') { $item.tabTitle } else { $item.title }
-        $br = @('chrome','msedge','firefox','opera','brave','vivaldi')
-        $proc = Get-Process -Name $br -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$st*" } | Select-Object -First 1
-        if ($proc) { return $proc.MainWindowHandle }
-    }
-    return $null
-}
-$hwnds = @{}
-$tiledSet = [System.Collections.Generic.HashSet[long]]::new()
-# Pre-mark browser items — handled by Chrome Extension SSE, not PS
-for ($j = 0; $j -lt $count; $j++) {
-    if (@($items)[$j].isBrowser -eq $true) { $hwnds[$j] = [IntPtr]0; $tiledSet.Add(0) | Out-Null }
-}
-# ── Phase 1: Discover windows + tile each one immediately (up to 30s) ─
-$deadline = (Get-Date).AddSeconds(30)
-do {
-    for ($i = 0; $i -lt $count; $i++) {
-        if (-not $hwnds.ContainsKey($i)) {
-            $curItem = @($items)[$i]
-            $h = Find-Hwnd $curItem
-            if ($null -ne $h) {
-                try { $hwnds[$i] = [IntPtr]([long](@($h)[-1])) } catch {}
-            }
-        }
-        if ($hwnds.ContainsKey($i)) {
-            $hwndInt = [long]$hwnds[$i]
-            if ($hwndInt -gt 0 -and -not $tiledSet.Contains($hwndInt)) {
-                # Auto-monitor: detect from first real window found
-                if ($targetMonitorIdx -eq 0) { Update-AutoMonitor $hwnds[$i] }
-                # Brief wait for app to finish its own initialization/maximize animation
-                Start-Sleep -Milliseconds 400
-                Tile-Hwnd $hwnds[$i] $i
-                $tiledSet.Add($hwndInt) | Out-Null
-            }
-        }
-    }
-    $allFound = $true
-    for ($i = 0; $i -lt $count; $i++) { if (-not $hwnds.ContainsKey($i)) { $allFound = $false; break } }
-    if ($allFound) { break }
-    Start-Sleep -Milliseconds 500
-} while ((Get-Date) -lt $deadline)
-# ── Phase 2: Multi-pass settle — re-tile all found windows to lock positions ─
-# Pass 1 at 1.2s, Pass 2 at 2.0s, Pass 3 at 3.0s
-$settlePasses = @(1200, 800, 1000)
-foreach ($delayMs in $settlePasses) {
-    Start-Sleep -Milliseconds $delayMs
-    for ($i = 0; $i -lt $count; $i++) {
-        if ($hwnds.ContainsKey($i) -and [long]$hwnds[$i] -gt 0) {
-            Tile-Hwnd $hwnds[$i] $i
-            Start-Sleep -Milliseconds 80
-        }
-    }
-}
-` ;
-        const tmpPs = path.join(os.tmpdir(), `ql_tile_${Date.now()}.ps1`);
-        fs.writeFileSync(tmpPs, '\ufeff' + psCode, 'utf8');
-        exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${tmpPs}"`, {
+        exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('run-tile-ps.ps1')}"`, {
           shell: false,
           maxBuffer: 1024 * 1024 * 2,
+          timeout: 45000,
+          env: {
+            ...process.env,
+            QL_SCREEN_X: String(psScreenX),
+            QL_SCREEN_Y: String(psScreenY),
+            QL_SCREEN_W: String(psScreenW),
+            QL_SCREEN_H: String(psScreenH),
+            QL_MONITOR: String(monitorIndex),
+            QL_ITEMS: JSON.stringify(flagged),
+          },
         }, (err, stdout, stderr) => {
-          fs.unlink(tmpPs, () => {});
           if (stderr) console.error('run-tile-ps stderr:', stderr);
           resolve({ success: !err, error: err?.message || '' });
         });
@@ -1426,88 +1124,21 @@ foreach ($delayMs in $settlePasses) {
     return psResult;
   });
 
-  // ── Maximize a specific window by title/path (DPI-aware, fills work area) ──
+  // ── Maximize a specific window to fill target monitor work area ──
   ipcMain.handle('maximize-window', async (event, { item, monitor = 0 }) => {
-    // Compute target rectangle from Electron display info.
-    // Electron workArea is in 96-DPI logical px. For DPI-unaware Win32, this matches.
-    // But we also pass scaleFactor so the PS script can use SetProcessDPIAware()
-    // and compute the real physical-pixel rect (robust across mixed-DPI setups).
-    const { screen } = require('electron');
-    const displays = screen.getAllDisplays();
-    const disp = (monitor >= 1 && monitor <= displays.length)
-      ? displays[monitor - 1]
-      : screen.getPrimaryDisplay();
-    const wa = disp.workArea;
-    const sf = disp.scaleFactor || 1;
-
-    // Physical-pixel coordinates (for DPI-aware mode)
-    const border = 8; // invisible shadow border on Win10/11
-    const psX  = Math.round(wa.x * sf) - border;
-    const psY  = Math.round(wa.y * sf) - border;
-    const psW  = Math.round(wa.width  * sf) + border * 2;
-    const psH  = Math.round(wa.height * sf) + border * 2;
-
-    const itemJson = JSON.stringify(item)
-      .replace(/[^\x00-\x7F]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
-      .replace(/'/g, "''");
-
-    const psCode = `try {
-    if (-not ([System.Management.Automation.PSTypeName]'MaxWin32').Type) {
-        Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class MaxWin32 {
-    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndAfter, int X, int Y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-}
-"@
-    }
-} catch { Write-Output "FAIL"; exit 1 }
-# Become DPI-aware so MoveWindow/SetWindowPos use real physical pixels
-[MaxWin32]::SetProcessDPIAware() | Out-Null
-$item = '${itemJson}' | ConvertFrom-Json
-$hwnd = $null
-if ($item.type -eq 'app') {
-    $proc = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $item.value } catch { $false } } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if (-not $proc) { $proc = Get-Process -Name ([System.IO.Path]::GetFileNameWithoutExtension($item.value)) -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
-    if ($proc) { $hwnd = $proc.MainWindowHandle }
-}
-elseif ($item.type -eq 'window') {
-    $proc = Get-Process | Where-Object { ($_.MainWindowTitle -eq $item.value -or $_.MainWindowTitle -eq $item.title) -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if ($proc) { $hwnd = $proc.MainWindowHandle }
-}
-elseif ($item.type -eq 'folder') {
-    $tp = $item.value.TrimEnd('\\')
-    $cs = New-Object -ComObject Shell.Application
-    foreach ($w in $cs.Windows()) { try { if ($w.Document -ne $null -and $w.Document.Folder.Self.Path.TrimEnd('\\') -eq $tp) { $hwnd = [IntPtr][long]$w.HWND; break } } catch {} }
-    if (-not $hwnd) { $proc = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$(Split-Path $tp -Leaf)*" } | Select-Object -First 1; if ($proc) { $hwnd = $proc.MainWindowHandle } }
-}
-elseif ($item.type -eq 'url' -or $item.type -eq 'browser') {
-    $st = if ($item.tabTitle -ne '') { $item.tabTitle } else { $item.title }
-    $proc = Get-Process -Name @('chrome','msedge','firefox','opera','brave','vivaldi') -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$st*" } | Select-Object -First 1
-    if ($proc) { $hwnd = $proc.MainWindowHandle }
-}
-if ($hwnd -and [long]$hwnd -gt 0) {
-    # Restore from minimized/maximized state first
-    [MaxWin32]::ShowWindow($hwnd, 9) | Out-Null
-    Start-Sleep -Milliseconds 150
-    # Move + resize to fill target monitor work area (physical pixels, DPI-aware)
-    [MaxWin32]::MoveWindow($hwnd, ${psX}, ${psY}, ${psW}, ${psH}, $true) | Out-Null
-    Start-Sleep -Milliseconds 50
-    # Reinforce with SetWindowPos (SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOZORDER)
-    [MaxWin32]::SetWindowPos($hwnd, [IntPtr]::Zero, ${psX}, ${psY}, ${psW}, ${psH}, 0x0064) | Out-Null
-    [MaxWin32]::SetForegroundWindow($hwnd) | Out-Null
-    Write-Output "OK"
-} else {
-    Write-Output "NOTFOUND"
-}`;
-    const tmpPs = path.join(os.tmpdir(), `ql_max_${Date.now()}.ps1`);
-    fs.writeFileSync(tmpPs, '\ufeff' + psCode, 'utf8');
+    // PS script queries Windows directly for work area via Get-NativeWorkArea.
+    // Only pass monitor index + item — no coordinate translation needed.
     return new Promise((resolve) => {
-      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${tmpPs}"`, { shell: false }, (err, stdout) => {
-        fs.unlink(tmpPs, () => {});
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('maximize-window.ps1')}"`, {
+        shell: false,
+        timeout: 10000,
+        env: {
+          ...process.env,
+          QL_ITEM: JSON.stringify(item),
+          QL_MONITOR: String(monitor),
+        },
+      }, (err, stdout, stderr) => {
+        if (stderr) console.error(stderr);
         const out = (stdout || '').trim();
         resolve({ success: !err && out === 'OK' });
       });
@@ -1537,96 +1168,17 @@ if ($hwnd -and [long]$hwnd -gt 0) {
   // ── Snap window to zone (left/right/top half) ─────────────
   ipcMain.handle('snap-window', async (event, { item, zone }) => {
     // Electron workArea = 96-DPI per-monitor logical px = DPI-unaware Win32 space.
-    // Use workArea values directly — no scaleFactor multiplication.
-    const { screen: _snapScr } = require('electron');
-    const _snapDisp = _snapScr.getPrimaryDisplay();
-    const _snapWa = _snapDisp.workArea;
-    const snapX = Math.round(_snapWa.x);
-    const snapY = Math.round(_snapWa.y);
-    const snapW = Math.round(_snapWa.width);
-    const snapH = Math.round(_snapWa.height);
-
-    const psCode = `Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class SnapWin32 {
-    [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndAfter, int X, int Y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-"@
-# NO SetProcessDPIAware: keep DPI-unaware so Win32 coords = Electron workArea (96-DPI logical)
-$screen = [PSCustomObject]@{ X=${snapX}; Y=${snapY}; Width=${snapW}; Height=${snapH} }
-$item = $env:QL_ITEM | ConvertFrom-Json
-$zone = $env:QL_ZONE
-$hwnd = $null
-
-if ($item.type -eq 'app') {
-    $proc = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $item.value } catch { $false } } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if (-not $proc) {
-        $exeName = [System.IO.Path]::GetFileNameWithoutExtension($item.value)
-        $proc = Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    }
-    if ($proc) { $hwnd = $proc.MainWindowHandle }
-} elseif ($item.type -eq 'window') {
-    $proc = Get-Process | Where-Object { $_.MainWindowTitle -eq $item.value -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-    if (-not $proc) {
-        $searchVal = $item.value
-        $proc = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$searchVal*" } | Select-Object -First 1
-    }
-    if ($proc) { $hwnd = $proc.MainWindowHandle }
-} elseif ($item.type -eq 'folder') {
-    $targetPath = $item.value.TrimEnd('\')
-    $comShell = New-Object -ComObject Shell.Application
-    foreach ($w in $comShell.Windows()) {
-        try {
-            if ($w.Document -ne $null -and $w.Document.Folder.Self.Path.TrimEnd('\') -eq $targetPath) {
-                $hwnd = [IntPtr][long]$w.HWND; break
-            }
-        } catch {}
-    }
-    if (-not $hwnd) {
-        $folderLeaf = Split-Path $targetPath -Leaf
-        $proc = Get-Process explorer -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -eq $folderLeaf } | Select-Object -First 1
-        if ($proc) { $hwnd = $proc.MainWindowHandle }
-    }
-} elseif ($item.type -eq 'url' -or $item.type -eq 'browser') {
-    $browsers = @('chrome','msedge','firefox','opera','brave','vivaldi')
-    $proc = Get-Process -Name $browsers -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -ne '' } | Sort-Object StartTime -Descending | Select-Object -First 1
-    if ($proc) { $hwnd = $proc.MainWindowHandle }
-}
-
-if ($hwnd -and [long]$hwnd -gt 0) {
-    $border = 8
-    $x = 0; $y = 0; $w = 0; $h = 0
-    if ($zone -eq 'left') {
-        $x = $screen.X - $border
-        $y = $screen.Y - $border
-        $w = [math]::Floor($screen.Width / 2) + $border * 2
-        $h = $screen.Height + $border * 2
-    } elseif ($zone -eq 'right') {
-        $x = $screen.X + [math]::Floor($screen.Width / 2) - $border
-        $y = $screen.Y - $border
-        $w = $screen.Width - [math]::Floor($screen.Width / 2) + $border * 2
-        $h = $screen.Height + $border * 2
-    } elseif ($zone -eq 'top') {
-        $x = $screen.X - $border
-        $y = $screen.Y - $border
-        $w = $screen.Width + $border * 2
-        $h = [math]::Floor($screen.Height / 2) + $border * 2
-    }
-    [SnapWin32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE: clears WS_MAXIMIZE
-    Start-Sleep -Milliseconds 150
-    [SnapWin32]::MoveWindow($hwnd, $x, $y, $w, $h, $true) | Out-Null
-    [SnapWin32]::SetWindowPos($hwnd, [IntPtr]::Zero, $x, $y, $w, $h, 0x0064) | Out-Null
-    [SnapWin32]::SetForegroundWindow($hwnd) | Out-Null
-}`;
-    const tmpPs = path.join(os.tmpdir(), `ql_snap_${Date.now()}.ps1`);
-    fs.writeFileSync(tmpPs, '\ufeff' + psCode, 'utf8');
+    // PS script queries Windows directly for work area via Get-NativeWorkArea.
     return new Promise((resolve) => {
-      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${tmpPs}"`, { shell: false }, (err) => {
-        fs.unlink(tmpPs, () => {});
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('snap-window.ps1')}"`, {
+        shell: false,
+        timeout: 10000,
+        env: {
+          ...process.env,
+          QL_ITEM: JSON.stringify(item),
+          QL_ZONE: zone,
+        },
+      }, (err) => {
         resolve({ success: !err });
       });
     });
@@ -1635,26 +1187,7 @@ if ($hwnd -and [long]$hwnd -gt 0) {
   // Kick Feature: Check foreground window for File Dialog
   ipcMain.handle('detect-dialog', async () => {
     return new Promise((resolve) => {
-      const psCode = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public class Win32 {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-  [DllImport("user32.dll")] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
-}
-"@
-$hWnd = [Win32]::GetForegroundWindow()
-$title = New-Object System.Text.StringBuilder 256
-$class = New-Object System.Text.StringBuilder 256
-[Win32]::GetWindowText($hWnd, $title, 256) | Out-Null
-[Win32]::GetClassName($hWnd, $class, 256) | Out-Null
-$res = @{ title = $title.ToString(); className = $class.ToString(); isDialog = ($class.ToString() -eq "#32770") }
-$res | ConvertTo-Json -Compress`;
-      const b64 = Buffer.from(psCode, 'utf16le').toString('base64');
-      exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, (err, stdout) => {
+      exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('detect-dialog.ps1')}"`, (err, stdout) => {
         try { resolve(JSON.parse(stdout.trim())); } catch(e) { resolve({ isDialog: false }); }
       });
     });
@@ -1662,18 +1195,9 @@ $res | ConvertTo-Json -Compress`;
 
   // Kick Feature: Jump to folder in active dialog
   ipcMain.on('jump-to-dialog-folder', (event, folderPath) => {
-    const psCode = `
-$obj = New-Object -ComObject WScript.Shell
-# Small delay to ensure Quick Launcher is not stealing focus anymore
-Start-Sleep -m 100
-$obj.SendKeys("^l") # Ctrl+L for address bar
-Start-Sleep -m 100
-$obj.SendKeys($env:QL_PATH)
-Start-Sleep -m 100
-$obj.SendKeys("{ENTER}")
-`;
-    const b64 = Buffer.from(psCode, 'utf16le').toString('base64');
-    exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, { env: { ...process.env, QL_PATH: folderPath } });
+    exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('jump-to-dialog-folder.ps1')}"`, {
+      env: { ...process.env, QL_PATH: folderPath },
+    });
   });
 }
 
@@ -1699,6 +1223,25 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  // ── Monitor hot-plug detection ─────────────────────────────
+  // Notify renderer whenever monitors are added or removed so it can
+  // refresh monitorCount and validate stored monitor preferences.
+  {
+    const { screen: _monScr } = require('electron');
+    const sendMonitorChange = () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      const primary = _monScr.getPrimaryDisplay();
+      const monitors = _monScr.getAllDisplays().map((d, i) => ({
+        index: i + 1, id: d.id, isPrimary: d.id === primary.id,
+        bounds: d.bounds, workArea: d.workArea, scaleFactor: d.scaleFactor,
+      }));
+      mainWindow.webContents.send('monitors-changed', monitors);
+    };
+    _monScr.on('display-added',   sendMonitorChange);
+    _monScr.on('display-removed', sendMonitorChange);
+    _monScr.on('display-metrics-changed', sendMonitorChange);
+  }
 
   // ── Auto-updater setup ─────────────────────────────────────
   if (app.isPackaged) {

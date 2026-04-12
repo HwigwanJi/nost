@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Space, NodeGroup, LauncherItem } from '../types';
+import { Icon } from '@/components/ui/Icon';
 
 // ── Types ──────────────────────────────────────────────────────
 export type ParsedCommand =
@@ -331,12 +332,10 @@ export function CommandBar({ isOpen, inputValue, onInputChange, onClose, onExecu
       >
         {/* Input row */}
         <div style={{ display: 'flex', alignItems: 'center', padding: '12px 14px', gap: 10, borderBottom: '1px solid var(--border-rgba)' }}>
-          <span className="material-symbols-rounded" style={{ fontSize: 18, color: accentColor, flexShrink: 0 }}>
-            {cmd.kind === 'search' && inputValue ? 'search' :
+          <Icon name={cmd.kind === 'search' && inputValue ? 'search' :
              cmd.kind.startsWith('launch') ? 'play_circle' :
              cmd.kind === 'clipboard' ? 'content_paste' :
-             cmd.kind === 'invalid' ? 'error' : 'terminal'}
-          </span>
+             cmd.kind === 'invalid' ? 'error' : 'terminal'} size={18} color={accentColor} style={{ flexShrink: 0 }} />
           <input
             ref={inputRef}
             value={inputValue}
@@ -359,7 +358,7 @@ export function CommandBar({ isOpen, inputValue, onInputChange, onClose, onExecu
               onClick={() => onInputChange('')}
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', padding: 0, display: 'flex' }}
             >
-              <span className="material-symbols-rounded" style={{ fontSize: 16 }}>close</span>
+              <Icon name="close" size={16} />
             </button>
           )}
           <kbd style={{
@@ -408,9 +407,7 @@ export function CommandBar({ isOpen, inputValue, onInputChange, onClose, onExecu
                     transition: 'background 0.1s',
                   }}
                 >
-                  <span className="material-symbols-rounded" style={{ fontSize: 16, color: i === selectedIdx ? accentColor : 'var(--text-muted)', flexShrink: 0 }}>
-                    {sg.icon}
-                  </span>
+                  <Icon name={sg.icon} size={16} color={i === selectedIdx ? accentColor : 'var(--text-muted)'} style={{ flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, color: 'var(--text-color)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {sg.label}

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import type { LauncherItem, Space } from '../types';
+import { Icon } from '@/components/ui/Icon';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -416,14 +417,14 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {selectedSpace ? `${selectedSpace.icon ?? ''} ${selectedSpace.name}`.trim() : '선택'}
                   </span>
-                  <span className="material-symbols-rounded" style={{ fontSize: 14, flexShrink: 0, color: 'var(--text-dim)' }}>expand_more</span>
+                  <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent style={{ minWidth: 160 }}>
                   {spaces.map(s => (
                     <DropdownMenuItem key={s.id} onClick={() => f({ spaceId: s.id })}
                       style={{ fontWeight: s.id === form.spaceId ? 700 : 400 }}>
                       {s.icon} {s.name}
-                      {s.id === form.spaceId && <span className="material-symbols-rounded" style={{ fontSize: 13, marginLeft: 'auto', color: 'var(--accent)' }}>check</span>}
+                      {s.id === form.spaceId && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>
@@ -438,14 +439,14 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                   <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {selectedType?.label ?? '선택'}
                   </span>
-                  <span className="material-symbols-rounded" style={{ fontSize: 14, flexShrink: 0, color: 'var(--text-dim)' }}>expand_more</span>
+                  <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent style={{ minWidth: 160 }}>
                   {TYPE_OPTIONS.map(o => (
                     <DropdownMenuItem key={o.value} onClick={() => f({ type: o.value as LauncherItem['type'] })}
                       style={{ fontWeight: o.value === form.type ? 700 : 400 }}>
                       {o.label}
-                      {o.value === form.type && <span className="material-symbols-rounded" style={{ fontSize: 13, marginLeft: 'auto', color: 'var(--accent)' }}>check</span>}
+                      {o.value === form.type && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>
@@ -482,24 +483,24 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
               />
               {form.type === 'folder' && (
                 <button type="button" onClick={handlePickFolder} title="폴더 선택" style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 16 }}>folder_open</span>
+                  <Icon name="folder_open" size={16} />
                 </button>
               )}
               {form.type === 'app' && (
                 <button type="button" onClick={handlePickExe} title="실행 파일 선택" style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 16 }}>apps</span>
+                  <Icon name="apps" size={16} />
                 </button>
               )}
             </div>
             {valueError && (
               <p style={{ fontSize: 10, color: 'var(--destructive, #ef4444)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 12 }}>error</span>
+                <Icon name="error" size={12} />
                 {valueError}
               </p>
             )}
             {duplicateItem && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 7, background: 'var(--surface)', border: '1px solid var(--border-focus)' }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 14, color: 'var(--accent)', flexShrink: 0 }}>warning</span>
+                <Icon name="warning" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
                 <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
                   <b style={{ color: 'var(--text-color)' }}>{duplicateItem.item.title}</b>에 동일한 값이 이미 있습니다 ({duplicateItem.space.name})
                 </span>
@@ -516,11 +517,11 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
               <div style={{ position: 'relative', width: 56, height: 56, borderRadius: 12, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
                 {form.iconType === 'image'
                   ? <img src={form.icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={() => { setAutoFavicon(false); setForm(p => ({ ...p, iconType: 'material', icon: form.type === 'app' ? 'apps' : 'public' })); }} />
-                  : <span className="material-symbols-rounded" style={{ fontSize: 28, color: 'var(--text-muted)' }}>{form.icon}</span>
+                  : <Icon name={form.icon} size={28} color="var(--text-muted)" />
                 }
               </div>
               <button onClick={resetIcon} title="기본값으로 초기화" style={{ padding: '2px 8px', fontSize: 10, borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-dim)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 11 }}>restart_alt</span>초기화
+                <Icon name="restart_alt" size={11} />초기화
               </button>
             </div>
 
@@ -553,7 +554,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                     {filteredIcons.slice(0, 30).map(ico => (
                       <button key={ico} title={ico} onClick={() => selectMaterialIcon(ico)}
                         style={{ width: 28, height: 28, borderRadius: 6, background: form.icon === ico && form.iconType === 'material' ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--border-rgba)'}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 15, color: form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--text-muted)' }}>{ico}</span>
+                        <Icon name={ico} size={15} color={form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--text-muted)'} />
                       </button>
                     ))}
                   </div>
@@ -567,7 +568,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                     <>
                       <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>사이트의 파비콘/아이콘을 자동으로 가져옵니다.</p>
                       <button onClick={fetchFavicon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 13 }}>language</span>사이트 아이콘 가져오기
+                        <Icon name="language" size={13} />사이트 아이콘 가져오기
                       </button>
                     </>
                   )}
@@ -575,7 +576,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                     <>
                       <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>실행 파일(.exe)의 시스템 아이콘을 가져옵니다.</p>
                       <button onClick={fetchFileIcon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                        <span className="material-symbols-rounded" style={{ fontSize: 13 }}>apps</span>파일 아이콘 가져오기
+                        <Icon name="apps" size={13} />파일 아이콘 가져오기
                       </button>
                     </>
                   )}
@@ -590,7 +591,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                 <>
                   <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이미지 파일을 업로드해 아이콘으로 사용합니다.</p>
                   <button onClick={() => fileRef.current?.click()} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                    <span className="material-symbols-rounded" style={{ fontSize: 13 }}>upload</span>이미지 업로드
+                    <Icon name="upload" size={13} />이미지 업로드
                   </button>
                 </>
               )}

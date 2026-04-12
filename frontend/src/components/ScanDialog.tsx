@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
 import type { WindowEntry, ChromeTab } from '../types';
 import { electronAPI } from '../electronBridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -80,9 +81,7 @@ function ScanCard({
           onError={() => setImageFailed(true)}
         />
       ) : (
-        <span className="material-symbols-rounded" style={{ fontSize: 22, color: 'var(--text-muted)' }}>
-          {icon}
-        </span>
+        <Icon name={icon} size={22} color="var(--text-muted)" />
       )}
 
       <span
@@ -117,9 +116,7 @@ function ScanCard({
 function CategoryHeader({ label, icon }: { label: string; icon: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, marginTop: 4 }}>
-      <span className="material-symbols-rounded" style={{ fontSize: 13, color: 'var(--text-dim)' }}>
-        {icon}
-      </span>
+      <Icon name={icon} size={13} color="var(--text-dim)" />
       <span
         style={{
           fontSize: 10,
@@ -171,12 +168,7 @@ function ProgramScanCard({
             onError={() => setImageFailed(true)}
           />
         ) : (
-          <span
-            className="material-symbols-rounded"
-            style={{ fontSize: 22, color: 'var(--text-muted)', display: 'block', marginBottom: 4 }}
-          >
-            window
-          </span>
+          <Icon name="window" size={22} color="var(--text-muted)" style={{ display: 'block', marginBottom: 4 }} />
         )}
 
         <div style={{ height: 29, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -239,7 +231,7 @@ function ProgramScanCard({
           }}
           title="현재 창 제목으로 등록 (해당 창이 이미 열려 있을 때 추천)"
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 13 }}>pip_exit</span>
+          <Icon name="pip_exit" size={13} />
           창 전환
         </button>
 
@@ -270,7 +262,7 @@ function ProgramScanCard({
             }}
             title="프로그램 실행 경로로 등록 (창이 닫혀 있어도 실행 가능)"
           >
-            <span className="material-symbols-rounded" style={{ fontSize: 13 }}>apps</span>
+            <Icon name="apps" size={13} />
             프로그램
           </button>
         )}
@@ -361,9 +353,7 @@ export function ScanDialog({ open, onClose, onSelect }: ScanDialogProps) {
               gap: 7,
             }}
           >
-            <span className="material-symbols-rounded" style={{ fontSize: 16, color: 'var(--text-muted)' }}>
-              radar
-            </span>
+            <Icon name="radar" size={16} color="var(--text-muted)" />
             스마트 스캔
           </DialogTitle>
           <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
@@ -383,9 +373,7 @@ export function ScanDialog({ open, onClose, onSelect }: ScanDialogProps) {
                 gap: 12,
               }}
             >
-              <span className="material-symbols-rounded animate-spin" style={{ fontSize: 36, color: 'var(--text-dim)' }}>
-                sync
-              </span>
+              <Icon name="sync" size={36} color="var(--text-dim)" className="animate-spin" />
               <p style={{ fontSize: 13, color: 'var(--text-dim)' }}>스캔 중...</p>
             </div>
           )}

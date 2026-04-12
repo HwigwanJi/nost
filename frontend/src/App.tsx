@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Toaster } from 'sonner';
+import { Icon } from '@/components/ui/Icon';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { SpaceAccordion } from './components/SpaceAccordion';
 import { ItemDialog } from './components/ItemDialog';
@@ -7,18 +8,28 @@ import { ItemWizard } from './components/ItemWizard';
 import { ScanDialog } from './components/ScanDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
+import { RecommendPanel } from './components/RecommendPanel';
+import { useGhostCards } from './hooks/useGhostCards';
+import { GhostCard } from './components/GhostCard';
+import { DialogContextBar } from './components/DialogContextBar';
 import { NodePanel } from './components/NodePanel';
 import { ContainerSlotPicker, type PendingRemoval, type PendingNewItem } from './components/ContainerSlotPicker';
 import { CommandBar, parseCommand, buildSuggestions } from './components/CommandBar';
 import { ToastOverlay } from './components/ToastOverlay';
+import { ClipboardSuggestion } from './components/ClipboardSuggestion';
+import { WelcomeModal } from './components/WelcomeModal';
 import { TileOverlay } from './components/TileOverlay';
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
 import { useTileOverlay } from './hooks/useTileOverlay';
 import { useLaunchPipeline } from './hooks/useLaunchPipeline';
+import { useWindowDrag } from './hooks/useWindowDrag';
+import { useNodeDeckMode } from './hooks/useNodeDeckMode';
 import { electronAPI } from './electronBridge';
-import type { LauncherItem, Space, AppMode } from './types';
+import type { LauncherItem, Space } from './types';
+import { AppStateProvider, AppActionsProvider } from './contexts/AppContext';
+import type { AppActions, AppState } from './contexts/AppContext';
 import {
   DndContext,
   closestCenter,
@@ -92,6 +103,15 @@ export default function App() {
   const [editItem, setEditItem] = useState<LauncherItem | null>(null);
   const [editSpaceId, setEditSpaceId] = useState<string>('');
   const [prefilledItem, setPrefilledItem] = useState<Partial<LauncherItem> | null>(null);
+  const [recommendOpen, setRecommendOpen] = useState(false);
+
+  const ghostCards = useGhostCards({
+    spaces: data.spaces,
+    dismissedValues: data.dismissedSuggestions ?? [],
+    documentExtensions: data.settings.documentExtensions,
+    onDismiss: (value) => store.dismissSuggestion(value),
+  });
+
   const [query, setQuery] = useState('');
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
 
@@ -99,17 +119,23 @@ export default function App() {
   const [cmdOpen, setCmdOpen] = useState(false);
   const [cmdInput, setCmdInput] = useState('');
 
-  // ── Mode state (pin / node / deck) ──────────────────────
-  const [activeMode, setActiveMode] = useState<AppMode>('normal');
-  // Node panel state
-  const [nodeEditMode, setNodeEditMode] = useState(false);
-  const [nodeBuilding, setNodeBuilding] = useState<string[]>([]);
-  // Deck panel state
-  const [deckBuilding, setDeckBuilding] = useState(false);
-  const [deckItems, setDeckItems] = useState<string[]>([]);
   const { tileOverlayGroup, tileOverlayLeaving, showTileOverlay, dismissTileOverlay } = useTileOverlay();
   const { toasts, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
   const { launchAndPosition } = useLaunchPipeline({ showToast, dismissToast });
+
+  // ── Mode / Node / Deck state ──────────────────────────────
+  const {
+    activeMode, setActiveMode,
+    nodeEditMode, setNodeEditMode,
+    nodeBuilding, setNodeBuilding,
+    deckBuilding, setDeckBuilding,
+    deckItems, setDeckItems,
+    nodeGroups, decks, allItems, deckAnchorItemIds,
+    handleModeChange,
+    handleStartNodeEdit, handleCancelNodeEdit,
+    handleSaveNodeGroup, handleNodeBuildingClick, handleNodeGroupLaunch,
+    handleDeckBuildingClick, handleSaveDeck, handleDeckLaunch, handleDeckGroupLaunch,
+  } = useNodeDeckMode({ data, store, showToast, dismissToast, showTileOverlay });
 
 
   // ── Toast notification — FIFO queue (non-overlapping) ────
@@ -118,6 +144,26 @@ export default function App() {
   const [monitorCount, setMonitorCount] = useState(1);
   useEffect(() => {
     electronAPI.getMonitors().then(ms => { if (ms.length > 0) setMonitorCount(ms.length); });
+    electronAPI.onMonitorsChanged(monitors => {
+      if (monitors.length > 0) setMonitorCount(monitors.length);
+    });
+  }, []);
+
+  // ── Clipboard quick-add suggestion ───────────────────────
+  const [clipSuggestion, setClipSuggestion] = useState<{ type: 'url' | 'app' | 'folder'; value: string; label: string } | null>(null);
+  const lastClipValueRef = useRef('');
+  useEffect(() => {
+    const check = async () => {
+      const result = await electronAPI.analyzeClipboard();
+      if (result.type === 'none' || !result.value) { return; }
+      if (result.value === lastClipValueRef.current) return; // same as last time — don't re-show
+      lastClipValueRef.current = result.value;
+      setClipSuggestion({ type: result.type, value: result.value, label: result.label ?? result.value });
+    };
+    const onFocus = () => check();
+    window.addEventListener('focus', onFocus);
+    check(); // also check on mount
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 
   // ── Extension banner ──────────────────────────────────────
@@ -161,8 +207,9 @@ export default function App() {
 
   // ── Theme sync to <html> ──────────────────────────────────
   useEffect(() => {
-    electronAPI.setOpacity(data.settings.opacity);
-  }, [data.settings.opacity]);
+    // Ghost card mode → force fully opaque so cards are visible
+    electronAPI.setOpacity(ghostCards.active ? 1 : data.settings.opacity);
+  }, [data.settings.opacity, ghostCards.active]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -179,43 +226,7 @@ export default function App() {
   }, [data.settings.accentColor]);
 
   // ── Right-click drag to move window ───────────────────────
-  const dragRef = useRef<{ startX: number; startY: number; winX: number; winY: number } | null>(null);
-
-  useEffect(() => {
-    const onMouseDown = async (e: MouseEvent) => {
-      if (e.button !== 2) return; // right-click only
-      // Cards handle right-click for reorder — don't start window drag
-      if ((e.target as HTMLElement).closest('[data-card]')) return;
-      e.preventDefault();
-      const [wx, wy] = await electronAPI.getWindowPosition();
-      dragRef.current = { startX: e.screenX, startY: e.screenY, winX: wx, winY: wy };
-    };
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (!dragRef.current) return;
-      const dx = e.screenX - dragRef.current.startX;
-      const dy = e.screenY - dragRef.current.startY;
-      electronAPI.moveWindow(dragRef.current.winX + dx, dragRef.current.winY + dy);
-    };
-
-    const onMouseUp = (e: MouseEvent) => {
-      if (e.button === 2) dragRef.current = null;
-    };
-
-    // Suppress context menu globally (right-click is for window drag)
-    const onContextMenu = (e: MouseEvent) => e.preventDefault();
-
-    window.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    window.addEventListener('contextmenu', onContextMenu);
-    return () => {
-      window.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      window.removeEventListener('contextmenu', onContextMenu);
-    };
-  }, []);
+  useWindowDrag();
 
   // ── Sync mode → body class + custom cursor ────────────────
   useEffect(() => {
@@ -339,6 +350,16 @@ export default function App() {
     setDialog('wizard');
   }, [data.spaces]);
 
+  const handleClipboardAdd = useCallback(() => {
+    if (!clipSuggestion) return;
+    const { type, value, label } = clipSuggestion;
+    setEditItem(null);
+    setPrefilledItem({ type, value, title: label, clickCount: 0, pinned: false } as Partial<import('./types').LauncherItem>);
+    setEditSpaceId(data.spaces[0]?.id ?? '');
+    setClipSuggestion(null);
+    setDialog('item');
+  }, [clipSuggestion, data.spaces]);
+
   // ── Kick feature (file dialog detection) ─────────────────
   const [activeDialog, setActiveDialog] = useState<{ isDialog: boolean; title?: string } | null>(null);
   useEffect(() => {
@@ -440,34 +461,6 @@ export default function App() {
     store.lockSpaceSort(space.id, next);
   }, [store]);
 
-  // ── Mode handlers ─────────────────────────────────────────
-  const handleModeChange = useCallback((mode: AppMode) => {
-    // Cancel any active editing when switching modes (single-edit enforcement)
-    if (mode !== 'node') {
-      setNodeEditMode(false);
-      setNodeBuilding([]);
-    }
-    if (mode !== 'deck') {
-      setDeckBuilding(false);
-      setDeckItems([]);
-    }
-
-    dismissToast(); // always clear previous mode toast before switching
-    setActiveMode(mode);
-    if (mode === 'pin') {
-      showToast('📌 고정 모드 — 카드 클릭하면 핀 토글', { persistent: true });
-    }
-    if (mode === 'node') {
-      setNodeEditMode(true);
-      setNodeBuilding([]);
-      showToast('🔗 노드 편집 — 카드를 순서대로 클릭 (최대 3개)', { persistent: true });
-    }
-    if (mode === 'deck') {
-      setDeckBuilding(true);
-      setDeckItems([]);
-      showToast('🗂 덱 편집 — 카드를 클릭해서 덱에 추가', { persistent: true });
-    }
-  }, [showToast, dismissToast]);
 
   const handleWindowInactiveClick = useCallback(async (item: LauncherItem) => {
     const actions: ToastAction[] = [
@@ -525,150 +518,6 @@ export default function App() {
     showToast(isPinned ? '📌 핀 해제됨' : '📌 핀 고정됨');
   }, [data.spaces, handleTogglePin, showToast]);
 
-  // Node edit mode handlers
-  const handleStartNodeEdit = useCallback(() => {
-    // Cancel deck if building
-    setDeckBuilding(false);
-    setDeckItems([]);
-    setNodeEditMode(true);
-    setNodeBuilding([]);
-    setActiveMode('node');
-    dismissToast();
-    showToast('🔗 노드 편집 — 카드를 순서대로 클릭 (최대 3개)', { persistent: true });
-  }, [showToast, dismissToast]);
-
-  const handleCancelNodeEdit = useCallback(() => {
-    setNodeEditMode(false);
-    setNodeBuilding([]);
-    setActiveMode('normal');
-    dismissToast();
-  }, [dismissToast]);
-
-  const handleSaveNodeGroup = useCallback((name: string | undefined) => {
-    if (nodeBuilding.length < 2) return;
-    const nodeGroups = data.nodeGroups ?? [];
-    const autoName = name?.trim() || `노드 ${nodeGroups.length + 1}`;
-    store.addNodeGroup(autoName, nodeBuilding);
-    setNodeEditMode(false);
-    setNodeBuilding([]);
-    setActiveMode('normal');
-    dismissToast();
-    showToast(`✅ "${autoName}" 저장됨`);
-  }, [nodeBuilding, data.nodeGroups, store, showToast, dismissToast]);
-
-  const handleNodeBuildingClick = useCallback((itemId: string) => {
-    setNodeBuilding(prev => {
-      if (prev.includes(itemId)) return prev.filter(id => id !== itemId);
-      if (prev.length >= 3) return prev;
-      return [...prev, itemId];
-    });
-  }, []);
-
-  const nodeGroups = useMemo(() => data.nodeGroups ?? [], [data.nodeGroups]);
-  const decks = useMemo(() => data.decks ?? [], [data.decks]);
-  const allItems = useMemo(() => data.spaces.flatMap(s => s.items), [data.spaces]);
-  // Set of item IDs that are the anchor (first item) of a saved deck with ≥1 items
-  const deckAnchorItemIds = useMemo(
-    () => new Set(decks.map(d => d.itemIds[0]).filter(Boolean)),
-    [decks],
-  );
-
-  const handleDeckBuildingClick = useCallback((itemId: string) => {
-    setDeckItems(prev =>
-      prev.includes(itemId) ? prev.filter(id => id !== itemId) : [...prev, itemId]
-    );
-  }, []);
-
-  const handleSaveDeck = useCallback((name: string) => {
-    if (deckItems.length < 1) return;
-    store.addDeck(name, deckItems);
-    setDeckBuilding(false);
-    setDeckItems([]);
-    setActiveMode('normal');
-    dismissToast();
-    showToast(`✅ "${name}" 덱 저장됨`);
-  }, [deckItems, store, showToast, dismissToast]);
-
-  const handleDeckLaunch = useCallback(async (deckId: string) => {
-    const deck = (data.decks ?? []).find(d => d.id === deckId);
-    if (!deck) return;
-    const items = deck.itemIds.map(id => allItems.find(i => i.id === id)).filter(Boolean) as LauncherItem[];
-    if (items.length === 0) return;
-
-    showToast(`▶ "${deck.name}" 실행 (${items.length}개)`);
-    let failCount = 0;
-    const targetMonitor = deck.monitor ?? 0;
-
-    // Helper: launch one deck item, poll until open, then maximize
-    const launchOne = async (item: LauncherItem, idx: number): Promise<boolean> => {
-      switch (item.type) {
-        case 'url': case 'browser': electronAPI.openUrl(item.value, false); break;
-        case 'folder': electronAPI.openPath(item.value, false); break;
-        case 'app': electronAPI.launchOrFocusApp(item.value, false, targetMonitor || item.monitor); break;
-        case 'window': electronAPI.focusWindow(item.value, false); break;
-        case 'text': electronAPI.copyText(item.value, false); break;
-        case 'cmd': electronAPI.runCmd(item.value, false); break;
-      }
-      if (item.type === 'app' || item.type === 'window') {
-        const MAX = 8;
-        for (let a = 0; a < MAX; a++) {
-          await new Promise(r => setTimeout(r, 500));
-          const results = await electronAPI.checkItemsForTile([{ type: item.type, value: item.value, title: item.title }]);
-          if (results[0]?.alive) {
-            showToast(`✓ ${idx + 1}/${items.length} ${item.title}`);
-            // Fill work area on target monitor (DPI-aware)
-            electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor: targetMonitor });
-            return true;
-          }
-          if (a >= 2) showToast(`⏳ ${idx + 1}/${items.length} ${item.title} 대기 중... (${a + 1}/${MAX})`);
-        }
-        showToast(`⚠ ${item.title} 열기 실패`);
-        return false;
-      } else {
-        showToast(`✓ ${idx + 1}/${items.length} ${item.title}`);
-        return true;
-      }
-    };
-
-    // Process in pairs (2 at a time) for parallelism
-    for (let i = 0; i < items.length; i += 2) {
-      const batch = items.slice(i, i + 2);
-      const results = await Promise.all(batch.map((item, j) => launchOne(item, i + j)));
-      failCount += results.filter(r => !r).length;
-    }
-
-    if (failCount === 0) showToast(`✅ "${deck.name}" 완료`);
-    else showToast(`⚠ "${deck.name}" ${failCount}개 실패`);
-  }, [data.decks, allItems, showToast]);
-
-  const handleNodeGroupLaunch = useCallback(async (groupId: string) => {
-    if (nodeEditMode) return;
-    const group = nodeGroups.find(g => g.id === groupId);
-    if (!group) return;
-
-    const allItemsList = data.spaces.flatMap(s => s.items);
-    const items = group.itemIds
-      .map(id => allItemsList.find(i => i.id === id))
-      .filter(Boolean) as LauncherItem[];
-    if (items.length < 2) return;
-
-    const itemDtos = items.map(i => ({ type: i.type, value: i.value, title: i.title }));
-    const n = items.length;
-
-    // ── Step 1: Trigger launch / focus for all windows ────────────
-    showToast(`▶ ${n}개 앱 시작 중...`);
-    const { identifiers } = await electronAPI.launchItemsForTile(itemDtos);
-
-    // ── Step 2: Hand off to PS — it polls up to 30s, tiles each window
-    //    as soon as it appears, then does a final settle pass. ─────
-    showToast(`⏳ 창 열리면 자동 배치됩니다...`);
-    const tileResult = await electronAPI.runTilePs({ identifiers, waitMs: 0, monitor: group.monitor ?? 0 });
-
-    if (tileResult.success) showToast(`✅ ${n}분할 완료`);
-    else showToast('창 배치 중 오류가 발생했습니다');
-
-    showTileOverlay(groupId);
-  }, [nodeGroups, data.spaces, nodeEditMode, showToast, showTileOverlay]);
 
   const handleMaximizeFromOverlay = useCallback(async (itemId: string) => {
     const allItems = data.spaces.flatMap(s => s.items);
@@ -961,7 +810,36 @@ export default function App() {
       .filter(Boolean) as LauncherItem[];
   }, [allItems, nodeGroups, tileOverlayGroup]);
 
+  const appState = useMemo<AppState>(() => ({
+    activeMode,
+    nodeGroups,
+    nodeBuilding,
+    deckItems,
+    decks,
+    deckAnchorItemIds,
+    inactiveWindowIds,
+    monitorCount,
+    allItems,
+    monitorDirections: data.settings.monitorDirections as Record<number, string> | undefined,
+    closeAfter: data.settings.closeAfterOpen,
+    searchQuery: query,
+  }), [activeMode, nodeGroups, nodeBuilding, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, query]);
+
+  const appActions = useMemo<AppActions>(() => ({
+    showToast,
+    launchAndPosition,
+    openMonitorSettings: () => openSettingsTab('monitor'),
+    onPinModeClick: handlePinModeClick,
+    onNodeModeClick: handleNodeBuildingClick,
+    onNodeGroupLaunch: handleNodeGroupLaunch,
+    onDeckModeClick: handleDeckBuildingClick,
+    onDeckGroupLaunch: handleDeckGroupLaunch,
+    onWindowInactiveClick: handleWindowInactiveClick,
+  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeBuildingClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick]);
+
   return (
+    <AppStateProvider value={appState}>
+    <AppActionsProvider value={appActions}>
     <TooltipProvider delay={500}>
       <div style={{ position: 'fixed', inset: '6px', display: 'flex', flexDirection: 'column', background: 'transparent' }}>
         {/* Glass card */}
@@ -983,6 +861,19 @@ export default function App() {
           <Sidebar
             activeMode={activeMode}
             onModeChange={handleModeChange}
+            recommendOpen={ghostCards.active}
+            onRecommendClick={() => ghostCards.toggle()}
+          />
+
+          <RecommendPanel
+            open={recommendOpen}
+            spaces={data.spaces}
+            onClose={() => setRecommendOpen(false)}
+            onAddItems={(spaceId, items) => {
+              for (const item of items) store.addItem(spaceId, item);
+              showToast(`${items.length}개 항목 추가됨`);
+              setRecommendOpen(false);
+            }}
           />
 
           {/* ── Unified DnD: space grip (left-click) + card right-click drag ───── */}
@@ -1015,19 +906,12 @@ export default function App() {
           >
             {/* Logo */}
             <div style={{ width: 22, height: 22, borderRadius: 6, background: 'var(--surface)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 12, color: 'var(--text-muted)', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                bolt
-              </span>
+              <Icon name="bolt" size={12} color="var(--text-muted)" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} />
             </div>
 
             {/* Search */}
             <div style={{ flex: 1, position: 'relative', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-              <span
-                className="material-symbols-rounded"
-                style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', fontSize: 15, color: isSlashMode ? 'var(--accent, #6366f1)' : 'var(--text-dim)', pointerEvents: 'none' }}
-              >
-                {isSlashMode ? 'terminal' : 'search'}
-              </span>
+              <Icon name={isSlashMode ? 'terminal' : 'search'} size={15} color={isSlashMode ? 'var(--accent)' : 'var(--text-dim)'} style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
               <input
                 value={query}
                 onChange={e => { setQuery(e.target.value); setSlashSelectedIdx(0); }}
@@ -1083,7 +967,7 @@ export default function App() {
                         transition: 'background 0.08s',
                       }}
                     >
-                      <span className="material-symbols-rounded" style={{ fontSize: 13, color: 'var(--accent, #6366f1)', flexShrink: 0 }}>{sg.icon}</span>
+                      <Icon name={sg.icon} size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
                       <span style={{ fontSize: 12, color: 'var(--text-color)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0 }}>{sg.label}</span>
                       {sg.sub && (
                         <span style={{ fontSize: 10, color: 'var(--text-dim)', whiteSpace: 'nowrap', flexShrink: 0 }}>{sg.sub}</span>
@@ -1108,7 +992,7 @@ export default function App() {
                   className="action-icon-btn"
                   style={{ width: 28, height: 28 }}
                 >
-                  <span className="material-symbols-rounded" style={{ fontSize: 17 }}>{btn.icon}</span>
+                  <Icon name={btn.icon} size={17} />
                 </button>
               ))}
             </div>
@@ -1117,7 +1001,7 @@ export default function App() {
           {/* ── Kick Bar ─────────────────────────────── */}
           {activeDialog && jumpFolders.length > 0 && (
             <div style={{ flexShrink: 0, padding: '6px 14px', background: 'var(--surface)', borderBottom: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="material-symbols-rounded animate-spin" style={{ fontSize: 13, color: 'var(--text-muted)' }}>radar</span>
+              <Icon name="radar" size={13} color="var(--text-muted)" className="animate-spin" />
               <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                 '{activeDialog.title?.slice(0, 16)}' 감지
               </span>
@@ -1141,12 +1025,23 @@ export default function App() {
                       fontFamily: 'inherit',
                     }}
                   >
-                    <span className="material-symbols-rounded" style={{ fontSize: 11 }}>folder</span>
+                    <Icon name="folder" size={11} />
                     {folder.title}
                   </button>
                 ))}
               </div>
             </div>
+          )}
+
+          {/* ── Clipboard quick-add suggestion ──────── */}
+          {clipSuggestion && (
+            <ClipboardSuggestion
+              type={clipSuggestion.type}
+              value={clipSuggestion.value}
+              label={clipSuggestion.label}
+              onAdd={handleClipboardAdd}
+              onDismiss={() => setClipSuggestion(null)}
+            />
           )}
 
           {/* ── Extension banner ─────────────────────── */}
@@ -1160,7 +1055,7 @@ export default function App() {
               borderBottom: '1px solid var(--border-rgba)',
               background: 'var(--surface)',
             }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 14, color: 'var(--accent)', flexShrink: 0 }}>extension_off</span>
+              <Icon name="extension_off" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
                 브라우저 익스텐션이 감지되지 않았습니다. 탭 제어 기능을 사용하려면 설치해주세요.
               </span>
@@ -1168,7 +1063,7 @@ export default function App() {
                 onClick={() => openSettingsTab('extension')}
                 style={{ flexShrink: 0, padding: '3px 10px', borderRadius: 5, border: '1px solid var(--border-focus)', background: 'transparent', color: 'var(--accent)', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}
               >
-                <span className="material-symbols-rounded" style={{ fontSize: 12 }}>open_in_new</span>
+                <Icon name="open_in_new" size={12} />
                 설치 안내
               </button>
               <button
@@ -1176,7 +1071,7 @@ export default function App() {
                 style={{ flexShrink: 0, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' }}
                 title="닫기"
               >
-                <span className="material-symbols-rounded" style={{ fontSize: 14 }}>close</span>
+                <Icon name="close" size={14} />
               </button>
             </div>
           )}
@@ -1187,13 +1082,13 @@ export default function App() {
             {/* Empty states */}
             {filteredSpaces.length === 0 && query && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 20px', gap: 10 }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 36, color: 'var(--text-dim)' }}>search_off</span>
+                <Icon name="search_off" size={36} color="var(--text-dim)" />
                 <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>'{query}' 결과 없음</p>
               </div>
             )}
             {filteredSpaces.length === 0 && !query && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 20px', gap: 12 }}>
-                <span className="material-symbols-rounded" style={{ fontSize: 44, color: 'var(--text-dim)', opacity: 0.5 }}>space_dashboard</span>
+                <Icon name="space_dashboard" size={44} color="var(--text-dim)" style={{ opacity: 0.5 }} />
                 <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>스페이스를 추가하고 아이템을 등록해보세요!</p>
                 <button
                   onClick={() => store.addSpace()}
@@ -1220,7 +1115,6 @@ export default function App() {
                             onSetColor={color => store.setSpaceColor(space.id, color)}
                           onSetIcon={icon => store.setSpaceIcon(space.id, icon)}
                           onToggleCollapse={() => store.toggleSpaceCollapsed(space.id)}
-                          searchQuery={query}
                             onEditItem={item => openEditItem(item, space.id)}
                             onDeleteItem={itemId => store.deleteItem(space.id, itemId)}
                             onIncrementClick={itemId => {
@@ -1231,34 +1125,18 @@ export default function App() {
                             onQuickAdd={() => openQuickAdd(space.id)}
                             onAddItem={() => openManualWizard(space.id)}
                             onScanItem={() => openScan(space.id)}
-                            closeAfter={data.settings.closeAfterOpen}
                             defaultOpen={!(data.collapsedSpaceIds ?? []).includes(space.id)}
-                            activeMode={activeMode}
-                            nodeGroups={nodeGroups}
-                            nodeBuilding={nodeBuilding}
-                            onPinModeClick={handlePinModeClick}
-                            onNodeModeClick={handleNodeBuildingClick}
-                            onNodeGroupLaunch={handleNodeGroupLaunch}
-                            deckItems={deckItems}
-                            decks={decks}
-                            deckAnchorItemIds={deckAnchorItemIds}
-                            onDeckModeClick={handleDeckBuildingClick}
-                            onDeckGroupLaunch={itemId => {
-                              const deck = (data.decks ?? []).find(d => d.itemIds.includes(itemId));
-                              if (deck) handleDeckLaunch(deck.id);
-                            }}
-                            inactiveWindowIds={inactiveWindowIds}
-                            onWindowInactiveClick={handleWindowInactiveClick}
-                            monitorCount={monitorCount}
                             onSetMonitor={(itemId, monitor) => handleSetMonitor(space.id, itemId, monitor)}
-                            allItems={allItems}
                             onConvertToContainer={itemId => handleConvertToContainer(space.id, itemId)}
                             onConvertFromContainer={itemId => handleConvertFromContainer(space.id, itemId)}
                             onEditSlots={(itemId, dir) => handleEditSlots(space.id, itemId, dir)}
-                            onShowToast={showToast}
-                            onLaunchAndPosition={launchAndPosition}
-                            monitorDirections={data.settings.monitorDirections as Record<number, string> | undefined}
-                            onOpenMonitorSettings={() => openSettingsTab('monitor')}
+                            ghostItems={ghostCards.ghostsForSpace(space.id)}
+                            onGhostAccept={(ghost) => {
+                              store.addItem(ghost.spaceId, { title: ghost.title, value: ghost.value, type: ghost.type });
+                              ghostCards.accept(ghost);
+                              showToast(`✓ "${ghost.title}" 추가됨`);
+                            }}
+                            onGhostDismiss={(value) => ghostCards.dismiss(value)}
                           />
                         )}
                       </SortableSpace>
@@ -1266,6 +1144,57 @@ export default function App() {
                   </div>
 
               </SortableContext>
+
+              {/* ── Ghost "추천" space (unmatched items) ── */}
+              {ghostCards.hasGhostSpace && (
+                <div style={{
+                  margin: '8px 10px', padding: '12px', borderRadius: 12,
+                  border: '1.5px dashed var(--accent-dim)', background: 'var(--surface)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+                    <Icon name="lightbulb" size={14} color="var(--accent)" />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)' }}>추천 항목</span>
+                  </div>
+                  {/* Type-grouped sections */}
+                  {(['folder', 'app', 'document', 'url'] as const).map(dtype => {
+                    const items = ghostCards.ghostSpaceItems.filter(g => g.displayType === dtype);
+                    if (items.length === 0) return null;
+                    const label = dtype === 'folder' ? '폴더' : dtype === 'app' ? '앱' : dtype === 'document' ? '문서' : '사이트';
+                    const icon = dtype === 'folder' ? 'folder' : dtype === 'app' ? 'apps' : dtype === 'document' ? 'description' : 'language';
+                    return (
+                      <div key={dtype} style={{ marginBottom: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6, padding: '0 2px' }}>
+                          <Icon name={icon} size={12} color="var(--text-dim)" />
+                          <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)' }}>{label}</span>
+                          <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>{items.length}</span>
+                        </div>
+                        <div style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
+                          gap: 8,
+                        }}>
+                          {items.map(ghost => (
+                            <GhostCard
+                              key={`ghost-${ghost.value}`}
+                              ghost={ghost}
+                              onAccept={() => {
+                                const targetId = data.spaces[0]?.id;
+                                if (targetId) {
+                                  store.addItem(targetId, { title: ghost.title, value: ghost.value, type: ghost.type });
+                                  ghostCards.accept(ghost);
+                                  showToast(`✓ "${ghost.title}" → ${data.spaces[0].name}`);
+                                }
+                              }}
+                              onDismiss={() => ghostCards.dismiss(ghost.value)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
           </div>
           </div>{/* close main content */}
 
@@ -1320,9 +1249,7 @@ export default function App() {
                 {draggingItem.iconType === 'image' && draggingItem.icon ? (
                   <img src={draggingItem.icon} alt="" style={{ width: 18, height: 18, borderRadius: 4, objectFit: 'cover', flexShrink: 0 }} />
                 ) : (
-                  <span className="material-symbols-rounded" style={{ fontSize: 18, color: 'var(--text-muted)', flexShrink: 0 }}>
-                    {draggingItem.icon ?? 'link'}
-                  </span>
+                  <Icon name={draggingItem.icon ?? 'link'} size={18} color="var(--text-muted)" style={{ flexShrink: 0 }} />
                 )}
                 {draggingItem.title}
               </div>
@@ -1339,6 +1266,9 @@ export default function App() {
         onDismiss={dismissTileOverlay}
         onMaximize={handleMaximizeFromOverlay}
       />
+
+      {/* ── Dialog context bar (download/save dialog detection) ── */}
+      <DialogContextBar allItems={allItems} />
 
       {/* ── Toast ────────────────────────────────────────────── */}
       <ToastOverlay
@@ -1421,127 +1351,11 @@ export default function App() {
 
       {/* ── Welcome / First-run modal ────────────────────────── */}
       {showWelcome && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, zIndex: 99999,
-            background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-          onClick={() => setShowWelcome(false)}
-        >
-          <div
-            style={{
-              background: 'var(--bg-solid, #1a1a2e)',
-              border: '1px solid var(--border-rgba)',
-              borderRadius: 14,
-              padding: '28px 28px 22px',
-              width: 340,
-              boxShadow: '0 24px 64px rgba(0,0,0,0.45)',
-              display: 'flex', flexDirection: 'column', gap: 16,
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 28, color: 'var(--accent)' }}>waving_hand</span>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-color)' }}>nost</div>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>stary no more — 더 이상 헤매지 마세요.</div>
-              </div>
-            </div>
-
-            {/* Description */}
-            <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6, margin: 0 }}>
-              자주 쓰는 앱, 폴더, 웹사이트를 한 곳에 모아두고<br />
-              단축키 하나로 즉시 꺼내 쓰는 런처입니다.
-            </p>
-
-            {/* Info rows */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {[
-                { icon: 'keyboard', label: '호출 단축키', value: 'Alt + 4' },
-                { icon: 'touch_app', label: '카드 꾹 누르기', value: '모니터 이동 · 스냅 · 삭제' },
-                { icon: 'hub', label: '노드 / 덱', value: '여러 앱을 한번에 배치 · 실행' },
-                { icon: 'settings', label: '설정', value: '단축키 · 테마 · 기타 설정' },
-              ].map(({ icon, label, value }) => (
-                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', background: 'var(--surface)', borderRadius: 8, border: '1px solid var(--border-rgba)' }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 15, color: 'var(--text-muted)', flexShrink: 0 }}>{icon}</span>
-                  <div>
-                    <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 1 }}>{label}</div>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-color)' }}>{value}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Extension install inline link */}
-            {extConnected === false && (
-              <button
-                onClick={() => { setShowWelcome(false); openSettingsTab('extension'); }}
-                style={{
-                  width: '100%', padding: '8px 12px', background: 'var(--accent-dim)',
-                  border: '1px solid var(--accent)', borderRadius: 8, cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: 8, fontFamily: 'inherit',
-                  textAlign: 'left',
-                }}
-              >
-                <span className="material-symbols-rounded" style={{ fontSize: 15, color: 'var(--accent)', flexShrink: 0 }}>extension</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>브라우저 확장 설치하기</div>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 1 }}>탭 제어 기능을 사용하려면 확장 프로그램이 필요합니다</div>
-                </div>
-                <span className="material-symbols-rounded" style={{ fontSize: 14, color: 'var(--accent)' }}>arrow_forward</span>
-              </button>
-            )}
-
-            {/* Buttons */}
-            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-              <button
-                onClick={() => {
-                  // Open the guide file from extraResources
-                  electronAPI.openGuide();
-                }}
-                style={{
-                  flex: 1,
-                  padding: '9px 0',
-                  background: 'var(--surface)',
-                  color: 'var(--text-color)',
-                  border: '1px solid var(--border-rgba)',
-                  borderRadius: 8,
-                  fontSize: 12,
-                  fontWeight: 500,
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 5,
-                }}
-              >
-                <span className="material-symbols-rounded" style={{ fontSize: 14 }}>menu_book</span>
-                사용 설명서
-              </button>
-              <button
-                onClick={() => setShowWelcome(false)}
-                style={{
-                  flex: 1,
-                  padding: '9px 0',
-                  background: 'var(--accent)',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 8,
-                  fontSize: 13,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  letterSpacing: '0.02em',
-                }}
-              >
-                시작하기
-              </button>
-            </div>
-          </div>
-        </div>
+        <WelcomeModal
+          extConnected={extConnected}
+          onClose={() => setShowWelcome(false)}
+          onOpenExtensionSettings={() => openSettingsTab('extension')}
+        />
       )}
       <Toaster
         position="bottom-center"
@@ -1562,5 +1376,7 @@ export default function App() {
         }}
       />
     </TooltipProvider>
+    </AppActionsProvider>
+    </AppStateProvider>
   );
 }

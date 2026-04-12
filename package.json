@@ -1,6 +1,6 @@
 {
   "name": "nost",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "",
   "main": "main.js",
   "scripts": {
@@ -25,6 +25,7 @@
     ],
     "extraResources": [
       "chrome-extension/**/*",
+      "ps-scripts/**/*",
       "guide.md"
     ],
     "win": {

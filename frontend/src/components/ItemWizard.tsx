@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
+import { Icon } from '@/components/ui/Icon';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   DropdownMenu,
@@ -70,7 +71,7 @@ function TypeChip({ type, small }: { type: ItemType; small?: boolean }) {
         color: m.color,
       }}
     >
-      <span className="material-symbols-rounded" style={{ fontSize: small ? 12 : 13 }}>{m.icon}</span>
+      <Icon name={m.icon} size={small ? 12 : 13} />
       {m.label}
     </span>
   );
@@ -105,9 +106,7 @@ function WizardBtn({
         transition: 'opacity 0.15s',
       }}
     >
-      <span className={`material-symbols-rounded${loading ? ' animate-spin' : ''}`} style={{ fontSize: 15 }}>
-        {loading ? 'sync' : icon}
-      </span>
+      <Icon name={loading ? 'sync' : icon} size={15} className={loading ? 'animate-spin' : undefined} />
       {label}
     </button>
   );
@@ -302,7 +301,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
             )}
             {selectedSpace?.name ?? '스페이스 선택'}
           </span>
-          <span className="material-symbols-rounded" style={{ fontSize: 14, color: 'var(--text-dim)' }}>expand_more</span>
+          <Icon name="expand_more" size={14} color="var(--text-dim)" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" style={{ minWidth: 200 }}>
           {spaces.map(s => (
@@ -314,7 +313,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
               {s.icon && <span style={{ fontSize: 13 }}>{s.icon}</span>}
               {s.color && !s.icon && <span style={{ width: 8, height: 8, borderRadius: '50%', background: s.color, display: 'inline-block', flexShrink: 0 }} />}
               {s.name}
-              {s.id === selectedSpaceId && <span className="material-symbols-rounded" style={{ fontSize: 13, marginLeft: 'auto', color: 'var(--accent)' }}>check</span>}
+              {s.id === selectedSpaceId && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>
@@ -329,7 +328,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
     return (
       <Dialog open={open} onOpenChange={v => !v && onClose()}>
         <DialogContent style={{ width: 400, padding: '28px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-          <span className="material-symbols-rounded animate-spin" style={{ fontSize: 32, color: 'var(--accent)' }}>sync</span>
+          <Icon name="sync" size={32} color="var(--accent)" className="animate-spin" />
           <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>클립보드 읽는 중...</p>
         </DialogContent>
       </Dialog>
@@ -342,7 +341,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
       <Dialog open={open} onOpenChange={v => !v && onClose()}>
         <DialogContent style={{ width: 400, padding: '28px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
           <div style={{ width: 48, height: 48, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 24, color: 'var(--text-dim)' }}>content_paste_off</span>
+            <Icon name="content_paste_off" size={24} color="var(--text-dim)" />
           </div>
           <div style={{ textAlign: 'center' }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-color)' }}>클립보드가 비어있습니다</div>
@@ -372,7 +371,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
         <DialogContent style={{ width: 420, padding: 0, overflow: 'hidden' }}>
           <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
             <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 16, color: 'var(--accent)' }}>bolt</span>
+              <Icon name="bolt" size={16} color="var(--accent)" />
               빠른 추가
             </DialogTitle>
           </DialogHeader>
@@ -394,7 +393,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
                 >
                   {iconUrl && iconKind === 'image'
                     ? <img src={iconUrl} alt="" style={{ width: 26, height: 26, objectFit: 'contain', borderRadius: 4 }} onError={() => { setIconUrl(undefined); setIconKind('image'); }} />
-                    : <span className="material-symbols-rounded" style={{ fontSize: 22, color: m.color }}>{iconKind === 'material' && iconUrl ? iconUrl : m.icon}</span>
+                    : <Icon name={iconKind === 'material' && iconUrl ? iconUrl : m.icon} size={22} color={m.color} />
                   }
                 </button>
                 <div style={{ flex: 1 }}>
@@ -425,7 +424,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
                       onClick={() => { setIconUrl(ico); setIconKind('material'); setShowIconPicker(false); }}
                       style={{ width: 30, height: 30, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', border: `1px solid ${iconKind === 'material' && iconUrl === ico ? 'var(--accent)' : 'var(--border-rgba)'}`, background: iconKind === 'material' && iconUrl === ico ? 'var(--accent-dim)' : 'transparent' }}
                     >
-                      <span className="material-symbols-rounded" style={{ fontSize: 16, color: iconKind === 'material' && iconUrl === ico ? 'var(--accent)' : 'var(--text-muted)' }}>{ico}</span>
+                      <Icon name={ico} size={16} color={iconKind === 'material' && iconUrl === ico ? 'var(--accent)' : 'var(--text-muted)'} />
                     </button>
                   ))}
                 </div>
@@ -471,7 +470,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
         <DialogContent style={{ width: 420, padding: 0, overflow: 'hidden' }}>
           <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
             <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 16, color: 'var(--accent)' }}>add_circle</span>
+              <Icon name="add_circle" size={16} color="var(--accent)" />
               직접 입력 — 유형 선택
             </DialogTitle>
           </DialogHeader>
@@ -501,7 +500,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
                     }}
                   >
                     <div style={{ width: 36, height: 36, borderRadius: 10, background: `${m.color}14`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                      <span className="material-symbols-rounded" style={{ fontSize: 20, color: m.color }}>{m.icon}</span>
+                      <Icon name={m.icon} size={20} color={m.color} />
                     </div>
                     <span style={{ fontSize: 11, color: 'var(--text-color)', fontWeight: 600, textAlign: 'center', lineHeight: 1.3 }}>{m.label}</span>
                   </button>
@@ -550,7 +549,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
         <DialogContent style={{ width: 420, padding: 0, overflow: 'hidden' }}>
           <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
             <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 16, color: m.color }}>{m.icon}</span>
+              <Icon name={m.icon} size={16} color={m.color} />
               {m.label}
             </DialogTitle>
           </DialogHeader>
@@ -577,7 +576,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
                       alignItems: 'center', justifyContent: 'center',
                     }}
                   >
-                    <span className="material-symbols-rounded" style={{ fontSize: 16 }}>folder_open</span>
+                    <Icon name="folder_open" size={16} />
                   </button>
                 )}
               </div>
@@ -611,7 +610,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
         <DialogContent style={{ width: 420, padding: 0, overflow: 'hidden' }}>
           <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
             <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="material-symbols-rounded" style={{ fontSize: 16, color: 'var(--accent)' }}>badge</span>
+              <Icon name="badge" size={16} color="var(--accent)" />
               이름 확인
             </DialogTitle>
           </DialogHeader>
@@ -621,7 +620,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
               <div style={{ width: 40, height: 40, borderRadius: 10, background: `${m.color}14`, border: `1px solid ${m.color}22`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 {iconUrl
                   ? <img src={iconUrl} alt="" style={{ width: 26, height: 26, objectFit: 'contain', borderRadius: 4 }} />
-                  : <span className="material-symbols-rounded" style={{ fontSize: 22, color: m.color }}>{m.icon}</span>
+                  : <Icon name={m.icon} size={22} color={m.color} />
                 }
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>

@@ -12,8 +12,8 @@ export interface ElectronAPI {
   openUrl: (url: string, closeAfter: boolean) => void;
   openPath: (folder: string, closeAfter: boolean) => void;
   openFolder: (folder: string, closeAfter: boolean) => void;
-  focusWindow: (title: string, closeAfter: boolean) => Promise<{ found: boolean; error?: string }>;
-  launchOrFocusApp: (exePath: string, closeAfter: boolean, monitor?: number) => Promise<{ action: 'focused' | 'launched' | 'error'; error?: string }>;
+  focusWindow: (title: string, closeAfter: boolean) => Promise<{ success: boolean; error?: string }>;
+  launchOrFocusApp: (exePath: string, closeAfter: boolean, monitor?: number) => Promise<{ success: boolean; action?: 'focused' | 'launched'; error?: string }>;
   runCmd: (command: string, closeAfter: boolean) => void;
   copyText: (text: string, closeAfter: boolean) => void;
   getOpenWindows: () => Promise<{ windows: import('./types').WindowEntry[]; browserTabs: import('./types').ChromeTab[] }>;
@@ -54,7 +54,10 @@ export interface ElectronAPI {
   installUpdate: () => void;
   onUpdateAvailable: (cb: (info: { version: string }) => void) => void;
   onUpdateDownloaded: (cb: (info: { version: string }) => void) => void;
+  onMonitorsChanged: (cb: (monitors: Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>) => void) => void;
+  getRecentItems: () => Promise<Array<{ title: string; value: string; type: 'folder' | 'app'; lastAccessed: string }>>;
   readClipboard: () => Promise<string>;
+  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'none'; value?: string; label?: string }>;
   checkWindowsAlive: (titles: string[]) => Promise<Record<string, boolean>>;
   checkFileExists: (filePath: string) => Promise<boolean>;
   checkItemsForTile: (items: { type: string; value: string; title: string }[]) => Promise<Array<{ idx: number; alive: boolean; note: string }>>;
@@ -63,6 +66,7 @@ export interface ElectronAPI {
   snapWindow: (item: { type: string; value: string; title: string }, zone: 'left' | 'right' | 'top') => Promise<{ success: boolean }>;
   getMonitors: () => Promise<Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>>;
   identifyMonitors: () => Promise<{ count: number }>;
+  getUserHome: () => string;
   openGuide: () => void;
   signalReady: () => void;
   setLoadingStatus: (msg: string) => void;
@@ -75,8 +79,8 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   openUrl: noop,
   openPath: noop,
   openFolder: noop,
-  focusWindow: async () => ({ found: false }),
-  launchOrFocusApp: async () => ({ action: 'error' as const, error: 'dev-mode' }),
+  focusWindow: async () => ({ success: false }),
+  launchOrFocusApp: async () => ({ success: false, error: 'dev-mode' }),
   runCmd: noop,
   copyText: noop,
   getOpenWindows: async () => ({ windows: [], browserTabs: [] }),
@@ -102,7 +106,10 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   installUpdate: noop,
   onUpdateAvailable: noop,
   onUpdateDownloaded: noop,
+  onMonitorsChanged: noop,
+  getRecentItems: async () => [],
   readClipboard: async () => '',
+  analyzeClipboard: async () => ({ type: 'none' as const }),
   checkWindowsAlive: async () => ({}),
   checkFileExists: async () => false,
   checkItemsForTile: async () => [],
@@ -111,6 +118,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   snapWindow: async () => ({ success: false }),
   getMonitors: async () => [],
   identifyMonitors: async () => ({ count: 1 }),
+  getUserHome: () => '',
   openGuide: noop,
   signalReady: noop,
   setLoadingStatus: noop,

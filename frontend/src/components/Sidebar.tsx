@@ -1,12 +1,15 @@
 import { useState } from 'react';
 import type { AppMode } from '../types';
+import { Icon } from '@/components/ui/Icon';
 
 interface SidebarProps {
   activeMode: AppMode;
   onModeChange: (mode: AppMode) => void;
+  recommendOpen?: boolean;
+  onRecommendClick?: () => void;
 }
 
-export function Sidebar({ activeMode, onModeChange }: SidebarProps) {
+export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendClick }: SidebarProps) {
   const [expanded, setExpanded] = useState(false);
 
   const sidebarWidth = expanded ? 160 : 44;
@@ -49,9 +52,7 @@ export function Sidebar({ activeMode, onModeChange }: SidebarProps) {
             flexShrink: 0,
           }}
         >
-          <span className="material-symbols-rounded" style={{ fontSize: 16, color: 'var(--text-muted)' }}>
-            person
-          </span>
+          <Icon name="person" size={16} color="var(--text-muted)" />
         </div>
         {expanded && (
           <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', fontWeight: 500 }}>
@@ -94,6 +95,17 @@ export function Sidebar({ activeMode, onModeChange }: SidebarProps) {
           onClick={() => onModeChange(activeMode === 'deck' ? 'normal' : 'deck')}
           accentColor="#f97316"
         />
+
+        <div style={{ height: 1, background: 'var(--border-rgba)', margin: '4px 6px' }} />
+
+        <SidebarButton
+          icon="lightbulb"
+          label="추천"
+          active={!!recommendOpen}
+          expanded={expanded}
+          onClick={() => onRecommendClick?.()}
+          accentColor="var(--accent)"
+        />
       </div>
 
       {/* ── Expand / Collapse toggle ─────────────── */}
@@ -119,16 +131,7 @@ export function Sidebar({ activeMode, onModeChange }: SidebarProps) {
         onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-dim)')}
         title={expanded ? '사이드바 접기' : '사이드바 펼치기'}
       >
-        <span
-          className="material-symbols-rounded"
-          style={{
-            fontSize: 14,
-            transition: 'transform 0.2s',
-            transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
-          }}
-        >
-          chevron_right
-        </span>
+        <Icon name="chevron_right" size={14} style={{ transition: 'transform 0.2s', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }} />
         {expanded && (
           <span style={{ fontSize: 10, fontWeight: 500, whiteSpace: 'nowrap' }}>접기</span>
         )}
@@ -185,9 +188,7 @@ function SidebarButton({
         if (!active) e.currentTarget.style.background = 'transparent';
       }}
     >
-      <span className="material-symbols-rounded" style={{ fontSize: 17, flexShrink: 0 }}>
-        {icon}
-      </span>
+      <Icon name={icon} size={17} style={{ flexShrink: 0 }} />
       {expanded && label}
       {badge && (
         <span
