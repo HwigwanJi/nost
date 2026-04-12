@@ -1248,6 +1248,7 @@ app.whenReady().then(() => {
     autoUpdater.logger = null; // suppress verbose logging
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    // Public repo — no token needed for release access
 
     autoUpdater.on('update-available', (info) => {
       if (mainWindow) mainWindow.webContents.send('update-available', { version: info.version });
