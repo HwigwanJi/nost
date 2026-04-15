@@ -163,17 +163,19 @@ if (!gotTheLock) {
   });
 }
 
-// Chrome Extension Bridge
+// ── Chrome Extension Bridge ─────────────────────────────────
 global.chromeTabs = [];
 let sseConnection = null;
 let lastTabsUpdateAt = 0;
 let lastExtensionConnectedAt = 0;
 
+const EXT_PORT = 14502;
+
 const extServer = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', '*');
   if (req.method === 'OPTIONS') return res.end();
-  
+
   if (req.url === '/tabs' && req.method === 'POST') {
     let body = '';
     req.on('data', chunk => body += chunk.toString());
@@ -193,7 +195,21 @@ const extServer = http.createServer((req, res) => {
     res.writeHead(404); res.end();
   }
 });
-extServer.listen(14502, '127.0.0.1');
+
+/** Start the extension bridge server with port-conflict recovery. */
+function startExtServer() {
+  extServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`[ExtServer] Port ${EXT_PORT} in use — killing previous owner and retrying...`);
+      exec(`powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort ${EXT_PORT} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, () => {
+        setTimeout(() => extServer.listen(EXT_PORT, '127.0.0.1'), 500);
+      });
+    } else {
+      console.error('[ExtServer] Error:', err.message);
+    }
+  });
+  extServer.listen(EXT_PORT, '127.0.0.1');
+}
 
 function focusChromeTab(tabId, windowId) {
   if (sseConnection) {
@@ -1204,6 +1220,9 @@ app.whenReady().then(() => {
   // Show splash immediately so there's visual feedback during cold-start
   createLoadingWindow();
 
+  // Start the Chrome extension bridge server (after app is ready)
+  startExtServer();
+
   // CSP Headers
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
@@ -1338,4 +1357,12 @@ app.on('window-all-closed', function () {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+
+  // Close SSE connection so the TCP socket releases immediately
+  if (sseConnection) {
+    sseConnection.destroy();
+    sseConnection = null;
+  }
+  // Stop accepting new connections and close the port
+  extServer.close();
 });
