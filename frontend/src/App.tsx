@@ -37,7 +37,7 @@ import { AppStateProvider, AppActionsProvider } from './contexts/AppContext';
 import type { AppActions, AppState } from './contexts/AppContext';
 import {
   DndContext,
-  closestCenter,
+  closestCorners,
   PointerSensor,
   useSensor,
   useSensors,
@@ -46,48 +46,19 @@ import {
 } from '@dnd-kit/core';
 
 // ── Right-click sensor for card reordering ──────────────────
-// Right-click is reserved for ITEM CARDS only. We explicitly exclude space
-// accordion headers — spaces reorder with LEFT-click only, so right-click on
-// them stays free for window behaviors / native context actions.
-// NOTE: must call `onActivation({event})` for dnd-kit to transition into the
-// pending-drag state; returning true alone is not enough.
+// Cards reorder via right-click drag (original design). We skip targets inside
+// a space header so useWindowDrag can still grab the window there.
+// Spaces themselves use the stock PointerSensor — we restrict which sub-region
+// of the header is actually draggable via where we spread `listeners` in the
+// SpaceAccordion markup (no custom sensor subclass needed).
 class RightPointerSensor extends PointerSensor {
   static activators = [
     {
       eventName: 'onPointerDown' as const,
-      // dnd-kit passes (event, options) where options also carries `onActivation`.
-      // Using `any` for options to stay compatible across @dnd-kit/core versions
-      // that shape the tuple slightly differently.
-      handler: (
-        { nativeEvent: event }: { nativeEvent: PointerEvent },
-        options?: any,
-      ) => {
+      handler: ({ nativeEvent: event }: { nativeEvent: PointerEvent }) => {
         if (event.button !== 2) return false;
         const target = event.target as HTMLElement | null;
         if (target?.closest?.('.space-accordion-header')) return false;
-        options?.onActivation?.({ event });
-        return true;
-      },
-    },
-  ];
-}
-
-// ── Left-click sensor restricted to SPACE headers ────────────
-// Items must NOT start dragging on left-click (that's for launching them).
-// This activator only fires when the pointerdown lands on a space header, so
-// clicking an item card cleanly invokes its launch handler instead.
-class SpaceLeftPointerSensor extends PointerSensor {
-  static activators = [
-    {
-      eventName: 'onPointerDown' as const,
-      handler: (
-        { nativeEvent: event }: { nativeEvent: PointerEvent },
-        options?: any,
-      ) => {
-        if (!event.isPrimary || event.button !== 0) return false;
-        const target = event.target as HTMLElement | null;
-        if (!target?.closest?.('.space-accordion-header')) return false;
-        options?.onActivation?.({ event });
         return true;
       },
     },
@@ -139,6 +110,14 @@ function SortableSpace({
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
   const elRef = useRef<HTMLDivElement | null>(null);
   const [resizing, setResizing] = useState(false);
+
+  // Memoize the combined ref so React doesn't treat every render as a new ref
+  // → prevents dnd-kit from receiving phantom setNodeRef(null) / setNodeRef(node)
+  // cycles that abort an in-flight drag. This was the silent killer.
+  const combinedNodeRef = useCallback((node: HTMLDivElement | null) => {
+    setNodeRef(node);
+    elRef.current = node;
+  }, [setNodeRef]);
 
   const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
     if (!onWeightsChange || !neighborId) return;
@@ -212,7 +191,7 @@ function SortableSpace({
 
   return (
     <div
-      ref={node => { setNodeRef(node); elRef.current = node; }}
+      ref={combinedNodeRef}
       data-space-id={id}
       style={{
         gridColumn: `span ${span}`,
@@ -1131,12 +1110,15 @@ export default function App() {
   }, [data.spaces, data.nodeGroups, store, showToast, launchItem, handleNodeGroupLaunch, handleTogglePin]);
 
   // ── DnD sensors ───────────────────────────────────────────
-  // Strict separation to avoid accidental drags:
-  //  - Space reorder  = LEFT-click on a .space-accordion-header (SpaceLeftPointerSensor)
-  //  - Card reorder   = RIGHT-click on a card (RightPointerSensor; excludes space headers)
-  // Left-click on a card stays free for the card's launch handler.
+  //  - PointerSensor (stock, left-click) picks up drags from any element that
+  //    spreads the useSortable `listeners` — in practice that's the small
+  //    drag-activator region inside each space header (icon + name + count).
+  //    Items don't spread listeners on left-click (their onPointerDown handler
+  //    overrides), so cards still launch on click.
+  //  - RightPointerSensor handles right-click drag for card reordering; skips
+  //    space headers so useWindowDrag can grab the window there.
   const allSensors = useSensors(
-    useSensor(SpaceLeftPointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(RightPointerSensor, { activationConstraint: { distance: 8 } })
   );
 
@@ -1217,10 +1199,16 @@ export default function App() {
       return;
     }
 
-    // Fallback: dnd-kit's standard reorder
+    // Fallback: dnd-kit's standard reorder. `over.id` might be either the
+    // sortable id (space.id) or the file-drop droppable id (drop-space-<id>)
+    // because each space registers both — strip the prefix so findIndex finds
+    // the actual space array entry.
     if (!over || activeId === over.id) return;
+    const overIdRaw = String(over.id);
+    const overId = overIdRaw.startsWith('drop-space-') ? overIdRaw.slice('drop-space-'.length) : overIdRaw;
+    if (activeId === overId) return;
     const oldIdx = data.spaces.findIndex(s => s.id === activeId);
-    const newIdx = data.spaces.findIndex(s => s.id === over.id);
+    const newIdx = data.spaces.findIndex(s => s.id === overId);
     if (oldIdx === -1 || newIdx === -1) return;
     store.reorderSpaces(arrayMove(data.spaces, oldIdx, newIdx));
   }
@@ -1535,7 +1523,7 @@ export default function App() {
           {/* ── Unified DnD: space grip (left-click) + card right-click drag ───── */}
           <DndContext
             sensors={allSensors}
-            collisionDetection={closestCenter}
+            collisionDetection={closestCorners}
             onDragStart={e => {
               const activeId = e.active.id as string;
               if (data.spaces.some(s => s.id === activeId)) setDraggingSpaceId(activeId);
@@ -1576,14 +1564,19 @@ export default function App() {
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
           {/* ── Title bar (draggable) ────────────────── */}
+          {/* height 49 (48 content + 1 border-bottom) is the reference for all
+              sibling section headers. NodePanel "Table" header matches via minHeight
+              so the border-bottom lines align perfectly — no step at the divider. */}
           <div
             style={{
               flexShrink: 0,
               display: 'flex',
               alignItems: 'center',
               gap: '8px',
-              padding: '10px 14px',
+              height: 49,
+              padding: '0 14px',
               borderBottom: '1px solid var(--border-rgba)',
+              boxSizing: 'border-box',
               userSelect: 'none',
               WebkitAppRegion: 'drag',
             } as React.CSSProperties}

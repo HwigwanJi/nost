@@ -155,26 +155,23 @@ export function SpaceAccordion({
       }}
     >
       {/* ── Header ─────────────────────────────────────── */}
-      {/* Entire header is the space-reorder drag activator; child buttons (chevron,
-          action icons, rename input) stopPropagation so pointerdown never reaches
-          dnd-kit from them. The 8px activation distance still lets quick clicks
-          through even if propagation isn't stopped. */}
+      {/* The outer header carries the .space-accordion-header class (hover effect +
+          used by sensors to differentiate space headers from item cards) but does
+          NOT receive the dnd-kit listeners itself. Only the inner "title" region
+          (icon + name + count badge) is the drag activator — that way chevron and
+          action buttons remain pure click targets without needing stopPropagation
+          gymnastics, and the cursor affordance is obvious only where drag works. */}
       <div
-        ref={headerDragActivator?.setActivatorNodeRef}
-        {...(headerDragActivator?.listeners ?? {})}
-        {...(headerDragActivator?.attributes ?? {})}
         className="flex items-center gap-2 px-3 py-2.5 select-none group space-accordion-header"
         style={{
           background: headerBg,
           minHeight: 40,
           cursor: 'default',
-          touchAction: 'none',
           transition: 'background 0.12s',
         }}
       >
         {/* Chevron */}
         <button
-          onPointerDown={e => e.stopPropagation()}
           onClick={() => { if (!isRenaming) { setIsOpen(o => !o); onToggleCollapse(); } }}
           className="flex items-center justify-center w-5 h-5 rounded transition-colors flex-shrink-0"
           style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
@@ -182,43 +179,54 @@ export function SpaceAccordion({
           <Icon name="chevron_right" size={16} className="transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} />
         </button>
 
-        {/* Space icon (Material Symbol; legacy emoji rendered as text) or color dot */}
-        {space.icon ? (
-          isEmojiIcon(space.icon)
-            ? <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{space.icon}</span>
-            : <Icon name={space.icon} size={14} color={space.color ?? 'var(--text-muted)'} />
-        ) : space.color ? (
-          <span
-            className="w-2 h-2 rounded-full flex-shrink-0"
-            style={{ background: space.color }}
-          />
-        ) : null}
+        {/* Drag activator: spans icon + name + count. This is the ONLY region that
+            holds dnd-kit listeners, so pointerdown reliably initiates space drag
+            from here without conflicting with chevron / action-button clicks. */}
+        <div
+          ref={headerDragActivator?.setActivatorNodeRef}
+          {...(headerDragActivator?.listeners ?? {})}
+          {...(headerDragActivator?.attributes ?? {})}
+          className="flex items-center gap-2 flex-1 min-w-0"
+          style={{ touchAction: 'none', cursor: isRenaming ? 'text' : 'grab' }}
+          onDoubleClick={e => { e.stopPropagation(); setIsRenaming(true); }}
+        >
+          {/* Space icon (Material Symbol; legacy emoji rendered as text) or color dot */}
+          {space.icon ? (
+            isEmojiIcon(space.icon)
+              ? <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{space.icon}</span>
+              : <Icon name={space.icon} size={14} color={space.color ?? 'var(--text-muted)'} />
+          ) : space.color ? (
+            <span
+              className="w-2 h-2 rounded-full flex-shrink-0"
+              style={{ background: space.color }}
+            />
+          ) : null}
 
-        {/* Space name */}
-        {isRenaming ? (
-          <input
-            ref={inputRef}
-            value={draft}
-            onPointerDown={e => e.stopPropagation()}
-            onClick={e => e.stopPropagation()}
-            onChange={e => setDraft(e.target.value)}
-            onBlur={() => { onRename(draft); setIsRenaming(false); }}
-            onKeyDown={e => {
-              if (e.key === 'Enter') { onRename(draft); setIsRenaming(false); }
-              if (e.key === 'Escape') { setDraft(space.name); setIsRenaming(false); }
-            }}
-            className="flex-1 bg-transparent font-semibold text-[13px] outline-none border-b"
-            style={{ color: 'var(--text-color)', borderColor: 'var(--border-focus)' }}
-          />
-        ) : (
-          <span
-            className="flex-1 font-semibold text-[13px] truncate"
-            style={{ color: 'var(--text-color)' }}
-            onDoubleClick={e => { e.stopPropagation(); setIsRenaming(true); }}
-          >
-            {space.name}
-          </span>
-        )}
+          {/* Space name */}
+          {isRenaming ? (
+            <input
+              ref={inputRef}
+              value={draft}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => e.stopPropagation()}
+              onChange={e => setDraft(e.target.value)}
+              onBlur={() => { onRename(draft); setIsRenaming(false); }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { onRename(draft); setIsRenaming(false); }
+                if (e.key === 'Escape') { setDraft(space.name); setIsRenaming(false); }
+              }}
+              className="flex-1 bg-transparent font-semibold text-[13px] outline-none border-b"
+              style={{ color: 'var(--text-color)', borderColor: 'var(--border-focus)' }}
+            />
+          ) : (
+            <span
+              className="flex-1 font-semibold text-[13px] truncate"
+              style={{ color: 'var(--text-color)' }}
+            >
+              {space.name}
+            </span>
+          )}
+        </div>
 
         {/* Item count badge (when collapsed or searching) */}
         {(!isOpen || searchQuery) && space.items.length > 0 && (
