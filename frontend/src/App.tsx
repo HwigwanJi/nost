@@ -45,21 +45,29 @@ import {
   DragOverlay,
 } from '@dnd-kit/core';
 
-// ── Right-click sensor for card reordering ──────────────────
-// Cards reorder via right-click drag (original design). We skip targets inside
-// a space header so useWindowDrag can still grab the window there.
-// Spaces themselves use the stock PointerSensor — we restrict which sub-region
-// of the header is actually draggable via where we spread `listeners` in the
-// SpaceAccordion markup (no custom sensor subclass needed).
-class RightPointerSensor extends PointerSensor {
+// ── Unified pointer sensor ──────────────────────────────────
+// One sensor handles BOTH left-click (space reorder) and right-click (card
+// reorder) to avoid the multi-sensor conflict dnd-kit exhibits when two
+// PointerSensor subclasses both register an onPointerDown activator.
+//
+// Gating rules live in the activator:
+//  - button 0 (primary): drag allowed from anywhere the caller spread the
+//    listeners (dnd-kit's setActivatorNodeRef scopes space drag to the header
+//    title region; cards ignore button 0 on their own).
+//  - button 2 (secondary): drag allowed on cards but NOT on space headers —
+//    right-click on a header belongs to useWindowDrag (move the window).
+class UnifiedPointerSensor extends PointerSensor {
   static activators = [
     {
       eventName: 'onPointerDown' as const,
       handler: ({ nativeEvent: event }: { nativeEvent: PointerEvent }) => {
-        if (event.button !== 2) return false;
-        const target = event.target as HTMLElement | null;
-        if (target?.closest?.('.space-accordion-header')) return false;
-        return true;
+        if (event.button === 0) return event.isPrimary;
+        if (event.button === 2) {
+          const target = event.target as HTMLElement | null;
+          if (target?.closest?.('.space-accordion-header')) return false;
+          return true;
+        }
+        return false;
       },
     },
   ];
@@ -90,6 +98,7 @@ function SortableSpace({
   id,
   children,
   dropEdge,
+  dropBlocked,
   pairPartnerId,
   currentSplitRatio,
   onSplitRatioChange,
@@ -97,6 +106,7 @@ function SortableSpace({
   id: string;
   children: (activator: DragActivator) => React.ReactNode;
   dropEdge?: 'left' | 'right' | 'center';   // current drop indicator zone, if this space is the target
+  dropBlocked?: boolean;                    // true when edge drop is disallowed (target row is already a pair)
   pairPartnerId?: string;                   // set if this space is the LEFT of a pair
   currentSplitRatio?: number;               // current ratio [0.25, 0.75] for the pair; only used when pairPartnerId set
   onSplitRatioChange?: (ratio: number) => void;
@@ -181,9 +191,10 @@ function SortableSpace({
       {children({ setActivatorNodeRef, listeners, attributes })}
 
       {/* Drop indicator: Notion-style preview of where the drop will land.
-          Vertical line on left/right = pair with this space on that side;
-          horizontal line on bottom = new solo row after this space. */}
-      {dropEdge === 'left' && (
+          - Vertical line on left/right = pair with this space on that side
+          - Horizontal line on bottom   = new solo row after this space
+          - Red overlay + dashed border = edge drop BLOCKED (target row full) */}
+      {dropEdge === 'left' && !dropBlocked && (
         <div className="drop-indicator-pulse" style={{
           position: 'absolute', top: 2, bottom: 2, left: -5,
           width: 4, borderRadius: 2,
@@ -192,7 +203,7 @@ function SortableSpace({
           zIndex: 50, pointerEvents: 'none',
         }} />
       )}
-      {dropEdge === 'right' && (
+      {dropEdge === 'right' && !dropBlocked && (
         <div className="drop-indicator-pulse" style={{
           position: 'absolute', top: 2, bottom: 2, right: -5,
           width: 4, borderRadius: 2,
@@ -209,6 +220,27 @@ function SortableSpace({
           boxShadow: '0 0 14px var(--accent)',
           zIndex: 50, pointerEvents: 'none',
         }} />
+      )}
+      {/* Blocked indicator: dashed red overlay with 🚫 cursor hint. Shown when
+          the user tries to left/right-drop onto a row that's already a pair. */}
+      {dropBlocked && (dropEdge === 'left' || dropEdge === 'right') && (
+        <div style={{
+          position: 'absolute', inset: 0,
+          border: '2px dashed #ef4444',
+          borderRadius: 12,
+          background: 'rgba(239, 68, 68, 0.08)',
+          zIndex: 50, pointerEvents: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <div style={{
+            background: '#ef4444', color: '#fff',
+            fontSize: 11, fontWeight: 600,
+            padding: '4px 10px', borderRadius: 6,
+            boxShadow: '0 4px 12px rgba(239, 68, 68, 0.3)',
+          }}>
+            이미 꽉 찬 행
+          </div>
+        </div>
       )}
 
       {/* Pair resize handle — only on the LEFT space of a pair. */}
@@ -361,6 +393,29 @@ function applySpaceDrop(
   return flattenRows(nextRows);
 }
 
+// Is this space currently sharing its row with another? True if the space is
+// the LEFT of a pair (its own pairedWithNext) OR the RIGHT of one (the space
+// immediately before has pairedWithNext).
+function isSpaceInPair(spaces: Space[], id: string): boolean {
+  const idx = spaces.findIndex(s => s.id === id);
+  if (idx === -1) return false;
+  if (spaces[idx].pairedWithNext && spaces[idx + 1]) return true;
+  if (idx > 0 && spaces[idx - 1].pairedWithNext) return true;
+  return false;
+}
+
+// Are these two spaces in the same pair row? Used to allow same-row reordering
+// (which is a no-op, not a "block") without showing the forbidden indicator.
+function isSameRowNeighbor(spaces: Space[], a: string, b: string): boolean {
+  for (let i = 0; i < spaces.length - 1; i++) {
+    if (spaces[i].pairedWithNext) {
+      const leftId = spaces[i].id, rightId = spaces[i + 1].id;
+      if ((leftId === a && rightId === b) || (leftId === b && rightId === a)) return true;
+    }
+  }
+  return false;
+}
+
 // Flatten the row model back into a Space[] with correct pairedWithNext /
 // splitRatio. Single source of truth for the array shape.
 function flattenRows(rows: SpaceRow[]): Space[] {
@@ -427,7 +482,11 @@ export default function App() {
   //   left    → column-join on target's LEFT  (insert before target in the row)
   //   right   → column-join on target's RIGHT (insert after target in the row)
   // Drives the drop indicator UI and the branching in handleSpaceDragEnd.
-  const [dragOverEdge, setDragOverEdge] = useState<{ overId: string; edge: 'left' | 'right' | 'center' } | null>(null);
+  // `blocked` = the target's row is already a pair. Left/right drops on blocked
+  // targets are disallowed (would require a 3-space row); we render a distinct
+  // indicator and the drop becomes a no-op on release. Center drops are always
+  // allowed because they create a new solo row below the target's pair.
+  const [dragOverEdge, setDragOverEdge] = useState<{ overId: string; edge: 'left' | 'right' | 'center'; blocked?: boolean } | null>(null);
   // ── File-Explorer drag state ────────────────────────────────
   // fileDragOver:          any file drag in progress over the app
   // fileDragTargetSpaceId: which SpaceAccordion the cursor is hovering (null = no target → first space fallback)
@@ -1112,16 +1171,13 @@ export default function App() {
   }, [data.spaces, data.nodeGroups, store, showToast, launchItem, handleNodeGroupLaunch, handleTogglePin]);
 
   // ── DnD sensors ───────────────────────────────────────────
-  //  - PointerSensor (stock, left-click) picks up drags from any element that
-  //    spreads the useSortable `listeners` — in practice that's the small
-  //    drag-activator region inside each space header (icon + name + count).
-  //    Items don't spread listeners on left-click (their onPointerDown handler
-  //    overrides), so cards still launch on click.
-  //  - RightPointerSensor handles right-click drag for card reordering; skips
-  //    space headers so useWindowDrag can grab the window there.
+  // Single UnifiedPointerSensor handles BOTH left-click (space reorder) and
+  // right-click (card reorder). Previously two PointerSensor subclasses were
+  // registered side by side, but dnd-kit silently dropped drag activation when
+  // both were present — the unified sensor fixes the conflict.
+  // See UnifiedPointerSensor (above) for the button-specific gating rules.
   const allSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(RightPointerSensor, { activationConstraint: { distance: 8 } })
+    useSensor(UnifiedPointerSensor, { activationConstraint: { distance: 8 } }),
   );
 
   // Space reorder DnD (Phase 3 pair model)
@@ -1145,6 +1201,11 @@ export default function App() {
     const spaces = data.spaces;
     const draggedIdx = spaces.findIndex(s => s.id === activeId);
     if (draggedIdx === -1) return;
+
+    // Blocked drops: the target row is already a pair and the user tried to drop
+    // on its left/right edge. Swallow silently — the red indicator already
+    // communicated that the action wasn't allowed.
+    if (edge?.blocked) return;
 
     // Strip "drop-space-" prefix from dnd-kit's `over.id` fallback.
     const overIdRaw = over ? String(over.id) : '';
@@ -1476,29 +1537,52 @@ export default function App() {
             }}
             onDragMove={e => {
               // Only track edge zones while dragging a SPACE (not an item card).
-              // `activatorEvent` + `delta` gives us the current pointer position;
-              // we use elementFromPoint to resolve which space (if any) is under
-              // the cursor, then classify left/right/center by relative X.
               const activeId = e.active.id as string;
               if (!data.spaces.some(s => s.id === activeId)) return;
-              const start = e.activatorEvent as PointerEvent | MouseEvent | undefined;
-              if (!start) return;
-              const cx = (start.clientX ?? 0) + e.delta.x;
-              const cy = (start.clientY ?? 0) + e.delta.y;
-              const el = document.elementFromPoint(cx, cy);
-              const spaceEl = (el as HTMLElement | null)?.closest('[data-space-id]') as HTMLElement | null;
-              const overId = spaceEl?.getAttribute('data-space-id');
+
+              // Use dnd-kit's resolved `over` as the target — elementFromPoint
+              // is unreliable during drag because the DragOverlay ghost sits at
+              // the cursor and intercepts the hit test. `over.id` may be either
+              // the SortableSpace id (space.id) or the file-drop droppable id
+              // (`drop-space-<id>`); strip the prefix to always land on a real
+              // space id.
+              const overIdRaw = e.over?.id ? String(e.over.id) : null;
+              const overId = overIdRaw?.startsWith('drop-space-')
+                ? overIdRaw.slice('drop-space-'.length)
+                : overIdRaw;
+
               if (!overId || overId === activeId) {
                 setDragOverEdge(prev => prev === null ? prev : null);
                 return;
               }
-              const rect = spaceEl!.getBoundingClientRect();
+
+              // Resolve the space's rect via DOM lookup for the edge math. The
+              // SortableSpace root carries data-space-id=<id>.
+              const spaceEl = document.querySelector(`[data-space-id="${overId}"]`) as HTMLElement | null;
+              if (!spaceEl) {
+                setDragOverEdge(prev => prev === null ? prev : null);
+                return;
+              }
+
+              // Compute cursor X relative to the target space for left/center/right classification.
+              const start = e.activatorEvent as PointerEvent | MouseEvent | undefined;
+              if (!start) return;
+              const cx = (start.clientX ?? 0) + e.delta.x;
+              const rect = spaceEl.getBoundingClientRect();
               const rx = cx - rect.left;
               const w = rect.width;
               const edge: 'left' | 'right' | 'center' =
                 rx < w * 0.25 ? 'left' : rx > w * 0.75 ? 'right' : 'center';
+
+              // A left/right drop is blocked when the target's row is already a
+              // pair AND the dragged space isn't its current partner. Center
+              // drops are always allowed (they create a new solo row below the pair).
+              const targetRowIsPair = isSpaceInPair(data.spaces, overId);
+              const blocked = targetRowIsPair && edge !== 'center'
+                && !isSameRowNeighbor(data.spaces, overId, activeId);
               setDragOverEdge(prev =>
-                (prev?.overId === overId && prev.edge === edge) ? prev : { overId, edge }
+                (prev?.overId === overId && prev.edge === edge && !!prev.blocked === blocked)
+                  ? prev : { overId, edge, blocked }
               );
             }}
             onDragCancel={() => { setDraggingItemId(null); setDraggingSpaceId(null); setDragOverEdge(null); }}
@@ -1735,6 +1819,7 @@ export default function App() {
                         key={space.id}
                         id={space.id}
                         dropEdge={dragOverEdge?.overId === space.id ? dragOverEdge.edge : undefined}
+                        dropBlocked={dragOverEdge?.overId === space.id ? dragOverEdge.blocked : undefined}
                         pairPartnerId={pairPartnerId}
                         currentSplitRatio={currentSplitRatio}
                         onSplitRatioChange={pairPartnerId ? (r => store.setPairSplitRatio(space.id, r)) : undefined}
