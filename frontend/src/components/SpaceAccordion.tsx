@@ -23,10 +23,12 @@ interface SpaceAccordionProps {
   // and pin setActivatorNodeRef to it so any pointerdown on the header can initiate
   // a space reorder drag. Child buttons (chevron, action icons, rename input) stop
   // propagation so they keep working as clicks.
+  // `any` typing to stay compatible with dnd-kit's SyntheticListenerMap / DraggableAttributes
+  // without importing those internal types here.
   headerDragActivator?: {
     setActivatorNodeRef: (node: HTMLElement | null) => void;
-    listeners: Record<string, (e: any) => void> | undefined;
-    attributes: Record<string, unknown>;
+    listeners: any;
+    attributes: any;
   };
   onRename: (name: string) => void;
   onDelete: () => void;

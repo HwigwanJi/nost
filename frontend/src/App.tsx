@@ -55,14 +55,17 @@ class RightPointerSensor extends PointerSensor {
   static activators = [
     {
       eventName: 'onPointerDown' as const,
+      // dnd-kit passes (event, options) where options also carries `onActivation`.
+      // Using `any` for options to stay compatible across @dnd-kit/core versions
+      // that shape the tuple slightly differently.
       handler: (
         { nativeEvent: event }: { nativeEvent: PointerEvent },
-        { onActivation }: { onActivation?: (args: { event: PointerEvent }) => void } = {},
+        options?: any,
       ) => {
         if (event.button !== 2) return false;
         const target = event.target as HTMLElement | null;
         if (target?.closest?.('.space-accordion-header')) return false;
-        onActivation?.({ event });
+        options?.onActivation?.({ event });
         return true;
       },
     },
@@ -79,12 +82,12 @@ class SpaceLeftPointerSensor extends PointerSensor {
       eventName: 'onPointerDown' as const,
       handler: (
         { nativeEvent: event }: { nativeEvent: PointerEvent },
-        { onActivation }: { onActivation?: (args: { event: PointerEvent }) => void } = {},
+        options?: any,
       ) => {
         if (!event.isPrimary || event.button !== 0) return false;
         const target = event.target as HTMLElement | null;
         if (!target?.closest?.('.space-accordion-header')) return false;
-        onActivation?.({ event });
+        options?.onActivation?.({ event });
         return true;
       },
     },
