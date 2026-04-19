@@ -21,7 +21,14 @@ export function useWindowDrag() {
       if (!dragRef.current) return;
       const dx = e.screenX - dragRef.current.startX;
       const dy = e.screenY - dragRef.current.startY;
-      electronAPI.moveWindow(dragRef.current.winX + dx, dragRef.current.winY + dy);
+      // Ignore sub-pixel tremor: prevents the window from creeping (and
+      // occasionally hitting an Aero Snap zone that resizes it) while the
+      // user is just holding the right button still.
+      if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+      electronAPI.moveWindow(
+        Math.round(dragRef.current.winX + dx),
+        Math.round(dragRef.current.winY + dy),
+      );
     };
 
     const onMouseUp = (e: MouseEvent) => {

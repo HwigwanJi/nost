@@ -630,7 +630,13 @@ function registerIpcHandlers() {
   ipcMain.on('hide-app', () => mainWindow.hide());
 
   /** Move the window to an absolute screen position (right-click drag). */
-  ipcMain.on('window-move', (_, x, y) => mainWindow?.setPosition(x, y));
+  // Lock size explicitly so right-click drag can never accidentally trigger a
+  // Windows Aero Snap resize — we write width/height back on every move.
+  ipcMain.on('window-move', (_, x, y) => {
+    if (!mainWindow) return;
+    const { width, height } = mainWindow.getBounds();
+    mainWindow.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
+  });
 
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() ?? [0, 0]);
 
