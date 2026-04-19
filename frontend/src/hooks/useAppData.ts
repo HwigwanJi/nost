@@ -2,6 +2,9 @@ import { useState, useCallback, useEffect } from 'react';
 import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots } from '../types';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
+import { createLogger } from '../lib/logger';
+
+const log = createLogger('useAppData');
 
 const STORAGE_KEY = 'quicklauncherData';
 
@@ -33,20 +36,42 @@ function migrateData(parsed: AppData): AppData {
   parsed.settings = { ...parsed.settings, theme: parsed.settings.theme ?? 'dark', autoLaunch: parsed.settings.autoLaunch ?? false, autoHide: parsed.settings.autoHide ?? false, accentColor: parsed.settings.accentColor ?? '#6366f1', documentExtensions: parsed.settings.documentExtensions ?? [] };
   parsed.collapsedSpaceIds = parsed.collapsedSpaceIds ?? [];
   parsed.nodeGroups = parsed.nodeGroups ?? [];
-  parsed.spaces = parsed.spaces.map(s => ({
-    ...s,
-    sortMode: s.sortMode ?? 'custom',
-    pinnedIds: s.pinnedIds ?? [],
-    items: s.items.map(i => ({ ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false })),
-  }));
+  parsed.spaces = parsed.spaces.map(s => {
+    // Migrate legacy columnSpan(1|2) → widthWeight on a 12-col master grid.
+    // 1 ≈ 1/3 of row → 4 units | 2 ≈ 2/3 → 8 units. Keep undefined if neither set → auto-span.
+    let widthWeight = s.widthWeight;
+    if (widthWeight === undefined && s.columnSpan !== undefined) {
+      widthWeight = s.columnSpan === 2 ? 8 : 4;
+    }
+    const { columnSpan: _ignored, ...rest } = s;
+    return {
+      ...rest,
+      sortMode: s.sortMode ?? 'custom',
+      pinnedIds: s.pinnedIds ?? [],
+      widthWeight,
+      items: s.items.map(i => ({ ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false })),
+    };
+  });
+  // F5 migration: flat dismissedSuggestions[] → dismissals{ value: { at, count } }.
+  // We fold the legacy list in with a synthetic timestamp of 0 so it still reads
+  // as "long ago" — cooldown check will let it reappear if signal strengthens.
+  if (!parsed.dismissals) {
+    const dismissals: Record<string, { at: number; count: number }> = {};
+    (parsed.dismissedSuggestions ?? []).forEach(v => { dismissals[v] = { at: 0, count: 1 }; });
+    parsed.dismissals = dismissals;
+  }
   return parsed;
 }
 
 function loadDataSync(): AppData {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return migrateData(JSON.parse(raw) as AppData);
-  } catch { /* ignore */ }
+    if (raw) {
+      log.debug(`loadDataSync: localStorage hit, size=${raw.length}`);
+      return migrateData(JSON.parse(raw) as AppData);
+    }
+    log.debug('loadDataSync: no localStorage, using defaultData');
+  } catch (e) { log.warn('loadDataSync: parse error', e); }
   return defaultData();
 }
 
@@ -54,29 +79,35 @@ function loadDataSync(): AppData {
 function setLoadingProgress(pct: number) {
   const bar = document.getElementById('ql-loading-bar');
   if (bar) bar.style.width = `${pct}%`;
+  log.debug(`setLoadingProgress(${pct}) bar=${!!bar}`);
 }
 
 function dismissLoadingScreen() {
   const el = document.getElementById('ql-loading');
+  log.debug(`dismissLoadingScreen called, overlay=${!!el}`);
   if (!el) return;
   setLoadingProgress(100);
   // Signal Electron main that renderer is fully ready — window will be shown now
+  log.debug('electronAPI.signalReady() →');
   electronAPI.signalReady();
   setTimeout(() => {
     el.classList.add('fade-out');
-    setTimeout(() => el.remove(), 280);
+    setTimeout(() => { el.remove(); log.debug('loading overlay removed'); }, 280);
   }, 150);
 }
 
 export function useAppData() {
+  log.debug('useAppData() function called');
   const [data, setDataRaw] = useState<AppData>(() => loadDataSync());
   const [isFirstRun, setIsFirstRun] = useState(false);
 
   // On mount: load from electron-store (migrating from localStorage if needed)
   useEffect(() => {
+    log.debug('useAppData mount effect running');
     setLoadingProgress(60); // React mounted
     electronAPI.setLoadingStatus('데이터 불러오는 중...');
     electronAPI.storeLoad().then(stored => {
+      log.debug(`storeLoad resolved. hasSpaces=${!!(stored && typeof stored === 'object' && 'spaces' in (stored as AppData))}`);
       if (stored && typeof stored === 'object' && 'spaces' in (stored as AppData)) {
         setDataRaw(migrateData(stored as AppData));
       } else {
@@ -87,8 +118,11 @@ export function useAppData() {
       }
       setLoadingProgress(90); // data ready
       electronAPI.setLoadingStatus('화면 그리는 중...');
-      requestAnimationFrame(() => requestAnimationFrame(dismissLoadingScreen)); // after first paint
-    });
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        log.debug('double-rAF fired → dismissLoadingScreen');
+        dismissLoadingScreen();
+      })); // after first paint
+    }).catch(err => log.error('storeLoad rejected', err));
   }, []);
 
   const save = useCallback((next: AppData) => {
@@ -138,6 +172,23 @@ export function useAppData() {
     });
   }, [data, save]);
 
+  // Batch setter for Notion-style paired resize: zero-sum updates across row
+  // siblings must land in a single state commit, otherwise two sequential
+  // setSpaceWidthWeight calls close over stale `data` and clobber each other.
+  const setSpacesWidthWeights = useCallback((updates: Array<{ id: string; widthWeight: number }>) => {
+    if (updates.length === 0) return;
+    const idMap = new Map(updates.map(u => [u.id, u.widthWeight] as const));
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => idMap.has(s.id) ? { ...s, widthWeight: idMap.get(s.id)! } : s),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
   const duplicateSpace = useCallback((spaceId: string) => {
     const src = data.spaces.find(s => s.id === spaceId);
     if (!src) return;
@@ -162,7 +213,18 @@ export function useAppData() {
     save({ ...data, collapsedSpaceIds: next });
   }, [data, save]);
 
+  // F1: frequency + recency score. `clickCount × exp(-ageDays / 30)` — items
+  // used a lot rise to the top, but a burst a year ago decays versus recent
+  // clicks. Items never clicked fall back to count 0 (always last).
+  const usageScore = (item: LauncherItem, now: number): number => {
+    const count = item.clickCount ?? 0;
+    if (count === 0) return 0;
+    const ageDays = item.lastClickedAt ? Math.max(0, (now - item.lastClickedAt) / (24 * 60 * 60 * 1000)) : 365;
+    return count * Math.exp(-ageDays / 30);
+  };
+
   const sortSpaceByUsage = useCallback((id: string) => {
+    const now = Date.now();
     save({
       ...data,
       spaces: data.spaces.map(s => {
@@ -170,7 +232,7 @@ export function useAppData() {
         const pinnedIds = s.pinnedIds ?? [];
         const pinned = s.items.filter(i => pinnedIds.includes(i.id));
         const rest = s.items.filter(i => !pinnedIds.includes(i.id));
-        rest.sort((a, b) => (b.clickCount ?? 0) - (a.clickCount ?? 0));
+        rest.sort((a, b) => usageScore(b, now) - usageScore(a, now));
         return { ...s, items: [...pinned, ...rest], sortMode: 'usage' };
       }),
     });
@@ -212,12 +274,85 @@ export function useAppData() {
     });
   }, [data, save]);
 
+  // ── Batch add / delete (functional-update form — safe for loops) ──
+  // Regular addItem/deleteItem close over `data`, so calling them in a synchronous
+  // loop makes each call overwrite the previous one. These two operate on `prev`
+  // inside setDataRaw, so every item in the batch is preserved / removed atomically.
+  const addItems = useCallback((spaceId: string, items: Omit<LauncherItem, 'id'>[]): LauncherItem[] => {
+    const newItems: LauncherItem[] = items.map(it => ({
+      ...it,
+      id: generateId(),
+      clickCount: 0,
+      pinned: false,
+    }));
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s =>
+          s.id === spaceId ? { ...s, items: [...s.items, ...newItems] } : s
+        ),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+    return newItems;
+  }, []);
+
+  const deleteItems = useCallback((spaceId: string, itemIds: string[]) => {
+    if (itemIds.length === 0) return;
+    const idSet = new Set(itemIds);
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s =>
+          s.id === spaceId ? { ...s, items: s.items.filter(i => !idSet.has(i.id)) } : s
+        ),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  // ── Undo helpers (functional-update form — no stale closure risk) ──
+  // Always reads latest state via `prev`, so the closure captured at delete-time
+  // still restores correctly even after subsequent state changes.
+  const restoreItem = useCallback((spaceId: string, item: LauncherItem) => {
+    setDataRaw(prev => {
+      const space = prev.spaces.find(s => s.id === spaceId);
+      // Skip if the space is gone or the item already exists (double-undo guard)
+      if (!space || space.items.some(i => i.id === item.id)) return prev;
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s =>
+          s.id === spaceId ? { ...s, items: [...s.items, item] } : s
+        ),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const restoreSpace = useCallback((space: Space) => {
+    setDataRaw(prev => {
+      // Skip if the space was somehow re-added already
+      if (prev.spaces.some(s => s.id === space.id)) return prev;
+      const next: AppData = { ...prev, spaces: [...prev.spaces, space] };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
   const incrementClickCount = useCallback((spaceId: string, itemId: string) => {
+    const now = Date.now();
     save({
       ...data,
       spaces: data.spaces.map(s =>
         s.id === spaceId
-          ? { ...s, items: s.items.map(i => i.id === itemId ? { ...i, clickCount: (i.clickCount ?? 0) + 1 } : i) }
+          ? { ...s, items: s.items.map(i => i.id === itemId ? { ...i, clickCount: (i.clickCount ?? 0) + 1, lastClickedAt: now } : i) }
           : s
       ),
     });
@@ -350,9 +485,17 @@ export function useAppData() {
     save({ ...data, spaces: nextSpaces });
   }, [data, save]);
 
-  // ── Dismissed suggestions ────────────────────────────────
+  // ── Dismissed suggestions (F5: cooldown structure) ────────
+  // Each dismiss records its timestamp and increments the count; useGhostCards
+  // checks if the cooldown window has elapsed before re-showing the suggestion.
   const dismissSuggestion = useCallback((value: string) => {
-    save({ ...data, dismissedSuggestions: [...(data.dismissedSuggestions ?? []), value] });
+    const now = Date.now();
+    const prev = data.dismissals?.[value];
+    const dismissals = {
+      ...(data.dismissals ?? {}),
+      [value]: { at: now, count: (prev?.count ?? 0) + 1 },
+    };
+    save({ ...data, dismissals });
   }, [data, save]);
 
   // ── Settings ─────────────────────────────────────────────
@@ -371,13 +514,18 @@ export function useAppData() {
     reorderSpaces,
     setSpaceColor,
     setSpaceIcon,
+    setSpacesWidthWeights,
     duplicateSpace,
     toggleSpaceCollapsed,
     sortSpaceByUsage,
     lockSpaceSort,
     addItem,
+    addItems,
     updateItem,
     deleteItem,
+    deleteItems,
+    restoreItem,
+    restoreSpace,
     incrementClickCount,
     reorderItems,
     moveItemToSpace,

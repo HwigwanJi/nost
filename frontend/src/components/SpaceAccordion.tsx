@@ -19,7 +19,15 @@ import {
 
 interface SpaceAccordionProps {
   space: Space;
-  dragHandle?: React.ReactNode;           // ⠿ handle passed from App (SortableSpace)
+  // Whole-header drag activator (dnd-kit). Spread listeners+attributes on the header
+  // and pin setActivatorNodeRef to it so any pointerdown on the header can initiate
+  // a space reorder drag. Child buttons (chevron, action icons, rename input) stop
+  // propagation so they keep working as clicks.
+  headerDragActivator?: {
+    setActivatorNodeRef: (node: HTMLElement | null) => void;
+    listeners: Record<string, (e: any) => void> | undefined;
+    attributes: Record<string, unknown>;
+  };
   onRename: (name: string) => void;
   onDelete: () => void;
   onDuplicate: () => void;
@@ -45,6 +53,11 @@ interface SpaceAccordionProps {
   ghostItems?: import('../hooks/useGhostCards').GhostItem[];
   onGhostAccept?: (ghost: import('../hooks/useGhostCards').GhostItem) => void;
   onGhostDismiss?: (value: string) => void;
+  // File Explorer drag-and-drop
+  fileDragActive?: boolean;     // any file drag in progress anywhere → show as droppable
+  fileDragTarget?: boolean;     // this specific space is the current target
+  onFileDragEnter?: () => void;
+  onFileDragLeave?: () => void;
 }
 
 const SPACE_COLORS = [
@@ -52,11 +65,20 @@ const SPACE_COLORS = [
   '#ef4444','#a855f7','#ec4899','#14b8a6',
 ];
 
-const SPACE_EMOJIS = ['🚀','💼','🎮','📁','🎵','📚','🔧','💡','🌐','⭐','🏠','🎯','📝','🔑','💻'];
+// Monotone Material Symbols only — replaces the old colored-emoji picker. We keep
+// the `icon` field as a Material Symbol name; legacy emoji values still render
+// (rendered as text for backwards compat) but users can only pick Material Symbols now.
+const SPACE_ICONS = [
+  'rocket_launch', 'work', 'sports_esports', 'folder', 'library_music',
+  'menu_book', 'build', 'lightbulb', 'language', 'star',
+  'home', 'flag', 'edit_note', 'key', 'terminal',
+];
+// Characters outside the BMP are almost certainly legacy emoji — render as text.
+const isEmojiIcon = (s: string) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s);
 
 export function SpaceAccordion({
   space,
-  dragHandle,
+  headerDragActivator,
   onRename,
   onDelete,
   onDuplicate,
@@ -79,6 +101,10 @@ export function SpaceAccordion({
   ghostItems,
   onGhostAccept,
   onGhostDismiss,
+  fileDragActive,
+  fileDragTarget,
+  onFileDragEnter,
+  onFileDragLeave,
 }: SpaceAccordionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -96,27 +122,57 @@ export function SpaceAccordion({
 
   const headerBg = space.color ? space.color + '18' : 'var(--surface)';
 
+  // File-drag visuals: dashed border on any drag, solid accent + glow when THIS space is the target
+  const baseBorderColor = space.color ? space.color + '55' : 'var(--border-rgba)';
+  const fileDragBorder = fileDragTarget
+    ? '2px solid var(--accent)'
+    : fileDragActive
+      ? '1.5px dashed var(--accent-dim)'
+      : `1px solid ${baseBorderColor}`;
+
   return (
     <div
-      className="rounded-xl overflow-hidden transition-all duration-200"
+      className="rounded-xl overflow-hidden"
+      onDragEnter={(e) => {
+        // Only react to file drags from File Explorer or URI drags from a browser
+        const hasFiles = Array.from(e.dataTransfer.types).some(t => t === 'Files' || t === 'text/uri-list');
+        if (!hasFiles) return;
+        onFileDragEnter?.();
+      }}
+      onDragLeave={(e) => {
+        // Guard against bubbling from child → only fire when truly leaving this accordion
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        onFileDragLeave?.();
+      }}
       style={{
-        border: `1px solid ${space.color ? space.color + '55' : 'var(--border-rgba)'}`,
+        height: '100%',
+        border: fileDragBorder,
+        boxShadow: fileDragTarget ? '0 0 0 4px var(--accent-dim)' : 'none',
+        transition: 'border-color 0.15s, box-shadow 0.15s, transform 0.15s',
+        transform: fileDragTarget ? 'scale(1.01)' : 'scale(1)',
       }}
     >
       {/* ── Header ─────────────────────────────────────── */}
+      {/* Entire header is the space-reorder drag activator; child buttons (chevron,
+          action icons, rename input) stopPropagation so pointerdown never reaches
+          dnd-kit from them. The 8px activation distance still lets quick clicks
+          through even if propagation isn't stopped. */}
       <div
-        className="flex items-center gap-2 px-3 py-2.5 select-none group"
-        style={{ background: headerBg, minHeight: 40 }}
+        ref={headerDragActivator?.setActivatorNodeRef}
+        {...(headerDragActivator?.listeners ?? {})}
+        {...(headerDragActivator?.attributes ?? {})}
+        className="flex items-center gap-2 px-3 py-2.5 select-none group space-accordion-header"
+        style={{
+          background: headerBg,
+          minHeight: 40,
+          cursor: 'default',
+          touchAction: 'none',
+          transition: 'background 0.12s',
+        }}
       >
-        {/* Drag grip (passed from SortableSpace wrapper) */}
-        {dragHandle && (
-          <span style={{ color: 'var(--text-dim)', flexShrink: 0, lineHeight: 1 }}>
-            {dragHandle}
-          </span>
-        )}
-
         {/* Chevron */}
         <button
+          onPointerDown={e => e.stopPropagation()}
           onClick={() => { if (!isRenaming) { setIsOpen(o => !o); onToggleCollapse(); } }}
           className="flex items-center justify-center w-5 h-5 rounded transition-colors flex-shrink-0"
           style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
@@ -124,9 +180,11 @@ export function SpaceAccordion({
           <Icon name="chevron_right" size={16} className="transition-transform duration-200" style={{ transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)' }} />
         </button>
 
-        {/* Space icon (emoji) or color dot */}
+        {/* Space icon (Material Symbol; legacy emoji rendered as text) or color dot */}
         {space.icon ? (
-          <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{space.icon}</span>
+          isEmojiIcon(space.icon)
+            ? <span style={{ fontSize: 14, lineHeight: 1, flexShrink: 0 }}>{space.icon}</span>
+            : <Icon name={space.icon} size={14} color={space.color ?? 'var(--text-muted)'} />
         ) : space.color ? (
           <span
             className="w-2 h-2 rounded-full flex-shrink-0"
@@ -139,6 +197,7 @@ export function SpaceAccordion({
           <input
             ref={inputRef}
             value={draft}
+            onPointerDown={e => e.stopPropagation()}
             onClick={e => e.stopPropagation()}
             onChange={e => setDraft(e.target.value)}
             onBlur={() => { onRename(draft); setIsRenaming(false); }}
@@ -151,7 +210,7 @@ export function SpaceAccordion({
           />
         ) : (
           <span
-            className="flex-1 font-semibold text-[13px] truncate cursor-default"
+            className="flex-1 font-semibold text-[13px] truncate"
             style={{ color: 'var(--text-color)' }}
             onDoubleClick={e => { e.stopPropagation(); setIsRenaming(true); }}
           >
@@ -181,6 +240,7 @@ export function SpaceAccordion({
         {/* ── Right action buttons (visible on hover) ── */}
         <div
           className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+          onPointerDown={e => e.stopPropagation()}
           onClick={e => e.stopPropagation()}
         >
           {/* Sort */}
@@ -195,25 +255,31 @@ export function SpaceAccordion({
               <DropdownMenuItem onClick={() => setIsRenaming(true)}>
                 <Icon name="edit" className="text-sm" />이름 변경
               </DropdownMenuItem>
-              {/* Emoji picker inline */}
+              {/* Icon picker (Material Symbols) */}
               <div style={{ padding: '6px 8px' }}>
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>아이콘</div>
                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 180 }}>
-                  {SPACE_EMOJIS.map(emoji => (
-                    <button
-                      key={emoji}
-                      onClick={() => onSetIcon(space.icon === emoji ? '' : emoji)}
-                      style={{
-                        fontSize: 14,
-                        width: 26, height: 26,
-                        borderRadius: 4,
-                        border: 'none',
-                        cursor: 'pointer',
-                        background: space.icon === emoji ? 'var(--surface-hover)' : 'transparent',
-                        outline: space.icon === emoji ? `2px solid var(--border-focus)` : 'none',
-                      }}
-                    >{emoji}</button>
-                  ))}
+                  {SPACE_ICONS.map(iconName => {
+                    const selected = space.icon === iconName;
+                    return (
+                      <button
+                        key={iconName}
+                        title={iconName}
+                        onClick={() => onSetIcon(selected ? '' : iconName)}
+                        style={{
+                          width: 26, height: 26,
+                          borderRadius: 4,
+                          border: 'none',
+                          cursor: 'pointer',
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          background: selected ? 'var(--surface-hover)' : 'transparent',
+                          outline: selected ? '2px solid var(--border-focus)' : 'none',
+                        }}
+                      >
+                        <Icon name={iconName} size={16} color={selected ? 'var(--text-color)' : 'var(--text-muted)'} />
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 

@@ -58,7 +58,7 @@ html, body, #root {
   display: inline-block;
   white-space: nowrap;
   direction: ltr;
-  font-variation-settings: 'FILL' 0, 'wght' 270, 'GRAD' 0, 'opsz' 20;
+  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 20;
   user-select: none;
   flex-shrink: 0;
 }
@@ -67,6 +67,14 @@ html, body, #root {
 @keyframes nodeItemIn {
   from { opacity: 0; transform: translateX(-6px) scale(0.97); }
   to   { opacity: 1; transform: translateX(0)    scale(1);    }
+}
+
+/* ─── Card drop-in (새 카드 추가 시 spring pop) ─────────── */
+/* 0→68%: 작게 + 위에서 살짝 → 완전 보임 + 살짝 overshoot → 정착 */
+@keyframes cardEnter {
+  0%   { opacity: 0; transform: scale(0.68) translateY(6px);  }
+  60%  { opacity: 1; transform: scale(1.06) translateY(-2px); }
+  100% { opacity: 1; transform: scale(1)    translateY(0);    }
 }
 
 /* ─── Scrollbar ──────────────────────────────────────────── */
@@ -366,14 +374,47 @@ input:focus {
 }
 
 /* ─── Mode cursors ──────────────────────────────────────── */
+/* Arrow + colored badge at bottom-right with mode icon inside.
+   Badge colors match toolbar accents: pin=#f59e0b node=#6366f1 deck=#f97316 */
 body.mode-pin,
 body.mode-pin * {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Ctext x='0' y='18' font-size='18'%3E%F0%9F%93%8C%3C/text%3E%3C/svg%3E") 4 4, crosshair !important;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M4,2 L4,21 L8,17 L12.5,26 L15,25 L10.5,16 L17.5,16 Z' fill='white' stroke='black' stroke-width='1.2' stroke-linejoin='round' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%23f59e0b'/%3E%3Cpath d='M24,19 L26.5,21.5 L24,24 L21.5,21.5 Z' fill='white'/%3E%3Cline x1='24' y1='24' x2='24' y2='29' stroke='white' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E") 4 2, default !important;
 }
 
 body.mode-node,
 body.mode-node * {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Ctext x='0' y='18' font-size='18'%3E%F0%9F%94%97%3C/text%3E%3C/svg%3E") 4 4, crosshair !important;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M4,2 L4,21 L8,17 L12.5,26 L15,25 L10.5,16 L17.5,16 Z' fill='white' stroke='black' stroke-width='1.2' stroke-linejoin='round' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%236366f1'/%3E%3Cline x1='24' y1='24' x2='24' y2='19.5' stroke='white' stroke-width='1.2'/%3E%3Cline x1='24' y1='24' x2='20.1' y2='26.3' stroke='white' stroke-width='1.2'/%3E%3Cline x1='24' y1='24' x2='27.9' y2='26.3' stroke='white' stroke-width='1.2'/%3E%3Ccircle cx='24' cy='19.5' r='1.5' fill='white'/%3E%3Ccircle cx='20.1' cy='26.3' r='1.5' fill='white'/%3E%3Ccircle cx='27.9' cy='26.3' r='1.5' fill='white'/%3E%3Ccircle cx='24' cy='24' r='1' fill='white'/%3E%3C/svg%3E") 4 2, default !important;
+}
+
+body.mode-deck,
+body.mode-deck * {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M4,2 L4,21 L8,17 L12.5,26 L15,25 L10.5,16 L17.5,16 Z' fill='white' stroke='black' stroke-width='1.2' stroke-linejoin='round' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%23f97316'/%3E%3Crect x='19' y='19.5' width='10' height='2.2' rx='0.8' fill='white'/%3E%3Crect x='19' y='22.9' width='10' height='2.2' rx='0.8' fill='white'/%3E%3Crect x='19' y='26.3' width='10' height='2.2' rx='0.8' fill='white'/%3E%3C/svg%3E") 4 2, default !important;
+}
+
+/* ─── Space resize handle ───────────────────────────────── */
+/* Reveal the indicator line when hovering the handle or while resizing */
+.space-resize-handle:hover .space-resize-line {
+  opacity: 1 !important;
+}
+
+/* ─── Space header hover ─────────────────────────────────── */
+/* Subtle highlight on hover signals interactivity without the tacky hand cursor */
+.space-accordion-header {
+  position: relative;
+}
+.space-accordion-header::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  transition: background 0.12s;
+  pointer-events: none;
+}
+.space-accordion-header:hover::before {
+  background: rgba(0, 0, 0, 0.03);
+}
+.dark .space-accordion-header:hover::before {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 /* ─── Node group indicator on cards ────────────────────── */
@@ -473,6 +514,18 @@ body.mode-node * {
 }
 .snap-hint-circle {
   animation: snap-hint-in 0.18s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* ─── Notion-style drop indicator ─────────────────────── */
+/* Pulsing accent bar shown on a space's edge while another space is dragged
+   into its drop zone. Pulsing makes the affordance obvious even when the
+   bar is thin (4px). Spawns only during active drag, so performance is fine. */
+@keyframes dropIndicatorPulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+.drop-indicator-pulse {
+  animation: dropIndicatorPulse 0.9s ease-in-out infinite;
 }
 
 @keyframes spin {

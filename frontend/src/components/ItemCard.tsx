@@ -122,12 +122,18 @@ export function ItemCard({
   const globalMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
   const globalUpRef = useRef<((e: PointerEvent) => void) | null>(null);
 
+  // Hold-hint: surfaces the 4-direction gesture after hover dwell (350ms < HOLD_MS 450ms)
+  const [hintVisible, setHintVisible] = useState(false);
+  const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // ── Context ──────────────────────────────────────────────────
   const {
     activeMode = 'normal', nodeGroups = [], nodeBuilding = [], decks = [],
     deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, allItems = [],
     monitorDirections, closeAfter, searchQuery = '',
+    justAddedItemIds,
   } = useAppState();
+  const isJustAdded = justAddedItemIds?.has(item.id) ?? false;
   const {
     launchAndPosition: onLaunchAndPosition,
     openMonitorSettings: onOpenMonitorSettings,
@@ -206,6 +212,7 @@ export function ItemCard({
   useEffect(() => {
     return () => {
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+      if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
       removeGlobalHandlers();
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -483,6 +490,11 @@ export function ItemCard({
         background: isNodeAnchor ? 'var(--accent-dim)' : 'var(--surface)',
         borderColor: isNodeLinked ? 'var(--accent)' : item.isContainer ? 'var(--accent)' : 'var(--border-rgba)',
         borderStyle: item.isContainer ? 'dashed' : 'solid',
+        // Spring-pop entry animation — only plays once when card is newly added (via drop/dialog).
+        // isDragging guard: dnd-kit sets its own transform — avoid conflict during drag.
+        ...(isJustAdded && !isDragging
+          ? { animation: 'cardEnter 0.38s cubic-bezier(0.34, 1.56, 0.64, 1) both' }
+          : {}),
       }}
       {...attributes}
       {...listeners}
@@ -507,18 +519,24 @@ export function ItemCard({
       onMouseEnter={e => {
         (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-hover)';
         if (!item.isContainer) (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-focus)';
+        // Show hint after short dwell — just before hold would fire (HOLD_MS = 450ms)
+        if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
+        hintTimerRef.current = setTimeout(() => setHintVisible(true), 350);
       }}
       onMouseLeave={e => {
         (e.currentTarget as HTMLDivElement).style.background = isNodeAnchor ? 'var(--accent-dim)' : 'var(--surface)';
         (e.currentTarget as HTMLDivElement).style.borderColor = isNodeLinked ? 'var(--accent)' : item.isContainer ? 'var(--accent)' : 'var(--border-rgba)';
+        // Cancel pending hint and hide immediately on leave
+        if (hintTimerRef.current) { clearTimeout(hintTimerRef.current); hintTimerRef.current = null; }
+        setHintVisible(false);
       }}
     >
-      {/* Container badge */}
+      {/* ── Container badge (top-right) ──────────────────────────── */}
       {item.isContainer && (
         <Icon name="grid_view" size={10} color="var(--accent)" style={{ position:'absolute', top:5, right:5, opacity:0.7 }} />
       )}
 
-      {/* Container slot dots */}
+      {/* ── Container slot dots (4 edges) ────────────────────────── */}
       {item.isContainer && (['up','down','left','right'] as SlotDir[]).map(d => {
         const filled = !!slotItems?.[d];
         const pos: Record<SlotDir, React.CSSProperties> = {
@@ -530,17 +548,52 @@ export function ItemCard({
         return <span key={d} style={{ position:'absolute', ...pos[d], width:5, height:5, borderRadius:'50%', background: filled ? 'var(--accent)' : 'var(--border-rgba)', opacity: filled ? 0.75 : 0.3 }} />;
       })}
 
-      {/* Hold hint ring (shown when holdOpen) */}
+      {/* ── Hold hint ring ───────────────────────────────────────── */}
       {holdOpen && (
         <span style={{ position:'absolute', inset:-2, borderRadius:13, border:'2px solid var(--accent)', opacity:0.5, pointerEvents:'none', animation:'none' }} />
       )}
 
-      {/* Inactive indicator */}
-      {isInactive && (
-        <span className="absolute top-1 left-1 material-symbols-rounded" style={{ fontSize:10, color:'var(--destructive, #ef4444)' }} title="창이 닫혀있습니다">wifi_off</span>
+      {/* ── Hold gesture hint arrows ─────────────────────────────── */}
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          opacity: (hintVisible && !holdOpen && !isInactive && !item.isContainer && activeMode === 'normal') ? 1 : 0,
+          transition: 'opacity 0.15s ease',
+        }}
+      >
+        <Icon name="keyboard_arrow_up"    size={9} color="var(--text-dim)" style={{ position:'absolute', top:2,    left:'50%',  transform:'translateX(-50%)' }} />
+        <Icon name="keyboard_arrow_down"  size={9} color="var(--text-dim)" style={{ position:'absolute', bottom:2, left:'50%',  transform:'translateX(-50%)' }} />
+        <Icon name="keyboard_arrow_left"  size={9} color="var(--text-dim)" style={{ position:'absolute', left:2,   top:'50%',   transform:'translateY(-50%)' }} />
+        <Icon name="keyboard_arrow_right" size={9} color="var(--text-dim)" style={{ position:'absolute', right:2,  top:'50%',   transform:'translateY(-50%)' }} />
+      </div>
+
+      {/* ── Node + Deck badges (top-left) ────────────────────────────
+          Shown at full opacity in node/deck mode; hidden until hover in normal mode.
+          Circles no longer overlap — 2px gap keeps numbers readable.          */}
+      {((nodeBadges && nodeBadges.length > 0 && !isNodeAnchor) || (deckBadges && deckBadges.length > 0)) && (
+        <div
+          className={`absolute top-[5px] left-[5px] flex gap-[2px] transition-opacity duration-150 ${
+            (activeMode === 'node' || activeMode === 'deck') ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+          }`}
+        >
+          {nodeBadges && !isNodeAnchor && nodeBadges.slice(0, 2).map((idx) => (
+            <span key={`n${idx}`} style={{ width:13, height:13, borderRadius:'50%', background:'var(--accent)', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid rgba(255,255,255,0.2)' }}>
+              {idx}
+            </span>
+          ))}
+          {deckBadges && deckBadges.slice(0, 2).map((idx) => (
+            <span key={`d${idx}`} style={{ width:13, height:13, borderRadius:'50%', background:'#f97316', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid rgba(255,255,255,0.2)' }}>
+              {idx}
+            </span>
+          ))}
+        </div>
       )}
 
-      {/* Monitor badge */}
+      {/* ── Monitor badge (bottom-left) ──────────────────────────────
+          Invisible when auto (monitor === undefined) — becomes visible on hover.
+          Always visible when a specific monitor is assigned.
+          Removes the constant "C" noise from every card.                       */}
       {monitorCount > 1 && onSetMonitor && (
         <>
           <span
@@ -558,21 +611,31 @@ export function ItemCard({
               const rect = monitorBadgeRef.current?.getBoundingClientRect();
               if (rect) setMonitorPickerPos({ x: rect.left, y: rect.bottom + 4 });
             }}
-            title={item.monitor ? `모니터 ${item.monitor}` : '자동'}
-            style={{ position:'absolute', bottom:5, left:5, width:15, height:15, borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center', fontSize:8, fontWeight:700, lineHeight:1, cursor:'pointer', userSelect:'none', transition:'opacity 0.15s, background 0.15s', background: item.monitor ? 'var(--accent)' : 'var(--border-rgba)', color: item.monitor ? '#fff' : 'var(--text-dim)', opacity: item.monitor ? 0.85 : 0.3, zIndex:5 }}
+            title={item.monitor ? `모니터 ${item.monitor}` : '모니터 지정'}
+            style={{
+              position:'absolute', bottom:5, left:5,
+              width:15, height:15, borderRadius:4,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              fontSize:8, fontWeight:700, lineHeight:1,
+              cursor:'pointer', userSelect:'none',
+              transition:'opacity 0.15s, background 0.15s',
+              background: item.monitor ? 'var(--accent)' : 'var(--border-rgba)',
+              color: item.monitor ? '#fff' : 'var(--text-dim)',
+              // Auto (unset) = invisible until hover; assigned monitor = always visible
+              opacity: item.monitor ? 0.85 : 0,
+              zIndex: 5,
+            }}
             className="group-hover:!opacity-100"
           >
-            {item.monitor ?? 'C'}
+            {item.monitor ?? 'M'}
           </span>
           {monitorPickerPos && createPortal(
             <>
-              {/* Transparent overlay — clicking outside the picker closes it without interfering with picker buttons */}
               <div
                 style={{ position:'fixed', inset:0, zIndex:99998 }}
                 onPointerDown={e => e.stopPropagation()}
                 onClick={e => { e.stopPropagation(); setMonitorPickerPos(null); }}
               />
-              {/* Picker content — above the overlay */}
               <div
                 onPointerDown={e => e.stopPropagation()}
                 onClick={e => e.stopPropagation()}
@@ -596,44 +659,65 @@ export function ItemCard({
         </>
       )}
 
-      {/* Pin dot */}
-      {pinned && <span style={{ position:'absolute', bottom:5, right:5, width:5, height:5, borderRadius:'50%', background:'var(--accent)', opacity:0.55 }} />}
+      {/* ── Icon — type-tint badge container ────────────────────────
+          Wraps the icon in a 36×36 rounded square with 8% opacity type-color
+          background. This gives the card a visual anchor and passively encodes
+          the item type through color — safe in both light/dark themes because
+          the tint is transparent enough to read over any background.
+          Inactive items get a red tint instead, replacing the old wifi_off corner icon. */}
+      <div
+        title={isInactive ? '창이 닫혀있습니다' : undefined}
+        style={{
+          width: 36, height: 36, borderRadius: 9, flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          // Image icons: let the image speak for itself — no tint behind it
+          background: (item.iconType === 'image' && item.icon && !imageIconFailed)
+            ? 'transparent'
+            : isInactive
+              ? 'rgba(239,68,68,0.1)'   // red tint = window is gone (replaces wifi_off icon)
+              : `${accentColor}14`,     // 8% type-color tint
+          transition: 'background 0.15s',
+        }}
+      >
+        {loading ? (
+          <Icon name="sync" size={22} color={accentColor} className="animate-spin" />
+        ) : item.iconType === 'image' && item.icon && !imageIconFailed ? (
+          <img
+            src={item.icon} alt=""
+            style={{ width: 32, height: 32, borderRadius: 7, objectFit: 'cover' }}
+            onError={() => setImageIconFailed(true)}
+          />
+        ) : (
+          <Icon name={icon} size={22} color={accentColor} />
+        )}
+      </div>
 
-      {/* Node + Deck badges */}
-      {((nodeBadges && nodeBadges.length > 0 && !isNodeAnchor) || (deckBadges && deckBadges.length > 0)) && (
-        <div style={{ position:'absolute', top:5, left:5, display:'flex' }}>
-          {nodeBadges && !isNodeAnchor && nodeBadges.map((idx, i) => (
-            <span key={`n${idx}`} style={{ width:14, height:14, borderRadius:'50%', background:'var(--accent)', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', marginLeft: i>0 ? -5 : 0, border:'1.5px solid rgba(120,120,140,0.25)', position:'relative', zIndex:20-(i) }}>
-              {idx}
-            </span>
-          ))}
-          {deckBadges && deckBadges.map((idx, i) => {
-            const offset = (nodeBadges && !isNodeAnchor ? nodeBadges.length : 0) + i;
-            return (
-              <span key={`d${idx}`} style={{ width:14, height:14, borderRadius:'50%', background:'#f97316', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', marginLeft: offset>0 ? -5 : 0, border:'1.5px solid rgba(120,120,140,0.25)', position:'relative', zIndex:10-i }}>
-                {idx}
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Icon */}
-      {loading ? (
-        <Icon name="sync" size={28} color={accentColor} className="animate-spin" />
-      ) : item.iconType === 'image' && item.icon && !imageIconFailed ? (
-        <img src={item.icon} alt="" className="w-8 h-8 rounded-md object-cover" onError={() => setImageIconFailed(true)} />
-      ) : (
-        <Icon name={icon} size={28} color={accentColor} />
-      )}
-
-      <span className="text-[11.5px] font-medium leading-tight text-center line-clamp-2 w-full" style={{ color:'var(--text-color)' }}>
+      {/* ── Title ───────────────────────────────────────────────────── */}
+      <span className="text-[11px] font-medium leading-tight text-center line-clamp-2 w-full" style={{ color:'var(--text-color)' }}>
         <HighlightText text={item.title} query={searchQuery} />
       </span>
 
+      {/* ── Bottom stripe — pin or space color (pin dot removed; stripe handles both) ── */}
       {(pinned || space.color) && (
         <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: pinned ? 'var(--accent)' : space.color, opacity: pinned ? 0.45 : 0.6 }} />
       )}
+
+      {/* F6: stale dot — item hasn't been clicked in 60+ days AND was used before
+          (clickCount > 0). Subtle, hover-only tooltip; not a badge so it stays calm. */}
+      {(() => {
+        const count = item.clickCount ?? 0;
+        const last = item.lastClickedAt;
+        if (count === 0 || !last) return null;
+        const staleMs = 60 * 24 * 60 * 60 * 1000;
+        if (Date.now() - last < staleMs) return null;
+        return (
+          <div
+            title="60일 이상 사용하지 않음 — 정리 후보"
+            className="absolute top-1.5 left-1.5 w-1.5 h-1.5 rounded-full"
+            style={{ background: 'var(--text-dim)', opacity: 0.5 }}
+          />
+        );
+      })()}
     </div>
   );
 

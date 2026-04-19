@@ -26,6 +26,7 @@ export interface AppState {
   monitorDirections: Record<number, string> | undefined;
   closeAfter: boolean;
   searchQuery: string;
+  justAddedItemIds: Set<string>;
 }
 
 export interface AppActions {

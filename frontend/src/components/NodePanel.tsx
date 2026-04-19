@@ -125,9 +125,13 @@ export function NodePanel({
     }}>
 
       {/* ── Header ─────────────────────────────────── */}
+      {/* minHeight 45 matches the main title bar (logo 22 + search 24 + 10+10 padding)
+          so the border-bottom of both headers lands on the same Y and the vertical
+          divider between them has no step — important for perceived polish. */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 4,
-        padding: expanded ? '10px 6px 10px 10px' : '10px 0',
+        padding: expanded ? '0 6px 0 10px' : '0',
+        minHeight: 45,
         borderBottom: '1px solid var(--border-rgba)',
         justifyContent: expanded ? 'space-between' : 'center',
         flexShrink: 0,

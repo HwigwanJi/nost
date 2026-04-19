@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 import { Icon } from '@/components/ui/Icon';
+import { NostLogo } from '@/components/ui/NostLogo';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   DropdownMenu,
@@ -371,7 +372,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
         <DialogContent style={{ width: 420, padding: 0, overflow: 'hidden' }}>
           <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
             <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Icon name="bolt" size={16} color="var(--accent)" />
+              <NostLogo size={16} color="var(--accent)" />
               빠른 추가
             </DialogTitle>
           </DialogHeader>

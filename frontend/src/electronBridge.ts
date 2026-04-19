@@ -53,6 +53,7 @@ export interface ElectronAPI {
   checkForUpdates: () => Promise<{ status: 'up-to-date' | 'update-available' | 'dev-mode' | 'error'; version?: string; newVersion?: string; message?: string }>;
   installUpdate: () => void;
   onUpdateAvailable: (cb: (info: { version: string }) => void) => void;
+  onUpdateDownloadProgress: (cb: (info: { percent: number } | null) => void) => void;
   onUpdateDownloaded: (cb: (info: { version: string }) => void) => void;
   onMonitorsChanged: (cb: (monitors: Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>) => void) => void;
   getRecentItems: () => Promise<Array<{ title: string; value: string; type: 'folder' | 'app'; lastAccessed: string }>>;
@@ -70,6 +71,8 @@ export interface ElectronAPI {
   openGuide: () => void;
   signalReady: () => void;
   setLoadingStatus: (msg: string) => void;
+  log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, extra?: unknown) => void;
+  openLogsFolder: () => void;
 }
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
@@ -105,6 +108,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   checkForUpdates: async () => ({ status: 'dev-mode' as const }),
   installUpdate: noop,
   onUpdateAvailable: noop,
+  onUpdateDownloadProgress: noop,
   onUpdateDownloaded: noop,
   onMonitorsChanged: noop,
   getRecentItems: async () => [],
@@ -122,4 +126,6 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   openGuide: noop,
   signalReady: noop,
   setLoadingStatus: noop,
+  log: noop,
+  openLogsFolder: noop,
 };

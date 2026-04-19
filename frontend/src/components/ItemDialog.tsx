@@ -15,18 +15,24 @@ interface ItemDialogProps {
   editItem?: LauncherItem | null;
   defaultSpaceId?: string;
   monitorCount?: number;
+  // Restrict the Type dropdown to a subset. Callers that already know the type
+  // (e.g. file-drop → folder/app only, URL-drop → url/browser) pass this so the
+  // user isn't shown meaningless alternatives. Omit to show every type.
+  allowedTypes?: Array<LauncherItem['type']>;
   onSave: (spaceId: string, item: Omit<LauncherItem, 'id'> | LauncherItem) => void;
 }
 
-const TYPE_OPTIONS = [
-  { value: 'url',     label: '🌐 웹 URL' },
-  { value: 'folder',  label: '📂 폴더 경로' },
-  { value: 'app',     label: '🪟 앱 실행' },
-  { value: 'window',  label: '🖥 창 포커스' },
-  { value: 'browser', label: '🌍 브라우저 탭' },
-  { value: 'text',    label: '📋 텍스트 복사' },
-  { value: 'cmd',     label: '💻 커맨드 실행' },
-] as const;
+// Monotone Material Symbols only — emoji were jarring when mixed with the rest
+// of the UI. `icon` is rendered via <Icon name=...> so it picks up theme colors.
+const TYPE_OPTIONS: Array<{ value: LauncherItem['type']; label: string; icon: string }> = [
+  { value: 'url',     label: '웹 URL',      icon: 'language' },
+  { value: 'folder',  label: '폴더 경로',   icon: 'folder' },
+  { value: 'app',     label: '앱 실행',     icon: 'apps' },
+  { value: 'window',  label: '창 포커스',   icon: 'select_window' },
+  { value: 'browser', label: '브라우저 탭', icon: 'tab' },
+  { value: 'text',    label: '텍스트 복사', icon: 'content_paste' },
+  { value: 'cmd',     label: '커맨드 실행', icon: 'terminal' },
+];
 
 const PRESET_COLORS = [
   '#6366f1','#818cf8','#22c55e','#f59e0b','#ef4444',
@@ -34,43 +40,30 @@ const PRESET_COLORS = [
 ];
 
 const MAT_ICONS = [
-  // Essentials
   'star','home','settings','apps','search','menu','close','add','remove','edit',
   'delete','check','check_circle','cancel','info','help','warning','error','lock','lock_open',
-  // Files & Folders
   'folder_open','folder','description','article','note','draft','source','attach_file',
   'save','download','upload','share','print','cloud','cloud_upload','cloud_download','file_copy',
-  // Apps & Tech
   'code','terminal','api','bug_report','database','dns','developer_mode','memory','storage',
   'computer','laptop','phone_android','tablet_android','tv','headphones','sports_esports',
   'gamepad','usb','wifi','bluetooth','cast','router','smart_toy',
-  // Communication
   'email','chat','forum','message','notifications','send','reply','phone','video_call',
   'voicemail','inbox','drafts','announcement','campaign','contact_support',
-  // Media
   'music_note','play_arrow','pause','stop','playlist_play','audio_file','video_file',
   'photo','image','photo_camera','videocam','mic','volume_up','queue_music',
-  // Time & Calendar
   'calendar_today','event','schedule','alarm','timer','history','update','today','date_range','access_time',
-  // People & Places
   'person','group','account_circle','contacts','work','business','school',
   'map','location_on','place','navigation','directions','flight','hotel',
   'restaurant','local_cafe','shopping_cart','store','home_work','apartment',
-  // Actions & Security
   'bookmark','label','flag','key','vpn_key','security','shield','fingerprint',
-  'open_in_new','launch','link','qr_code','share','content_copy',
-  // Analytics & Money
+  'open_in_new','launch','link','qr_code','content_copy',
   'payments','credit_card','account_balance','trending_up','bar_chart','pie_chart',
   'analytics','assessment','insights','receipt','savings','attach_money',
-  // Education & Science
   'book','library_books','science','calculate','lightbulb','tips_and_updates',
   'psychology','biotech','functions','quiz',
-  // Navigation UI
   'dashboard','grid_view','list','expand_more','chevron_right','arrow_forward',
-  'arrow_back','more_vert','more_horiz','menu_open','side_navigation',
-  // Nature & Environment
+  'arrow_back','more_vert','more_horiz','menu_open',
   'eco','nature','park','water','wb_sunny','ac_unit','thermostat',
-  // Misc
   'public','language','translate','explore','travel_explore','rocket_launch',
   'celebration','cake','sports','fitness_center','self_improvement',
   'favorite','radio_button_checked','emoji_emotions','face',
@@ -111,7 +104,7 @@ function tryLoadImage(url: string): Promise<boolean> {
   });
 }
 
-export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1, onSave }: ItemDialogProps) {
+export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1, allowedTypes, onSave }: ItemDialogProps) {
   const isEdit = !!(editItem && 'id' in editItem && editItem.id);
   type ItemForm = {
     title: string;
@@ -141,6 +134,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
   const [iconSearch, setIconSearch] = useState(isEdit && editItem?.iconType === 'material' ? editItem.icon ?? '' : '');
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [autoFavicon, setAutoFavicon] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(isEdit);
   const fileRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const cropRef = useRef<{ x: number; y: number; size: number } | null>(null);
@@ -190,16 +184,13 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
           return;
         }
       }
-
       if (!cancelled) {
         setAutoFavicon(false);
         setForm(prev => ({ ...prev, iconType: 'material', icon: 'public' }));
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [autoFavicon, form.type, form.value]);
 
   useEffect(() => {
@@ -213,9 +204,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
       if (cancelled || !icon) return;
       setForm((prev) => ({ ...prev, iconType: 'image', icon }));
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [form.type, form.value]);
 
   /* ── Icon helpers ───────────────────────────────────────── */
@@ -271,7 +260,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     ? MAT_ICONS.filter(i => i.includes(iconSearch.toLowerCase()))
     : MAT_ICONS;
 
-  /* ── Image crop (canvas-based, no external lib) ──────────── */
+  /* ── Image crop ──────────────────────────────────────────── */
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -355,7 +344,6 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
       icon: form.icon,
       iconType: form.iconType,
       monitor: form.monitor,
-      // Preserve exePath if present (from scan or existing item)
       ...(editItem?.exePath ? { exePath: editItem.exePath } : {}),
     };
     if (isEdit) onSave(form.spaceId, { ...editItem, ...base } as LauncherItem);
@@ -363,15 +351,6 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     onClose();
   }
 
-  // ── Section divider helper ───────────────────────────────────
-  const Divider = ({ label }: { label: string }) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0 2px' }}>
-      <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)', letterSpacing: '0.08em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{label}</span>
-      <div style={{ flex: 1, height: 1, background: 'var(--border-rgba)' }} />
-    </div>
-  );
-
-  // ── Dropdown button style helper ─────────────────────────────
   const dropBtnStyle: React.CSSProperties = {
     width: '100%', height: 32, padding: '0 10px',
     display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
@@ -382,34 +361,104 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
 
   const selectedSpace = spaces.find(s => s.id === form.spaceId);
   const selectedType = TYPE_OPTIONS.find(o => o.value === form.type);
+  // When context narrows the choices to one, the dropdown is meaningless — we
+  // still render it (disabled) so users know the type, but they can't change it.
+  const typeOptions = useMemo(
+    () => (allowedTypes && allowedTypes.length > 0)
+      ? TYPE_OPTIONS.filter(o => allowedTypes.includes(o.value))
+      : TYPE_OPTIONS,
+    [allowedTypes],
+  );
+  const typeLocked = typeOptions.length <= 1;
+
+  const valuePlaceholder =
+    form.type === 'url' ? 'https://...'
+    : form.type === 'folder' ? 'C:\\Users\\...'
+    : form.type === 'app' ? 'C:\\Program Files\\...'
+    : form.type === 'cmd' ? 'notepad.exe  /  start "" "C:\\..."'
+    : form.type === 'text' ? '클립보드에 복사될 텍스트'
+    : form.type === 'window' ? '창 제목 (Alt+Tab에 보이는 이름)'
+    : '값 입력';
+
+  const valueLabel =
+    form.type === 'url' || form.type === 'browser' ? 'URL' :
+    form.type === 'folder' ? '폴더 경로' :
+    form.type === 'app' ? '실행 파일' :
+    form.type === 'cmd' ? '커맨드' :
+    form.type === 'text' ? '텍스트' :
+    form.type === 'window' ? '창 제목' : '값';
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
-      <DialogContent className="w-[460px]" style={{ maxHeight: '90vh', overflowY: 'auto' }}>
-        <DialogHeader>
-          <DialogTitle>{isEdit ? '카드 수정' : '카드 추가'}</DialogTitle>
+      <DialogContent style={{ width: 440, padding: 0, overflow: 'hidden' }}>
+        <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
+          <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)' }}>
+            {isEdit ? '카드 수정' : '카드 추가'}
+          </DialogTitle>
         </DialogHeader>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 4 }}>
+        <div style={{ padding: '16px 20px 4px', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto', maxHeight: 'calc(88vh - 110px)' }}>
 
-          {/* ━━ 섹션 1: 기본 정보 ━━ */}
-          <Divider label="기본 정보" />
-
-          {/* 이름 — 가장 중요하므로 맨 위 단독 배치 */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>이름</Label>
+          {/* ① Icon preview + Name */}
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button
+              onClick={() => setShowAdvanced(v => !v)}
+              title="아이콘 변경 (클릭)"
+              style={{
+                width: 48, height: 48, flexShrink: 0, borderRadius: 12,
+                background: 'var(--surface)',
+                border: `1.5px solid ${showAdvanced ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                cursor: 'pointer', overflow: 'hidden', padding: 0,
+                transition: 'border-color 0.15s',
+              }}
+            >
+              {form.iconType === 'image'
+                ? <img src={form.icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                    onError={() => { setAutoFavicon(false); setForm(p => ({ ...p, iconType: 'material', icon: form.type === 'app' ? 'apps' : 'public' })); }} />
+                : <Icon name={form.icon} size={24} color="var(--text-muted)" />
+              }
+            </button>
             <Input
               value={form.title}
               onChange={e => f({ title: e.target.value })}
-              placeholder="카드에 표시될 이름"
-              style={{ fontSize: 13 }}
+              placeholder="카드 이름"
+              style={{ flex: 1, height: 48, fontSize: 14, borderRadius: 10 }}
               autoFocus
             />
           </div>
 
-          {/* Space + Type — 나란히 */}
+          {/* ② Type + Space */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            {/* 스페이스 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>유형</Label>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  disabled={typeLocked}
+                  style={{ ...dropBtnStyle, opacity: typeLocked ? 0.75 : 1, cursor: typeLocked ? 'default' : 'pointer' }}
+                  title={typeLocked ? '감지된 유형으로 자동 설정됨' : undefined}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {selectedType && <Icon name={selectedType.icon} size={14} color="var(--text-muted)" />}
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {selectedType?.label ?? '선택'}
+                    </span>
+                  </span>
+                  {!typeLocked && <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />}
+                </DropdownMenuTrigger>
+                <DropdownMenuContent style={{ minWidth: 160 }}>
+                  {typeOptions.map(o => (
+                    <DropdownMenuItem key={o.value} onClick={() => f({ type: o.value })}
+                      style={{ fontWeight: o.value === form.type ? 700 : 400 }}>
+                      <Icon name={o.icon} size={14} color="var(--text-muted)" />
+                      <span>{o.label}</span>
+                      {o.value === form.type && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>스페이스</Label>
               <DropdownMenu>
@@ -430,72 +479,35 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-
-            {/* 유형 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>유형</Label>
-              <DropdownMenu>
-                <DropdownMenuTrigger style={dropBtnStyle}>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {selectedType?.label ?? '선택'}
-                  </span>
-                  <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent style={{ minWidth: 160 }}>
-                  {TYPE_OPTIONS.map(o => (
-                    <DropdownMenuItem key={o.value} onClick={() => f({ type: o.value as LauncherItem['type'] })}
-                      style={{ fontWeight: o.value === form.type ? 700 : 400 }}>
-                      {o.label}
-                      {o.value === form.type && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
           </div>
 
-          {/* ━━ 섹션 2: 대상 ━━ */}
-          <Divider label={
-            form.type === 'url' || form.type === 'browser' ? 'URL' :
-            form.type === 'folder' ? '폴더 경로' :
-            form.type === 'app' ? '실행 파일' :
-            form.type === 'cmd' ? '커맨드' :
-            form.type === 'text' ? '텍스트' :
-            form.type === 'window' ? '창 제목' : '대상'
-          } />
-
+          {/* ③ Value / Path */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>{valueLabel}</Label>
             <div style={{ display: 'flex', gap: 6 }}>
               <Input
                 value={form.value}
                 onChange={e => f({ value: e.target.value })}
-                placeholder={
-                  form.type === 'url' ? 'https://...'
-                  : form.type === 'folder' ? 'C:\\Users\\...'
-                  : form.type === 'app' ? 'C:\\Program Files\\...'
-                  : form.type === 'cmd' ? 'notepad.exe  /  start "" "C:\\..."'
-                  : form.type === 'text' ? '클립보드에 복사될 텍스트'
-                  : form.type === 'window' ? '창 제목 (Alt+Tab에 보이는 이름)'
-                  : '값 입력'
-                }
+                placeholder={valuePlaceholder}
                 className="font-mono text-xs"
                 style={{ flex: 1, borderColor: valueError ? 'var(--destructive, #ef4444)' : undefined }}
               />
               {form.type === 'folder' && (
-                <button type="button" onClick={handlePickFolder} title="폴더 선택" style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <button type="button" onClick={handlePickFolder} title="폴더 선택"
+                  style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
                   <Icon name="folder_open" size={16} />
                 </button>
               )}
               {form.type === 'app' && (
-                <button type="button" onClick={handlePickExe} title="실행 파일 선택" style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <button type="button" onClick={handlePickExe} title="실행 파일 선택"
+                  style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
                   <Icon name="apps" size={16} />
                 </button>
               )}
             </div>
             {valueError && (
-              <p style={{ fontSize: 10, color: 'var(--destructive, #ef4444)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                <Icon name="error" size={12} />
-                {valueError}
+              <p style={{ fontSize: 10, color: 'var(--destructive, #ef4444)', display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
+                <Icon name="error" size={12} />{valueError}
               </p>
             )}
             {duplicateItem && (
@@ -508,147 +520,167 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
             )}
           </div>
 
-          {/* ━━ 섹션 3: 아이콘 ━━ */}
-          <Divider label="아이콘" />
-
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            {/* 미리보기 + 초기화 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', flexShrink: 0 }}>
-              <div style={{ position: 'relative', width: 56, height: 56, borderRadius: 12, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-                {form.iconType === 'image'
-                  ? <img src={form.icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={() => { setAutoFavicon(false); setForm(p => ({ ...p, iconType: 'material', icon: form.type === 'app' ? 'apps' : 'public' })); }} />
-                  : <Icon name={form.icon} size={28} color="var(--text-muted)" />
-                }
-              </div>
-              <button onClick={resetIcon} title="기본값으로 초기화" style={{ padding: '2px 8px', fontSize: 10, borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-dim)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
-                <Icon name="restart_alt" size={11} />초기화
+          {/* ④ Monitor */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>모니터</span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button onClick={() => f({ monitor: undefined })} title="자동 (마지막 위치)"
+                style={{ height: 28, padding: '0 10px', borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', background: form.monitor === undefined ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${form.monitor === undefined ? 'var(--accent)' : 'var(--border-rgba)'}`, color: form.monitor === undefined ? '#fff' : 'var(--text-muted)' }}>
+                자동
               </button>
+              {Array.from({ length: monitorCount }, (_, i) => i + 1).map(n => (
+                <button key={n} onClick={() => f({ monitor: n })} title={`모니터 ${n}`}
+                  style={{ height: 28, padding: '0 10px', borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', background: form.monitor === n ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${form.monitor === n ? 'var(--accent)' : 'var(--border-rgba)'}`, color: form.monitor === n ? '#fff' : 'var(--text-muted)' }}>
+                  {n}
+                </button>
+              ))}
             </div>
+          </div>
 
-            {/* 탭 + 컨텐츠 */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {/* 탭 버튼 */}
-              <div style={{ display: 'flex', gap: 3 }}>
-                {(['symbol', 'system', 'image'] as const).map(tab => {
-                  const labels: Record<IconTab, string> = { symbol: '심볼', system: '시스템', image: '이미지' };
-                  const active = iconTab === tab;
-                  return (
-                    <button key={tab} onClick={() => setIconTab(tab)}
-                      style={{ padding: '3px 10px', fontSize: 11, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontWeight: active ? 700 : 400, background: active ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`, color: active ? 'var(--accent)' : 'var(--text-muted)', transition: 'all 0.1s' }}>
-                      {labels[tab]}
-                    </button>
-                  );
-                })}
-              </div>
+          {/* ⑤ Advanced toggle */}
+          <button
+            onClick={() => setShowAdvanced(v => !v)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5, width: '100%',
+              padding: '6px 0', background: 'none', border: 'none',
+              borderTop: '1px solid var(--border-rgba)', cursor: 'pointer',
+              color: showAdvanced ? 'var(--accent)' : 'var(--text-dim)',
+              fontSize: 11, fontFamily: 'inherit', transition: 'color 0.12s',
+            }}
+          >
+            <Icon name={showAdvanced ? 'expand_less' : 'expand_more'} size={14} />
+            아이콘 &amp; 색상
+          </button>
 
-              {/* 심볼 탭 */}
-              {iconTab === 'symbol' && (
-                <>
-                  <input
-                    value={iconSearch}
-                    onChange={e => { setIconSearch(e.target.value); if (!e.target.value) f({ iconType: 'material', icon: 'star' }); }}
-                    placeholder="아이콘 검색 (예: folder, chart, person...)"
-                    style={{ width: '100%', padding: '5px 8px', fontSize: 11, background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none' }}
-                  />
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, maxHeight: 72, overflowY: 'auto' }}>
-                    {filteredIcons.slice(0, 30).map(ico => (
-                      <button key={ico} title={ico} onClick={() => selectMaterialIcon(ico)}
-                        style={{ width: 28, height: 28, borderRadius: 6, background: form.icon === ico && form.iconType === 'material' ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--border-rgba)'}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                        <Icon name={ico} size={15} color={form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--text-muted)'} />
-                      </button>
-                    ))}
+          {/* ⑥ Advanced section */}
+          {showAdvanced && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingBottom: 4 }}>
+
+              {/* Crop overlay */}
+              {cropSrc && (
+                <div style={{ padding: 10, borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>가운데 정사각형으로 크롭됩니다</p>
+                  <img ref={imgRef} src={cropSrc} alt="crop preview" style={{ maxHeight: 120, maxWidth: '100%', borderRadius: 6, objectFit: 'contain' }} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button onClick={() => setCropSrc(null)} style={{ padding: '4px 12px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit' }}>취소</button>
+                    <button onClick={handleCropApply} style={{ padding: '4px 12px', fontSize: 11, borderRadius: 6, background: 'var(--accent)', border: 'none', color: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>적용</button>
                   </div>
-                </>
-              )}
-
-              {/* 시스템 탭 */}
-              {iconTab === 'system' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {(form.type === 'url' || form.type === 'browser') && (
-                    <>
-                      <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>사이트의 파비콘/아이콘을 자동으로 가져옵니다.</p>
-                      <button onClick={fetchFavicon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                        <Icon name="language" size={13} />사이트 아이콘 가져오기
-                      </button>
-                    </>
-                  )}
-                  {form.type === 'app' && (
-                    <>
-                      <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>실행 파일(.exe)의 시스템 아이콘을 가져옵니다.</p>
-                      <button onClick={fetchFileIcon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                        <Icon name="apps" size={13} />파일 아이콘 가져오기
-                      </button>
-                    </>
-                  )}
-                  {form.type !== 'url' && form.type !== 'browser' && form.type !== 'app' && (
-                    <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이 유형은 시스템 아이콘을 지원하지 않습니다.</p>
-                  )}
                 </div>
               )}
 
-              {/* 이미지 탭 */}
-              {iconTab === 'image' && (
-                <>
-                  <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이미지 파일을 업로드해 아이콘으로 사용합니다.</p>
-                  <button onClick={() => fileRef.current?.click()} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                    <Icon name="upload" size={13} />이미지 업로드
+              {/* Icon picker */}
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                {/* Preview + reset */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', flexShrink: 0 }}>
+                  <div style={{ width: 56, height: 56, borderRadius: 12, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                    {form.iconType === 'image'
+                      ? <img src={form.icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={() => { setAutoFavicon(false); setForm(p => ({ ...p, iconType: 'material', icon: form.type === 'app' ? 'apps' : 'public' })); }} />
+                      : <Icon name={form.icon} size={28} color="var(--text-muted)" />
+                    }
+                  </div>
+                  <button onClick={resetIcon} title="기본값으로 초기화"
+                    style={{ padding: '2px 8px', fontSize: 10, borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-dim)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+                    <Icon name="restart_alt" size={11} />초기화
                   </button>
-                </>
-              )}
-              <input ref={fileRef} type="file" accept="image/*" hidden onChange={handleFileChange} />
-            </div>
-          </div>
+                </div>
 
-          {cropSrc && (
-            <div style={{ padding: 10, borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
-              <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>가운데 정사각형으로 크롭됩니다</p>
-              <img ref={imgRef} src={cropSrc} alt="crop preview" style={{ maxHeight: 120, maxWidth: '100%', borderRadius: 6, objectFit: 'contain' }} />
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={() => setCropSrc(null)} style={{ padding: '4px 12px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit' }}>취소</button>
-                <button onClick={handleCropApply} style={{ padding: '4px 12px', fontSize: 11, borderRadius: 6, background: 'var(--accent)', border: 'none', color: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>적용</button>
+                {/* Tabs + content */}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 3 }}>
+                    {(['symbol', 'system', 'image'] as const).map(tab => {
+                      const labels: Record<IconTab, string> = { symbol: '심볼', system: '시스템', image: '이미지' };
+                      const active = iconTab === tab;
+                      return (
+                        <button key={tab} onClick={() => setIconTab(tab)}
+                          style={{ padding: '3px 10px', fontSize: 11, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontWeight: active ? 700 : 400, background: active ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`, color: active ? 'var(--accent)' : 'var(--text-muted)', transition: 'all 0.1s' }}>
+                          {labels[tab]}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {iconTab === 'symbol' && (
+                    <>
+                      <input
+                        value={iconSearch}
+                        onChange={e => { setIconSearch(e.target.value); if (!e.target.value) f({ iconType: 'material', icon: 'star' }); }}
+                        placeholder="아이콘 검색 (예: folder, chart...)"
+                        style={{ width: '100%', padding: '5px 8px', fontSize: 11, background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none' }}
+                      />
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, maxHeight: 72, overflowY: 'auto' }}>
+                        {filteredIcons.slice(0, 30).map(ico => (
+                          <button key={ico} title={ico} onClick={() => selectMaterialIcon(ico)}
+                            style={{ width: 28, height: 28, borderRadius: 6, background: form.icon === ico && form.iconType === 'material' ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--border-rgba)'}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <Icon name={ico} size={15} color={form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--text-muted)'} />
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+
+                  {iconTab === 'system' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {(form.type === 'url' || form.type === 'browser') && (
+                        <>
+                          <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>사이트의 파비콘을 자동으로 가져옵니다.</p>
+                          <button onClick={fetchFavicon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
+                            <Icon name="language" size={13} />사이트 아이콘 가져오기
+                          </button>
+                        </>
+                      )}
+                      {form.type === 'app' && (
+                        <>
+                          <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>실행 파일의 시스템 아이콘을 가져옵니다.</p>
+                          <button onClick={fetchFileIcon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
+                            <Icon name="apps" size={13} />파일 아이콘 가져오기
+                          </button>
+                        </>
+                      )}
+                      {form.type !== 'url' && form.type !== 'browser' && form.type !== 'app' && (
+                        <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이 유형은 시스템 아이콘을 지원하지 않습니다.</p>
+                      )}
+                    </div>
+                  )}
+
+                  {iconTab === 'image' && (
+                    <>
+                      <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이미지 파일을 업로드해 아이콘으로 사용합니다.</p>
+                      <button onClick={() => fileRef.current?.click()} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
+                        <Icon name="upload" size={13} />이미지 업로드
+                      </button>
+                    </>
+                  )}
+                  <input ref={fileRef} type="file" accept="image/*" hidden onChange={handleFileChange} />
+                </div>
               </div>
+
+              {/* Color picker */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>카드 색상</Label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                  {PRESET_COLORS.map(c => (
+                    <button key={c} onClick={() => f({ color: c })}
+                      style={{ width: 20, height: 20, borderRadius: '50%', background: c, border: 'none', cursor: 'pointer', outline: form.color === c ? `2.5px solid ${c}` : 'none', outlineOffset: 2, transition: 'transform 0.1s', flexShrink: 0 }}
+                      onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.2)')}
+                      onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+                    />
+                  ))}
+                  <input type="color" value={form.color || '#6366f1'} onChange={e => f({ color: e.target.value })} title="직접 지정"
+                    style={{ width: 20, height: 20, borderRadius: '50%', border: 'none', cursor: 'pointer', background: 'transparent', padding: 0, flexShrink: 0 }} />
+                  {form.color && (
+                    <button onClick={() => f({ color: '' })} style={{ fontSize: 10, color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                      초기화
+                    </button>
+                  )}
+                </div>
+              </div>
+
             </div>
           )}
 
-          {/* ━━ 섹션 4: 표시 옵션 ━━ */}
-          <Divider label="표시 옵션" />
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            {/* 모니터 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>모니터</Label>
-              <div style={{ display: 'flex', gap: 5 }}>
-                <button onClick={() => f({ monitor: undefined })} title="자동"
-                  style={{ flex: 1, height: 30, borderRadius: 7, fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', background: form.monitor === undefined ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${form.monitor === undefined ? 'var(--accent)' : 'var(--border-rgba)'}`, color: form.monitor === undefined ? '#fff' : 'var(--text-muted)' }}>C</button>
-                {Array.from({ length: monitorCount }, (_, i) => i + 1).map(n => (
-                  <button key={n} onClick={() => f({ monitor: n })} title={`모니터 ${n}`}
-                    style={{ flex: 1, height: 30, borderRadius: 7, fontWeight: 700, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', background: form.monitor === n ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${form.monitor === n ? 'var(--accent)' : 'var(--border-rgba)'}`, color: form.monitor === n ? '#fff' : 'var(--text-muted)' }}>{n}</button>
-                ))}
-              </div>
-              <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                {form.monitor === undefined ? '자동 (마지막 위치)' : `모니터 ${form.monitor}${form.monitor === 1 ? ' (주)' : ''}`}
-              </span>
-            </div>
-
-            {/* 색상 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>카드 색상</Label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-                {PRESET_COLORS.map(c => (
-                  <button key={c} onClick={() => f({ color: c })}
-                    style={{ width: 20, height: 20, borderRadius: '50%', background: c, border: 'none', cursor: 'pointer', outline: form.color === c ? `2.5px solid ${c}` : 'none', outlineOffset: 2, transition: 'transform 0.1s', flexShrink: 0 }}
-                    onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.2)')}
-                    onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
-                  />
-                ))}
-                <input type="color" value={form.color || '#6366f1'} onChange={e => f({ color: e.target.value })} title="직접 지정" style={{ width: 20, height: 20, borderRadius: '50%', border: 'none', cursor: 'pointer', background: 'transparent', padding: 0, flexShrink: 0 }} />
-                {form.color && <button onClick={() => f({ color: '' })} style={{ fontSize: 10, color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>초기화</button>}
-              </div>
-            </div>
-          </div>
         </div>
 
-        <DialogFooter style={{ marginTop: 8 }}>
+        <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)', marginTop: 4 }}>
           <Button variant="ghost" onClick={onClose}>취소</Button>
           <Button onClick={handleSave} disabled={!form.title.trim() || !form.value.trim()}>
             {isEdit ? '저장' : '추가'}

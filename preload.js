@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  log: (level, msg, extra) => ipcRenderer.send('nost-log', level, msg, extra),
+  openLogsFolder: () => ipcRenderer.send('open-logs-folder'),
   openUrl: (url, closeAfter) => ipcRenderer.send('open-url', url, closeAfter),
   openPath: (folder, closeAfter) => ipcRenderer.send('open-path', folder, closeAfter),
   copyText: (text, closeAfter) => ipcRenderer.send('copy-text', text, closeAfter),
@@ -29,6 +31,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
   installUpdate: () => ipcRenderer.send('install-update'),
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_, info) => cb(info)),
+  onUpdateDownloadProgress: (cb) => ipcRenderer.on('update-download-progress', (_, info) => cb(info)),
   onUpdateDownloaded: (cb) => ipcRenderer.on('update-downloaded', (_, info) => cb(info)),
   readClipboard: () => ipcRenderer.invoke('read-clipboard'),
   analyzeClipboard: () => ipcRenderer.invoke('analyze-clipboard'),

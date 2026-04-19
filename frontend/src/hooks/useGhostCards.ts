@@ -2,10 +2,20 @@ import { useState, useCallback, useMemo } from 'react';
 import { electronAPI } from '../electronBridge';
 import { getDocumentExtensions } from '../lib/documentExtensions';
 import type { Space, LauncherItem } from '../types';
+import { DISMISS_COOLDOWN_MS } from '../types';
 
 export const GHOST_SPACE_ID = '__ghost_recommendations__';
 
 export type GhostDisplayType = 'folder' | 'app' | 'url' | 'document';
+
+// F7 reason chip: tells the user *why* we surfaced this suggestion so they
+// can decide whether it's noise or signal at a glance.
+export interface GhostReason {
+  /** Material Symbol name for the chip icon */
+  icon: string;
+  /** Short Korean label shown next to the icon */
+  label: string;
+}
 
 export interface GhostItem {
   title: string;
@@ -14,11 +24,13 @@ export interface GhostItem {
   displayType: GhostDisplayType;
   source: 'open' | 'recent';
   spaceId: string;
+  reason: GhostReason;
 }
 
 interface UseGhostCardsOptions {
   spaces: Space[];
-  dismissedValues: string[];
+  /** Map of value → { at: last dismiss epoch ms, count: total dismissals }. See types.ts. */
+  dismissals: Record<string, { at: number; count: number }>;
   documentExtensions?: string[];
   onDismiss: (value: string) => void;
 }
@@ -76,7 +88,7 @@ const MAX_PER_SPACE = 2;
 const MAX_TOTAL = 8;
 const MAX_GHOST_SPACE = 6;
 
-export function useGhostCards({ spaces, dismissedValues, documentExtensions, onDismiss }: UseGhostCardsOptions) {
+export function useGhostCards({ spaces, dismissals, documentExtensions, onDismiss }: UseGhostCardsOptions) {
   const docExts = useMemo(() => {
     const exts = getDocumentExtensions(documentExtensions);
     return new Set(exts.map(e => e.toLowerCase().replace(/^\./, '')));
@@ -100,7 +112,17 @@ export function useGhostCards({ spaces, dismissedValues, documentExtensions, onD
     return set;
   }, [spaces]);
 
-  const dismissedSet = useMemo(() => new Set(dismissedValues.map(v => v.toLowerCase())), [dismissedValues]);
+  // F5: treat a dismissed value as "suppressed" only while the cooldown window
+  // hasn't elapsed. Repeated dismissals don't extend the window — they only
+  // bump the count for future heuristics (trust-the-user scoring, not impl yet).
+  const dismissedSet = useMemo(() => {
+    const now = Date.now();
+    const out = new Set<string>();
+    for (const [value, rec] of Object.entries(dismissals)) {
+      if (now - rec.at < DISMISS_COOLDOWN_MS) out.add(value.toLowerCase());
+    }
+    return out;
+  }, [dismissals]);
 
   const scan = useCallback(async () => {
     setScanning(true);
@@ -146,7 +168,7 @@ export function useGhostCards({ spaces, dismissedValues, documentExtensions, onD
 
       for (const c of candidates) {
         if (matched.length >= MAX_TOTAL) break;
-        const { spaceId } = matchToSpace(c, spaces);
+        const { spaceId, score } = matchToSpace(c, spaces);
 
         if (spaceId === GHOST_SPACE_ID) {
           const ghostCount = spaceCount[GHOST_SPACE_ID] || 0;
@@ -158,7 +180,21 @@ export function useGhostCards({ spaces, dismissedValues, documentExtensions, onD
           spaceCount[spaceId] = count + 1;
         }
 
-        matched.push({ ...c, spaceId, displayType: getDisplayType(c.type, c.value) });
+        // F7: compose a short reason chip so the user understands why we picked this.
+        // Priority: "현재 열림" (strongest signal) > contextual match > "최근 사용" (weakest).
+        let reason: GhostReason;
+        if (c.source === 'open') {
+          reason = { icon: 'open_in_new', label: '지금 열려있음' };
+        } else if (score >= 3) {
+          // High-score match (same-parent-dir / same-domain)
+          reason = { icon: 'adjust', label: '비슷한 항목이 있음' };
+        } else if (score >= 2) {
+          reason = { icon: 'category', label: '같은 종류가 있음' };
+        } else {
+          reason = { icon: 'history', label: '최근 사용' };
+        }
+
+        matched.push({ ...c, spaceId, displayType: getDisplayType(c.type, c.value), reason });
       }
 
       setGhosts(matched);

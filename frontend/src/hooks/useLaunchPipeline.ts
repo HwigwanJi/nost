@@ -56,14 +56,14 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
     // ── text: clipboard copy ─────────────────────────────────
     if (item.type === 'text') {
       electronAPI.copyText(item.value, closeAfter);
-      showToast(`📋 "${item.title}" 복사됨`, { duration: 1800 });
+      showToast(`"${item.title}" 복사됨`, { duration: 1800 });
       return;
     }
 
     // ── cmd: fire-and-forget shell command ───────────────────
     if (item.type === 'cmd') {
       electronAPI.runCmd(item.value, closeAfter);
-      showToast(`▶ "${item.title}"`, { duration: 1800 });
+      showToast(`"${item.title}"`, { duration: 1800 });
       return;
     }
 
@@ -71,7 +71,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
     if (item.type === 'url' || item.type === 'browser') {
       electronAPI.openUrl(item.value, needsPositioning ? false : closeAfter);
       if (!needsPositioning) {
-        showToast(`🌐 "${item.title}"`, { duration: 1800 });
+        showToast(`"${item.title}"`, { duration: 1800 });
         return;
       }
       // Fall through to positioning pipeline below
@@ -81,7 +81,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
     if (item.type === 'folder') {
       electronAPI.openPath(item.value, needsPositioning ? false : closeAfter);
       if (!needsPositioning) {
-        showToast(`📁 "${item.title}"`, { duration: 1800 });
+        showToast(`"${item.title}"`, { duration: 1800 });
         return;
       }
       // Fall through to positioning pipeline below
@@ -103,12 +103,12 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         );
 
         if (!r.success) {
-          showToast(`⚠ "${item.title}" 창을 찾을 수 없음`, { immediate: true, duration: 2500 });
+          showToast(`"${item.title}" 창을 찾을 수 없음`, { immediate: true, duration: 2500 });
           return;
         }
 
         if (!needsPositioning) {
-          showToast(`▶ "${item.title}"`, { immediate: true, duration: 1800 });
+          showToast(`"${item.title}"`, { immediate: true, duration: 1800 });
           return;
         }
 
@@ -119,7 +119,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
           monitor: targetMonitor,
         });
 
-        showToast(posResult.success ? '✅ 완료' : '⚠ 창 위치 조정 실패', {
+        showToast(posResult.success ? '완료' : '창 위치 조정 실패', {
           immediate: true,
           duration: posResult.success ? 3000 : 2500,
         });
@@ -139,14 +139,14 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         );
 
         if (!r.success) {
-          showToast('⚠ 실행 실패', { immediate: true, duration: 2500 });
+          showToast('실행 실패', { immediate: true, duration: 2500 });
           return;
         }
 
         if (r.action === 'focused') {
           // App already running — window exists immediately
           if (!needsPositioning) {
-            showToast(`▶ "${item.title}"`, { immediate: true, duration: 1800 });
+            showToast(`"${item.title}"`, { immediate: true, duration: 1800 });
             return;
           }
 
@@ -156,7 +156,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
             monitor: targetMonitor,
           });
 
-          showToast(posResult.success ? '✅ 완료' : '⚠ 창 위치 조정 실패', {
+          showToast(posResult.success ? '완료' : '창 위치 조정 실패', {
             immediate: true,
             duration: posResult.success ? 3000 : 2500,
           });
@@ -167,7 +167,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
 
         // action === 'launched' — app just started, fall through to polling
         if (!needsPositioning) {
-          showToast(`▶ ${item.title}`, { immediate: true, duration: 3000 });
+          showToast(`${item.title}`, { immediate: true, duration: 3000 });
           return;
         }
 
@@ -192,7 +192,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
       }
 
       if (!windowFound) {
-        showToast(`⚠ "${item.title}" ${MAX_WAIT / 1000}초 대기 후 창을 찾지 못했습니다`, {
+        showToast(`"${item.title}" ${MAX_WAIT / 1000}초 대기 후 창을 찾지 못했습니다`, {
           immediate: true,
           duration: 4000,
         });
@@ -210,7 +210,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         monitor: targetMonitor,
       });
 
-      showToast(posResult.success ? '✅ 완료' : '⚠ 창 위치 조정 실패', {
+      showToast(posResult.success ? '완료' : '창 위치 조정 실패', {
         immediate: true,
         duration: posResult.success ? 3000 : 2500,
       });

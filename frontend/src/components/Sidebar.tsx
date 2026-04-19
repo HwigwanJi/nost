@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { AppMode } from '../types';
 import { Icon } from '@/components/ui/Icon';
+import { NostLogo } from '@/components/ui/NostLogo';
 
 interface SidebarProps {
   activeMode: AppMode;
@@ -29,34 +30,36 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
         flexShrink: 0,
       }}
     >
-      {/* ── Guest / Account area ──────────────────── */}
+      {/* ── App identity ──────────────────────────── */}
       <div
         style={{
-          padding: expanded ? '12px 12px 8px' : '12px 0 8px',
+          padding: '10px 0',
+          paddingLeft: expanded ? 12 : 0,
           display: 'flex',
-          flexDirection: 'column',
           alignItems: 'center',
-          gap: 4,
+          justifyContent: expanded ? 'flex-start' : 'center',
+          gap: 8,
           borderBottom: '1px solid var(--border-rgba)',
+          flexShrink: 0,
         }}
       >
         <div
           style={{
-            width: 28,
-            height: 28,
-            borderRadius: '50%',
-            background: 'var(--border-rgba)',
+            width: 26,
+            height: 26,
+            borderRadius: 7,
+            background: 'var(--accent-dim)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             flexShrink: 0,
           }}
         >
-          <Icon name="person" size={16} color="var(--text-muted)" />
+          <NostLogo size={14} color="var(--accent)" />
         </div>
         {expanded && (
-          <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap', fontWeight: 500 }}>
-            Guest
+          <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--text-color)', whiteSpace: 'nowrap', letterSpacing: '-0.03em' }}>
+            nost
           </span>
         )}
       </div>
@@ -141,6 +144,9 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
 }
 
 /* ── Sidebar button ────────────────────────────────────────── */
+// Adobe-inspired design: inactive state uses neutral (text-dim) color for
+// every tool — accent color is only revealed on active state via a 2px left
+// rail + soft 8% bg tint. This gives visual calm when scanning the toolbar.
 function SidebarButton({
   icon,
   label,
@@ -174,20 +180,41 @@ function SidebarButton({
         fontFamily: 'inherit',
         fontSize: 11,
         fontWeight: active ? 600 : 400,
-        background: active ? accentColor + '20' : 'transparent',
-        color: active ? accentColor : 'var(--text-muted)',
-        transition: 'all 0.15s',
+        background: active ? accentColor + '14' : 'transparent', /* 8% tint */
+        color: active ? accentColor : 'var(--text-dim)',
+        transition: 'background 0.15s, color 0.15s',
         position: 'relative',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
       }}
       onMouseEnter={e => {
-        if (!active) e.currentTarget.style.background = 'var(--surface-hover)';
+        if (!active) {
+          e.currentTarget.style.background = 'var(--surface-hover)';
+          e.currentTarget.style.color = 'var(--text-muted)';
+        }
       }}
       onMouseLeave={e => {
-        if (!active) e.currentTarget.style.background = 'transparent';
+        if (!active) {
+          e.currentTarget.style.background = 'transparent';
+          e.currentTarget.style.color = 'var(--text-dim)';
+        }
       }}
     >
+      {/* Left accent rail — Adobe CC-style active indicator */}
+      {active && (
+        <span
+          aria-hidden="true"
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 6,
+            bottom: 6,
+            width: 2,
+            borderRadius: 1,
+            background: accentColor,
+          }}
+        />
+      )}
       <Icon name={icon} size={17} style={{ flexShrink: 0 }} />
       {expanded && label}
       {badge && (

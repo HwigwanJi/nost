@@ -81,7 +81,7 @@ export function useNodeDeckMode({
     setNodeBuilding([]);
     setActiveMode('normal');
     dismissToast();
-    showToast(`✅ "${autoName}" 저장됨`);
+    showToast(`"${autoName}" 저장됨`);
   }, [nodeBuilding, data.nodeGroups, store, showToast, dismissToast]);
 
   const handleNodeBuildingClick = useCallback((itemId: string) => {
@@ -102,12 +102,12 @@ export function useNodeDeckMode({
     if (items.length < 2) return;
 
     const itemDtos = items.map(i => ({ type: i.type, value: i.value, title: i.title }));
-    showToast(`▶ ${items.length}개 앱 시작 중...`);
+    showToast(`${items.length}개 앱 시작 중...`);
     const { identifiers, waitMs } = await electronAPI.launchItemsForTile(itemDtos);
-    showToast(`⏳ 창 열리면 자동 배치됩니다...`);
+    showToast(`창 열리면 자동 배치됩니다...`);
     const tileResult = await electronAPI.runTilePs({ identifiers, waitMs, monitor: group.monitor ?? 0 });
-    if (tileResult.success) showToast(`✅ ${items.length}분할 완료`);
-    else showToast(`⚠ 창 배치 실패: ${tileResult.error || '시간 초과'}`);
+    if (tileResult.success) showToast(`${items.length}분할 완료`);
+    else showToast(`창 배치 실패: ${tileResult.error || '시간 초과'}`);
     showTileOverlay(groupId);
   }, [nodeGroups, allItems, nodeEditMode, showToast, showTileOverlay]);
 
@@ -125,7 +125,7 @@ export function useNodeDeckMode({
     setDeckItems([]);
     setActiveMode('normal');
     dismissToast();
-    showToast(`✅ "${name}" 덱 저장됨`);
+    showToast(`"${name}" 덱 저장됨`);
   }, [deckItems, store, showToast, dismissToast]);
 
   const handleDeckLaunch = useCallback(async (deckId: string) => {
@@ -134,7 +134,7 @@ export function useNodeDeckMode({
     const items = deck.itemIds.map(id => allItems.find(i => i.id === id)).filter(Boolean) as LauncherItem[];
     if (items.length === 0) return;
 
-    showToast(`▶ "${deck.name}" 실행 (${items.length}개)`);
+    showToast(`"${deck.name}" 실행 (${items.length}개)`);
     let failCount = 0;
     const targetMonitor = deck.monitor ?? 0;
 
@@ -154,16 +154,16 @@ export function useNodeDeckMode({
           await new Promise(r => setTimeout(r, interval));
           const results = await electronAPI.checkItemsForTile([{ type: item.type, value: item.value, title: item.title }]);
           if (results[0]?.alive) {
-            showToast(`✓ ${idx + 1}/${items.length} ${item.title}`);
+            showToast(`${idx + 1}/${items.length} ${item.title}`);
             electronAPI.maximizeWindow({ item: { type: item.type, value: item.value, title: item.title }, monitor: targetMonitor });
             return true;
           }
-          if (a >= 3) showToast(`⏳ ${idx + 1}/${items.length} ${item.title} 대기 중... (${a + 1}/${MAX})`);
+          if (a >= 3) showToast(`${idx + 1}/${items.length} ${item.title} 대기 중... (${a + 1}/${MAX})`);
         }
-        showToast(`⚠ ${item.title} 열기 실패 (시간 초과)`);
+        showToast(`${item.title} 열기 실패 (시간 초과)`);
         return false;
       }
-      showToast(`✓ ${idx + 1}/${items.length} ${item.title}`);
+      showToast(`${idx + 1}/${items.length} ${item.title}`);
       return true;
     };
 
@@ -172,8 +172,8 @@ export function useNodeDeckMode({
       const results = await Promise.all(batch.map((item, j) => launchOne(item, i + j)));
       failCount += results.filter(r => !r).length;
     }
-    if (failCount === 0) showToast(`✅ "${deck.name}" 완료`);
-    else showToast(`⚠ "${deck.name}" ${failCount}개 실패`);
+    if (failCount === 0) showToast(`"${deck.name}" 완료`);
+    else showToast(`"${deck.name}" ${failCount}개 실패`);
   }, [data.decks, allItems, showToast]);
 
   const handleDeckGroupLaunch = useCallback((itemId: string) => {

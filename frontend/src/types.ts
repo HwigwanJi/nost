@@ -14,6 +14,7 @@ export interface LauncherItem {
   iconType?: 'material' | 'image';
   color?: string; // hex
   clickCount?: number;
+  lastClickedAt?: number; // epoch ms — drives freshness/staleness signals
   pinned?: boolean;
   monitor?: number;  // preferred monitor (1-indexed); undefined = no preference
   exePath?: string;  // for 'window' items: exe path to relaunch when window is closed
@@ -31,6 +32,11 @@ export interface Space {
   icon?: string;  // emoji or material symbol name
   sortMode?: 'custom' | 'usage';
   pinnedIds?: string[];
+  // Virtual 12-column weight (1 unit ≈ 1/12 of row). clamped at runtime to current totalCols.
+  // Legacy `columnSpan: 1|2` is migrated to 4 / 8 in migrateData().
+  widthWeight?: number;
+  /** @deprecated kept for migration only — read once in migrateData() and converted to widthWeight */
+  columnSpan?: 1 | 2;
 }
 
 export interface AppSettings {
@@ -68,8 +74,17 @@ export interface AppData {
   collapsedSpaceIds?: string[];  // UI state: which spaces are collapsed
   nodeGroups?: NodeGroup[];      // linked item groups for split-screen
   decks?: Deck[];               // sequential launch groups
-  dismissedSuggestions?: string[]; // ghost card dismissed values (permanent until reset)
+  dismissedSuggestions?: string[]; // DEPRECATED — kept for migration; read via migrateData
+  dismissals?: Record<string, { at: number; count: number }>; // ghost dismissal cooldown: value → last dismiss time + count
 }
+
+// How long a dismissed suggestion stays hidden (ms). After this window elapses,
+// the suggestion may reappear if its signal is still strong.
+export const DISMISS_COOLDOWN_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+// An item that hasn't been clicked in this long is considered "stale" and gets
+// a subtle visual hint prompting the user to review it.
+export const STALE_THRESHOLD_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
 
 export interface ChromeTab {
   id: number;

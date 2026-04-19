@@ -36,6 +36,7 @@ interface SettingsDialogProps {
   settings: AppSettings;
   onSave: (s: AppSettings) => void;
   updateDownloaded?: boolean;
+  downloadProgress?: number | null;
   initialTab?: Tab;
 }
 
@@ -117,7 +118,7 @@ function GhostBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttribut
 
 // ── Main component ───────────────────────────────────────────────────
 
-export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, initialTab }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab }: SettingsDialogProps) {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
   const [form, setForm] = useState<AppSettings>({ ...settings });
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
@@ -610,11 +611,21 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   {currentVersion && (
                     <p style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 6 }}>현재 버전: v{currentVersion}</p>
                   )}
-                  {(updateDownloaded || updateStatus === 'update-available') ? (
+                  {updateDownloaded ? (
                     <AccentBtn onClick={() => electronAPI.installUpdate()} style={{ background: 'var(--accent)', color: '#fff', border: 'none' }}>
                       <Icon name="restart_alt" size={15} />
                       {newVersion ? `v${newVersion} 설치 — 재시작` : '재시작 후 업데이트 설치'}
                     </AccentBtn>
+                  ) : downloadProgress != null ? (
+                    <div style={{ width: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 11, color: 'var(--text-muted)' }}>
+                        <span>다운로드 중{newVersion ? ` v${newVersion}` : ''}...</span>
+                        <span>{downloadProgress}%</span>
+                      </div>
+                      <div style={{ width: '100%', height: 4, background: 'var(--border-rgba)', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ width: `${downloadProgress}%`, height: '100%', background: 'var(--accent)', borderRadius: 2, transition: 'width 0.4s ease' }} />
+                      </div>
+                    </div>
                   ) : (
                     <GhostBtn onClick={handleCheckUpdate} disabled={updateStatus === 'checking'}
                       style={{ opacity: updateStatus === 'checking' ? 0.6 : 1, width: '100%' }}>
@@ -644,6 +655,19 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   {backupStatus && (
                     <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>{backupStatus}</p>
                   )}
+                </Section>
+
+                <Section>
+                  <SectionLabel icon="bug_report" text="진단 / 로그" />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <GhostBtn onClick={() => electronAPI.openLogsFolder()}>
+                      <Icon name="folder_open" size={15} />
+                      로그 폴더 열기
+                    </GhostBtn>
+                  </div>
+                  <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, textAlign: 'center' }}>
+                    문제 발생 시 main.log를 공유해주세요.
+                  </p>
                 </Section>
               </>}
 
