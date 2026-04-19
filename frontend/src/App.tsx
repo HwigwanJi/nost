@@ -72,16 +72,14 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
-// ── Sortable space wrapper ───────────────────────────────────
-// Notion-style paired resize: the handle between space A and its row-neighbor B
-// is zero-sum — dragging right grows A and shrinks B by the same amount, so the
-// row stays exactly full. Solo-in-row spaces fill the whole row and don't show
-// a handle. Last-in-row (no right neighbor) also doesn't show a handle — the
-// user resizes via the handle of the space to its LEFT instead.
+// ── Sortable space wrapper (Phase 3: pair-based layout) ─────────────────────
+// Layout invariant: every row is either a SOLO space (full width) or a PAIR
+// (two spaces splitting the width). No 3+ columns; no partial rows. See
+// types.ts for the `pairedWithNext` / `splitRatio` data model.
 //
-// The whole header is the dnd-kit drag activator (we pass activator props to the
-// child). The resize handle uses pointer capture + direct DOM writes for 60fps
-// feel, then persists both A.widthWeight and B.widthWeight atomically on release.
+// The whole header is the dnd-kit drag activator (we pass activator props to
+// the child). When this space is the LEFT of a pair, it renders a resize
+// handle on its right edge that adjusts the pair's splitRatio live.
 type DragActivator = {
   setActivatorNodeRef: (node: HTMLElement | null) => void;
   listeners: ReturnType<typeof useSortable>['listeners'];
@@ -91,21 +89,17 @@ type DragActivator = {
 function SortableSpace({
   id,
   children,
-  span,
-  totalCols,
-  minSpan,
-  neighborId,
   dropEdge,
-  onWeightsChange,
+  pairPartnerId,
+  currentSplitRatio,
+  onSplitRatioChange,
 }: {
   id: string;
   children: (activator: DragActivator) => React.ReactNode;
-  span: number;
-  totalCols: number;
-  minSpan: number;
-  neighborId?: string;                      // undefined for solo/last-in-row
   dropEdge?: 'left' | 'right' | 'center';   // current drop indicator zone, if this space is the target
-  onWeightsChange?: (updates: Array<{ id: string; widthWeight: number }>) => void;
+  pairPartnerId?: string;                   // set if this space is the LEFT of a pair
+  currentSplitRatio?: number;               // current ratio [0.25, 0.75] for the pair; only used when pairPartnerId set
+  onSplitRatioChange?: (ratio: number) => void;
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
   const elRef = useRef<HTMLDivElement | null>(null);
@@ -119,53 +113,39 @@ function SortableSpace({
     elRef.current = node;
   }, [setNodeRef]);
 
+  // Pair resize: drag the handle to change the split. We read the parent row's
+  // width live, compute the cursor-relative ratio, clamp to [0.25, 0.75], and
+  // commit on release. Live preview uses direct DOM style writes for 60fps.
   const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
-    if (!onWeightsChange || !neighborId) return;
+    if (!onSplitRatioChange || !pairPartnerId) return;
     e.preventDefault();
     e.stopPropagation();
 
-    const el = elRef.current;
-    const grid = el?.parentElement as HTMLElement | null;
     const handleEl = e.currentTarget as HTMLElement;
-    const neighborEl = grid?.querySelector(`[data-space-id="${neighborId}"]`) as HTMLDivElement | null;
-    if (!el || !grid || !neighborEl) return;
+    const el = elRef.current;
+    const rowEl = el?.parentElement as HTMLElement | null;
+    const partnerEl = rowEl?.querySelector(`[data-space-id="${pairPartnerId}"]`) as HTMLDivElement | null;
+    if (!el || !rowEl || !partnerEl) return;
 
-    const gridRect = grid.getBoundingClientRect();
-    const cs = getComputedStyle(grid);
-    const gap = parseFloat(cs.columnGap || cs.gap || '0') || 0;
-    const unitWidth = (gridRect.width - gap * Math.max(0, totalCols - 1)) / totalCols;
-    const step = unitWidth + gap;
-    if (!isFinite(step) || step <= 0) return;
-
-    // Snap start-spans from current rendered widths → pair sum is our invariant
-    const aStart = Math.max(1, Math.round(el.getBoundingClientRect().width / step));
-    const bStart = Math.max(1, Math.round(neighborEl.getBoundingClientRect().width / step));
-    const pairSum = aStart + bStart;
-
-    const startX = e.clientX;
     const pointerId = e.pointerId;
-
     try { handleEl.setPointerCapture(pointerId); } catch { /* best-effort */ }
     setResizing(true);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
-    let currentA = aStart;
-    let currentB = bStart;
+    const MIN = 0.25, MAX = 0.75;
+    let lastRatio = currentSplitRatio ?? 0.5;
 
     const onMove = (ev: PointerEvent) => {
-      const rawDelta = (ev.clientX - startX) / step;
-      const snap = ev.shiftKey ? 2 : 1;
-      const delta = Math.round(rawDelta / snap) * snap;
-      // Clamp A so that B = pairSum - A is also ≥ minSpan
-      const nextA = Math.max(minSpan, Math.min(pairSum - minSpan, aStart + delta));
-      const nextB = pairSum - nextA;
-      if (nextA !== currentA) {
-        currentA = nextA;
-        currentB = nextB;
-        el.style.gridColumn = `span ${nextA}`;
-        neighborEl.style.gridColumn = `span ${nextB}`;
-      }
+      const rowRect = rowEl.getBoundingClientRect();
+      if (rowRect.width <= 0) return;
+      // Ratio = how far across the row the cursor sits (0 = full left, 1 = full right)
+      const raw = (ev.clientX - rowRect.left) / rowRect.width;
+      const next = Math.max(MIN, Math.min(MAX, raw));
+      if (Math.abs(next - lastRatio) < 0.001) return;
+      lastRatio = next;
+      // Live preview — write directly so we don't thrash React per pixel
+      rowEl.style.gridTemplateColumns = `${next}fr ${1 - next}fr`;
     };
     const onUp = () => {
       try { handleEl.releasePointerCapture(pointerId); } catch { /* already released */ }
@@ -175,44 +155,40 @@ function SortableSpace({
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       setResizing(false);
-      if (currentA !== aStart) {
-        onWeightsChange([
-          { id, widthWeight: currentA },
-          { id: neighborId, widthWeight: currentB },
-        ]);
+      rowEl.style.gridTemplateColumns = '';  // let React take over again
+      if (Math.abs(lastRatio - (currentSplitRatio ?? 0.5)) > 0.001) {
+        onSplitRatioChange(lastRatio);
       }
-      el.style.gridColumn = '';
-      neighborEl.style.gridColumn = '';
     };
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
     document.addEventListener('pointercancel', onUp);
-  }, [id, neighborId, totalCols, minSpan, onWeightsChange]);
+  }, [pairPartnerId, currentSplitRatio, onSplitRatioChange]);
 
   return (
     <div
       ref={combinedNodeRef}
       data-space-id={id}
       style={{
-        gridColumn: `span ${span}`,
         transform: CSS.Transform.toString(transform),
         transition: resizing ? undefined : transition,
         opacity: isDragging ? 0.45 : 1,
         height: '100%',
         position: 'relative',
+        minWidth: 0,  // let grid tracks shrink without forcing overflow
       }}
     >
       {children({ setActivatorNodeRef, listeners, attributes })}
 
       {/* Drop indicator: Notion-style preview of where the drop will land.
-          Vertical line on left/right = column-join into this row; horizontal
-          line on bottom = new row after this space. Pulses via CSS keyframe. */}
+          Vertical line on left/right = pair with this space on that side;
+          horizontal line on bottom = new solo row after this space. */}
       {dropEdge === 'left' && (
         <div className="drop-indicator-pulse" style={{
           position: 'absolute', top: 2, bottom: 2, left: -5,
           width: 4, borderRadius: 2,
-          background: 'var(--accent, #6366f1)',
-          boxShadow: '0 0 14px var(--accent, #6366f1)',
+          background: 'var(--accent)',
+          boxShadow: '0 0 14px var(--accent)',
           zIndex: 50, pointerEvents: 'none',
         }} />
       )}
@@ -220,8 +196,8 @@ function SortableSpace({
         <div className="drop-indicator-pulse" style={{
           position: 'absolute', top: 2, bottom: 2, right: -5,
           width: 4, borderRadius: 2,
-          background: 'var(--accent, #6366f1)',
-          boxShadow: '0 0 14px var(--accent, #6366f1)',
+          background: 'var(--accent)',
+          boxShadow: '0 0 14px var(--accent)',
           zIndex: 50, pointerEvents: 'none',
         }} />
       )}
@@ -229,18 +205,17 @@ function SortableSpace({
         <div className="drop-indicator-pulse" style={{
           position: 'absolute', left: 2, right: 2, bottom: -5,
           height: 4, borderRadius: 2,
-          background: 'var(--accent, #6366f1)',
-          boxShadow: '0 0 14px var(--accent, #6366f1)',
+          background: 'var(--accent)',
+          boxShadow: '0 0 14px var(--accent)',
           zIndex: 50, pointerEvents: 'none',
         }} />
       )}
 
-      {/* Paired resize handle — only shown when there's a row-sibling to pair with.
-          Solo/last-in-row spaces have no handle (cannot grow without pushing others). */}
-      {onWeightsChange && neighborId && (
+      {/* Pair resize handle — only on the LEFT space of a pair. */}
+      {pairPartnerId && onSplitRatioChange && (
         <div
           onPointerDown={handleResizePointerDown}
-          title="드래그해서 이웃과 너비 조절 (Shift: 굵은 스냅)"
+          title="드래그해서 페어 너비 비율 조절"
           style={{
             position: 'absolute',
             right: -6,
@@ -271,89 +246,138 @@ function SortableSpace({
   );
 }
 
-// ── Row-based layout on the virtual 12-col master grid ─────────────────────
-// Each unit ≈ 120px. Minimum space span is ~3 units; very narrow grids (≤4 cols)
-// fall back to full-row so spaces never get squeezed unreadably small.
-export function spaceMinSpan(totalCols: number): number {
-  return totalCols <= 4 ? totalCols : Math.min(totalCols, 3);
+// ── Pair-based row model ────────────────────────────────────────────────────
+// Every row is either SOLO (one space, full width) or PAIR (two spaces, widths
+// summing to 1). Driven entirely by `pairedWithNext` / `splitRatio` on each
+// Space — no column math, no greedy packing, no ResizeObserver. See the pair
+// invariant in useAppData.enforcePairInvariant.
+interface SpaceRow {
+  leftSpace: Space;
+  rightSpace?: Space;           // undefined → solo row
+  leftRatio: number;            // left space's share of the row; 1 for solo, [0.25, 0.75] for pair
 }
 
-interface SpaceLayout {
-  span: number;             // final rendered CSS grid span
-  rowIndex: number;
-  indexInRow: number;
-  isLastInRow: boolean;
-  isSoloInRow: boolean;
-  neighborId?: string;      // next space in the same row, if any
-}
-
-// Natural weight before row normalization: explicit widthWeight wins; otherwise
-// auto-pick based on item count + open/collapsed state.
-function computeSpaceNaturalWeight(s: Space, isOpen: boolean, totalCols: number, minSpan: number): number {
-  if (s.widthWeight !== undefined) {
-    return Math.max(minSpan, Math.min(totalCols, Math.round(s.widthWeight)));
+function computeRows(spaces: Space[]): SpaceRow[] {
+  const rows: SpaceRow[] = [];
+  let i = 0;
+  while (i < spaces.length) {
+    const cur = spaces[i];
+    const next = spaces[i + 1];
+    if (cur.pairedWithNext && next) {
+      const ratio = Math.max(0.25, Math.min(0.75, cur.splitRatio ?? 0.5));
+      rows.push({ leftSpace: cur, rightSpace: next, leftRatio: ratio });
+      i += 2;
+    } else {
+      rows.push({ leftSpace: cur, leftRatio: 1 });
+      i += 1;
+    }
   }
-  const visibleCount = s.items.filter(i => !i.hiddenInSpace).length;
-  if (!isOpen) return minSpan;
-  if (visibleCount >= 15) return totalCols;
-  if (visibleCount >= 7) return Math.max(minSpan, Math.ceil(totalCols / 2));
-  return minSpan;
+  return rows;
 }
 
-// Greedy left-to-right packing into rows, then:
-// - Solo row        → fills the whole row (span = totalCols)
-// - Multi-row       → last space absorbs remainder so row ≡ totalCols exactly
-//                     (Notion-like "row always full")
-function computeSpaceLayout(
+// ── Pair-aware drag drop ────────────────────────────────────────────────────
+// Given a source spaces array and a drop intent, return the new spaces array.
+// All pair flags are expressed declaratively on a row model, then flattened —
+// this avoids the "update-by-side-effect" traps of editing pairedWithNext on
+// one space without touching its neighbor.
+function applySpaceDrop(
   spaces: Space[],
-  totalCols: number,
-  isOpenOf: (id: string) => boolean,
-): Map<string, SpaceLayout> {
-  const MIN = spaceMinSpan(totalCols);
-  const info = new Map<string, SpaceLayout>();
+  draggedId: string,
+  targetId: string,
+  edge: 'left' | 'right' | 'center' | null,
+): Space[] | null {
+  const dragged = spaces.find(s => s.id === draggedId);
+  if (!dragged) return null;
 
-  const items = spaces.map(s => ({
-    space: s,
-    weight: computeSpaceNaturalWeight(s, isOpenOf(s.id), totalCols, MIN),
-  }));
+  // Work with the row model so pairing is always a structural property, never
+  // a stale bit on a space that happens to be next to the wrong neighbor.
+  const rows = computeRows(spaces);
 
-  const rows: Array<typeof items> = [];
-  let row: typeof items = [];
-  let sum = 0;
-  for (const item of items) {
-    if (sum + item.weight > totalCols && row.length > 0) {
-      rows.push(row);
-      row = [];
-      sum = 0;
+  // 1) Strip the dragged space from its current row.
+  //    - If it was solo:       drop the row entirely.
+  //    - If it was in a pair:  the partner becomes a solo row in place.
+  const stripped: SpaceRow[] = [];
+  for (const r of rows) {
+    if (r.leftSpace.id === draggedId) {
+      if (r.rightSpace) stripped.push({ leftSpace: r.rightSpace, leftRatio: 1 });
+      // solo row with dragged → skip
+    } else if (r.rightSpace?.id === draggedId) {
+      stripped.push({ leftSpace: r.leftSpace, leftRatio: 1 });
+    } else {
+      stripped.push(r);
     }
-    row.push(item);
-    sum += item.weight;
   }
-  if (row.length) rows.push(row);
 
-  rows.forEach((rowItems, rowIndex) => {
-    if (rowItems.length === 1) {
-      info.set(rowItems[0].space.id, {
-        span: totalCols, rowIndex, indexInRow: 0,
-        isLastInRow: true, isSoloInRow: true,
-      });
-      return;
+  // Strip any stale pair flag from the space we're moving — its new pair state
+  // is determined entirely by the drop edge below.
+  const cleanDragged: Space = { ...dragged, pairedWithNext: false, splitRatio: undefined };
+
+  // 2) Locate the target row in the stripped model.
+  const targetRowIdx = stripped.findIndex(r =>
+    r.leftSpace.id === targetId || r.rightSpace?.id === targetId
+  );
+  if (targetRowIdx === -1) {
+    // Target was the dragged itself (shouldn't happen — caller guards), or the
+    // target was removed in stripping. Fall through to a plain array reorder.
+    return flattenRows(stripped);
+  }
+
+  const targetRow = stripped[targetRowIdx];
+
+  // 3) Apply the drop. We REPLACE the target's row with one-or-two new rows.
+  const replacement: SpaceRow[] = (() => {
+    // Center → dragged becomes a solo row AFTER the target's row (pair preserved)
+    if (edge === 'center' || edge === null) {
+      return [targetRow, { leftSpace: cleanDragged, leftRatio: 1 }];
     }
-    const prefixSum = rowItems.slice(0, -1).reduce((a, b) => a + b.weight, 0);
-    const lastSpan = Math.max(MIN, totalCols - prefixSum);
-    rowItems.forEach((item, i) => {
-      const isLast = i === rowItems.length - 1;
-      info.set(item.space.id, {
-        span: isLast ? lastSpan : item.weight,
-        rowIndex, indexInRow: i,
-        isLastInRow: isLast,
-        isSoloInRow: false,
-        neighborId: isLast ? undefined : rowItems[i + 1].space.id,
-      });
-    });
-  });
 
-  return info;
+    // Left/right → pair dragged with the target space. If the target was already
+    // in a pair, the other partner gets kicked out to a solo row BEFORE or AFTER
+    // the new pair depending on which side was left alone.
+    const targetIsLeft = targetRow.leftSpace.id === targetId;
+    const otherInOldPair =
+      targetRow.rightSpace && targetIsLeft ? targetRow.rightSpace :
+      targetRow.rightSpace && !targetIsLeft ? targetRow.leftSpace :
+      undefined;
+    const targetSpace = targetIsLeft ? targetRow.leftSpace : targetRow.rightSpace!;
+
+    const newPair: SpaceRow = edge === 'left'
+      ? { leftSpace: cleanDragged, rightSpace: targetSpace, leftRatio: 0.5 }
+      : { leftSpace: targetSpace, rightSpace: cleanDragged, leftRatio: 0.5 };
+
+    if (!otherInOldPair) return [newPair];
+    // Kicked-out partner keeps its visual position relative to target:
+    //   target was LEFT, dropped RIGHT → partner was on the right, bump below
+    //   target was RIGHT, dropped LEFT → partner was on the left, bump above
+    const kickedRow: SpaceRow = { leftSpace: otherInOldPair, leftRatio: 1 };
+    return targetIsLeft ? [newPair, kickedRow] : [kickedRow, newPair];
+  })();
+
+  const nextRows = [
+    ...stripped.slice(0, targetRowIdx),
+    ...replacement,
+    ...stripped.slice(targetRowIdx + 1),
+  ];
+  return flattenRows(nextRows);
+}
+
+// Flatten the row model back into a Space[] with correct pairedWithNext /
+// splitRatio. Single source of truth for the array shape.
+function flattenRows(rows: SpaceRow[]): Space[] {
+  const out: Space[] = [];
+  for (const row of rows) {
+    if (row.rightSpace) {
+      out.push({
+        ...row.leftSpace,
+        pairedWithNext: true,
+        splitRatio: Math.max(0.25, Math.min(0.75, row.leftRatio)),
+      });
+      out.push({ ...row.rightSpace, pairedWithNext: false, splitRatio: undefined });
+    } else {
+      out.push({ ...row.leftSpace, pairedWithNext: false, splitRatio: undefined });
+    }
+  }
+  return out;
 }
 
 // ── File drag-and-drop helper ──────────────────────────────────────────────
@@ -428,33 +452,11 @@ export default function App() {
     justAddedTimerRef.current = setTimeout(() => setJustAddedItemIds(new Set()), 700);
   }, []);
 
-  // ── Adaptive master grid (Phase 2) ──────────────────────
-  // ResizeObserver drives totalCols off the grid container width. 1 unit ≈ 120px
-  // (tuned against a ~1440px target where 12 cols feel natural). We keep this as
-  // React state so spaceGridSpan() and SortableSpace can clamp widthWeight to
-  // whatever the current window actually fits.
+  // ── Adaptive container ref (Phase 3) ─────────────────────
+  // Pair-based layout doesn't need column counting — rows are either solo
+  // (100% width) or pair (fraction split). We keep a ref on the container for
+  // the drop-edge hit-test in onDragMove.
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
-  const [totalCols, setTotalCols] = useState<number>(8);
-  useEffect(() => {
-    const el = gridContainerRef.current;
-    if (!el) return;
-    const UNIT_PX = 120;
-    const MIN_COLS = 3;
-    const MAX_COLS = 12;
-    const measure = () => {
-      const w = el.clientWidth;
-      if (w <= 0) return;
-      const cols = Math.max(MIN_COLS, Math.min(MAX_COLS, Math.floor(w / UNIT_PX)));
-      setTotalCols(prev => prev === cols ? prev : cols);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    // Belt-and-suspenders: window resize as a fallback in case ResizeObserver is
-    // throttled (e.g. background tab) — measure() is idempotent via the setter guard.
-    window.addEventListener('resize', measure);
-    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
-  }, []);
 
   // ── CommandBar state ──────────────────────────────────────
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -1122,95 +1124,38 @@ export default function App() {
     useSensor(RightPointerSensor, { activationConstraint: { distance: 8 } })
   );
 
-  // Space reorder DnD
-  // Notion-style drop with three distinct outcomes depending on the edge zone
-  // that the cursor was in when released:
+  // Space reorder DnD (Phase 3 pair model)
   //
-  //   edge = 'left' or 'right'  (column-join)
-  //     Dragged space slides into target's row. We split the target's currently
-  //     rendered span 50/50 with the newcomer so the row stays visually balanced
-  //     AND row-sum stays constant (other row siblings untouched).
+  // Three drop outcomes based on the hovered edge of the target space T:
+  //   edge='left'   → pair becomes [dragged, T].  Any prior pair T was in is broken.
+  //   edge='right'  → pair becomes [T, dragged].  Any prior pair T was in is broken.
+  //   edge='center' → dragged becomes a SOLO row right after T (T's pair, if any, is
+  //                   preserved by inserting AFTER both sides of the pair).
+  //   no edge       → standard array reorder via arrayMove (positions only, pair
+  //                   flags cleared for both dragged and its old neighbor).
   //
-  //   edge = 'center'  (vertical drop, new row)
-  //     Dragged space lands after target on its own row. We force widthWeight
-  //     = totalCols so the layout's greedy packer wraps it onto a fresh row
-  //     even if it would otherwise have had space to join target's row.
-  //
-  //   no edge (dropped on empty area or no valid target)
-  //     Fall back to dnd-kit's reported `over` for a standard array reorder.
+  // Every path funnels into store.reorderSpaces, which re-applies the pair
+  // invariant (see enforcePairInvariant in useAppData).
   function handleSpaceDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     const activeId = active.id as string;
     const edge = dragOverEdge;
     setDragOverEdge(null);
 
-    const draggedIdx = data.spaces.findIndex(s => s.id === activeId);
+    const spaces = data.spaces;
+    const draggedIdx = spaces.findIndex(s => s.id === activeId);
     if (draggedIdx === -1) return;
 
-    if (edge && edge.overId !== activeId) {
-      const dragged = data.spaces[draggedIdx];
-      const withoutDragged = data.spaces.filter(s => s.id !== activeId);
-      const newTargetIdx = withoutDragged.findIndex(s => s.id === edge.overId);
-      if (newTargetIdx === -1) return;
-
-      if (edge.edge === 'center') {
-        const moved: Space = { ...dragged, widthWeight: totalCols };
-        const next = [...withoutDragged];
-        next.splice(newTargetIdx + 1, 0, moved);
-        store.reorderSpaces(next);
-        return;
-      }
-
-      // Column-join: split target's rendered span with the newcomer. We compute
-      // target's span based on the spaces list *without* the dragged space —
-      // that way, if the dragged was already a row-sibling of target (e.g.,
-      // same-row reorder), target reflows first (potentially becoming solo)
-      // and we get a clean span to halve.
-      const layoutAfterRemove = computeSpaceLayout(
-        withoutDragged, totalCols,
-        id => !(data.collapsedSpaceIds ?? []).includes(id),
-      );
-      const targetRendered = layoutAfterRemove.get(edge.overId)?.span ?? totalCols;
-      const MIN = spaceMinSpan(totalCols);
-
-      // If target can't accommodate a splitter at MIN+MIN, fall through to a
-      // vertical drop (newcomer on its own row after target) rather than
-      // producing a below-minimum sliver.
-      if (targetRendered < MIN * 2) {
-        const moved: Space = { ...dragged, widthWeight: totalCols };
-        const next = [...withoutDragged];
-        next.splice(newTargetIdx + 1, 0, moved);
-        store.reorderSpaces(next);
-        return;
-      }
-
-      const halfSpan = Math.floor(targetRendered / 2);
-      const draggedWeight = Math.max(MIN, Math.min(targetRendered - MIN, halfSpan));
-      const targetNewWeight = targetRendered - draggedWeight;
-
-      const moved: Space = { ...dragged, widthWeight: draggedWeight };
-      const insertAt = edge.edge === 'left' ? newTargetIdx : newTargetIdx + 1;
-      const next = [...withoutDragged];
-      next.splice(insertAt, 0, moved);
-      const finalSpaces = next.map(s =>
-        s.id === edge.overId ? { ...s, widthWeight: targetNewWeight } : s
-      );
-      store.reorderSpaces(finalSpaces);
-      return;
-    }
-
-    // Fallback: dnd-kit's standard reorder. `over.id` might be either the
-    // sortable id (space.id) or the file-drop droppable id (drop-space-<id>)
-    // because each space registers both — strip the prefix so findIndex finds
-    // the actual space array entry.
-    if (!over || activeId === over.id) return;
-    const overIdRaw = String(over.id);
+    // Strip "drop-space-" prefix from dnd-kit's `over.id` fallback.
+    const overIdRaw = over ? String(over.id) : '';
     const overId = overIdRaw.startsWith('drop-space-') ? overIdRaw.slice('drop-space-'.length) : overIdRaw;
-    if (activeId === overId) return;
-    const oldIdx = data.spaces.findIndex(s => s.id === activeId);
-    const newIdx = data.spaces.findIndex(s => s.id === overId);
-    if (oldIdx === -1 || newIdx === -1) return;
-    store.reorderSpaces(arrayMove(data.spaces, oldIdx, newIdx));
+
+    // Targeted edge drop (left/right/center) wins over dnd-kit's generic `over`.
+    const targetId = edge?.overId ?? overId;
+    if (!targetId || targetId === activeId) return;
+
+    const next = applySpaceDrop(spaces, activeId, targetId, edge?.edge ?? null);
+    if (next) store.reorderSpaces(next);
   }
 
   // Item DnD (cross-space)
@@ -1776,40 +1721,23 @@ export default function App() {
               </div>
             )}
 
-            {/* ── Space ordering DnD (Adaptive Row: grid-auto-flow:dense) ── */}
+            {/* ── Space ordering DnD (Phase 3: solo/pair rows) ── */}
               <SortableContext items={filteredSpaces.map(s => s.id)} strategy={rectSortingStrategy}>
 
-                  <div
-                    ref={gridContainerRef}
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: `repeat(${totalCols}, minmax(0, 1fr))`,
-                      gridAutoFlow: 'dense',
-                      gap: 8,
-                      alignItems: 'stretch',
-                    }}
-                  >
-                    {(() => {
-                      const minSpan = spaceMinSpan(totalCols);
-                      const layout = computeSpaceLayout(
-                        filteredSpaces,
-                        totalCols,
-                        sid => !(data.collapsedSpaceIds ?? []).includes(sid),
-                      );
-                      return filteredSpaces.map((space) => {
-                      const info = layout.get(space.id);
-                      const renderedSpan = info?.span ?? minSpan;
-                      const neighborId = info?.neighborId;
-                      return (
+                  {(() => {
+                    // Build rows from the currently filtered (search-aware) spaces.
+                    // Rendering is a vertical flex column of rows; each row is a
+                    // CSS grid with 1 column (solo) or two fractional columns (pair).
+                    const rows = computeRows(filteredSpaces);
+
+                    const renderSpace = (space: Space, pairPartnerId?: string, currentSplitRatio?: number) => (
                       <SortableSpace
                         key={space.id}
                         id={space.id}
-                        span={renderedSpan}
-                        totalCols={totalCols}
-                        minSpan={minSpan}
-                        neighborId={neighborId}
                         dropEdge={dragOverEdge?.overId === space.id ? dragOverEdge.edge : undefined}
-                        onWeightsChange={updates => store.setSpacesWidthWeights(updates)}
+                        pairPartnerId={pairPartnerId}
+                        currentSplitRatio={currentSplitRatio}
+                        onSplitRatioChange={pairPartnerId ? (r => store.setPairSplitRatio(space.id, r)) : undefined}
                       >
                         {dragActivator => (
                           <SpaceAccordion
@@ -1817,15 +1745,13 @@ export default function App() {
                             headerDragActivator={dragActivator}
                             onRename={name => store.renameSpace(space.id, name)}
                             onDelete={() => handleDeleteSpace(space.id)}
-                          onDuplicate={() => store.duplicateSpace(space.id)}
+                            onDuplicate={() => store.duplicateSpace(space.id)}
                             onSetColor={color => store.setSpaceColor(space.id, color)}
-                          onSetIcon={icon => store.setSpaceIcon(space.id, icon)}
-                          onToggleCollapse={() => store.toggleSpaceCollapsed(space.id)}
+                            onSetIcon={icon => store.setSpaceIcon(space.id, icon)}
+                            onToggleCollapse={() => store.toggleSpaceCollapsed(space.id)}
                             onEditItem={item => openEditItem(item, space.id)}
                             onDeleteItem={itemId => handleDeleteItem(space.id, itemId)}
-                            onIncrementClick={itemId => {
-                              store.incrementClickCount(space.id, itemId);
-                            }}
+                            onIncrementClick={itemId => store.incrementClickCount(space.id, itemId)}
                             onSortByUsage={() => store.sortSpaceByUsage(space.id)}
                             onTogglePin={itemId => handleTogglePin(space, itemId)}
                             onQuickAdd={() => openQuickAdd(space.id)}
@@ -1850,10 +1776,35 @@ export default function App() {
                           />
                         )}
                       </SortableSpace>
-                      );
-                    });
-                    })()}
-                  </div>
+                    );
+
+                    return (
+                      <div
+                        ref={gridContainerRef}
+                        style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+                      >
+                        {rows.map(row => {
+                          const isPair = !!row.rightSpace;
+                          return (
+                            <div
+                              key={row.leftSpace.id}
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: isPair
+                                  ? `${row.leftRatio}fr ${1 - row.leftRatio}fr`
+                                  : '1fr',
+                                gap: 8,
+                                alignItems: 'stretch',
+                              }}
+                            >
+                              {renderSpace(row.leftSpace, isPair ? row.rightSpace!.id : undefined, row.leftRatio)}
+                              {row.rightSpace && renderSpace(row.rightSpace)}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
 
               </SortableContext>
 

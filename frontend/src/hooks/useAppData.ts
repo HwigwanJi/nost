@@ -32,26 +32,50 @@ function defaultData(): AppData {
   };
 }
 
+// Ensure the pair-chain invariant: at most one pair per row (no [A→B→C] chain).
+// Also fix dangling pairs where pairedWithNext=true but there's no next space.
+// This runs on every load and on every mutation that could violate the invariant.
+export function enforcePairInvariant(spaces: Space[]): Space[] {
+  const out = spaces.map(s => ({ ...s }));
+  for (let i = 0; i < out.length; i++) {
+    const cur = out[i];
+    if (!cur.pairedWithNext) continue;
+    // No next space to pair with → cannot be paired
+    if (i === out.length - 1) {
+      cur.pairedWithNext = false;
+      cur.splitRatio = undefined;
+      continue;
+    }
+    // Breaking a chain: if the next space also has pairedWithNext=true, clear
+    // the next's flag so the pair is [i, i+1] only, and i+2 starts a new row.
+    const nxt = out[i + 1];
+    if (nxt.pairedWithNext) {
+      nxt.pairedWithNext = false;
+      nxt.splitRatio = undefined;
+    }
+  }
+  return out;
+}
+
 function migrateData(parsed: AppData): AppData {
   parsed.settings = { ...parsed.settings, theme: parsed.settings.theme ?? 'dark', autoLaunch: parsed.settings.autoLaunch ?? false, autoHide: parsed.settings.autoHide ?? false, accentColor: parsed.settings.accentColor ?? '#6366f1', documentExtensions: parsed.settings.documentExtensions ?? [] };
   parsed.collapsedSpaceIds = parsed.collapsedSpaceIds ?? [];
   parsed.nodeGroups = parsed.nodeGroups ?? [];
   parsed.spaces = parsed.spaces.map(s => {
-    // Migrate legacy columnSpan(1|2) → widthWeight on a 12-col master grid.
-    // 1 ≈ 1/3 of row → 4 units | 2 ≈ 2/3 → 8 units. Keep undefined if neither set → auto-span.
-    let widthWeight = s.widthWeight;
-    if (widthWeight === undefined && s.columnSpan !== undefined) {
-      widthWeight = s.columnSpan === 2 ? 8 : 4;
-    }
-    const { columnSpan: _ignored, ...rest } = s;
+    // Phase 3: drop legacy widthWeight/columnSpan. New model uses pairedWithNext
+    // + splitRatio (see types.ts). Existing spaces load as solo by default; users
+    // can re-pair via drag. Preserve any already-set pair state for re-loads.
+    const { columnSpan: _cs, widthWeight: _ww, ...rest } = s;
     return {
       ...rest,
       sortMode: s.sortMode ?? 'custom',
       pinnedIds: s.pinnedIds ?? [],
-      widthWeight,
+      pairedWithNext: s.pairedWithNext ?? false,
+      splitRatio: s.pairedWithNext ? (s.splitRatio ?? 0.5) : undefined,
       items: s.items.map(i => ({ ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false })),
     };
   });
+  parsed.spaces = enforcePairInvariant(parsed.spaces);
   // F5 migration: flat dismissedSuggestions[] → dismissals{ value: { at, count } }.
   // We fold the legacy list in with a synthetic timestamp of 0 so it still reads
   // as "long ago" — cooldown check will let it reappear if signal strengthens.
@@ -154,8 +178,11 @@ export function useAppData() {
     save({ ...data, spaces: data.spaces.filter(s => s.id !== id) });
   }, [data, save]);
 
+  // Reorder entry point. All drag operations funnel here — we always enforce the
+  // pair invariant after reordering so the saved state can never have a [A→B→C]
+  // chain or a dangling pairedWithNext at the tail.
   const reorderSpaces = useCallback((newSpaces: Space[]) => {
-    save({ ...data, spaces: newSpaces });
+    save({ ...data, spaces: enforcePairInvariant(newSpaces) });
   }, [data, save]);
 
   const setSpaceColor = useCallback((id: string, color: string) => {
@@ -172,16 +199,16 @@ export function useAppData() {
     });
   }, [data, save]);
 
-  // Batch setter for Notion-style paired resize: zero-sum updates across row
-  // siblings must land in a single state commit, otherwise two sequential
-  // setSpaceWidthWeight calls close over stale `data` and clobber each other.
-  const setSpacesWidthWeights = useCallback((updates: Array<{ id: string; widthWeight: number }>) => {
-    if (updates.length === 0) return;
-    const idMap = new Map(updates.map(u => [u.id, u.widthWeight] as const));
+  // Pair split-ratio setter. The handle sits between the two paired spaces and
+  // dragging it adjusts how the row's width is divided. Only the LEFT space of a
+  // pair stores the ratio (single source of truth); clamped to [0.25, 0.75] so
+  // neither side collapses below a usable width.
+  const setPairSplitRatio = useCallback((leftSpaceId: string, ratio: number) => {
+    const clamped = Math.max(0.25, Math.min(0.75, ratio));
     setDataRaw(prev => {
       const next: AppData = {
         ...prev,
-        spaces: prev.spaces.map(s => idMap.has(s.id) ? { ...s, widthWeight: idMap.get(s.id)! } : s),
+        spaces: prev.spaces.map(s => s.id === leftSpaceId ? { ...s, splitRatio: clamped } : s),
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
       electronAPI.storeSave(next);
@@ -514,7 +541,7 @@ export function useAppData() {
     reorderSpaces,
     setSpaceColor,
     setSpaceIcon,
-    setSpacesWidthWeights,
+    setPairSplitRatio,
     duplicateSpace,
     toggleSpaceCollapsed,
     sortSpaceByUsage,

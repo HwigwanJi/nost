@@ -32,10 +32,21 @@ export interface Space {
   icon?: string;  // emoji or material symbol name
   sortMode?: 'custom' | 'usage';
   pinnedIds?: string[];
-  // Virtual 12-column weight (1 unit ≈ 1/12 of row). clamped at runtime to current totalCols.
-  // Legacy `columnSpan: 1|2` is migrated to 4 / 8 in migrateData().
+
+  // ── Layout pairing (Phase 3) ───────────────────────────────
+  // Rows are either solo (1 space, full width) or a pair (2 spaces splitting the
+  // width). `pairedWithNext=true` means this space shares its row with the NEXT
+  // space in the array. Enforced invariant (see enforcePairInvariant): a chain
+  // of pairs is impossible — `spaces[i].pairedWithNext === true` guarantees
+  // `spaces[i+1].pairedWithNext === false`.
+  pairedWithNext?: boolean;
+  // Fraction of the pair's width occupied by THIS (the left) space. Only read
+  // when pairedWithNext is true. Clamped to [0.25, 0.75]; default 0.5.
+  splitRatio?: number;
+
+  /** @deprecated replaced by pairedWithNext/splitRatio; dropped in migrateData() */
   widthWeight?: number;
-  /** @deprecated kept for migration only — read once in migrateData() and converted to widthWeight */
+  /** @deprecated replaced by pairedWithNext/splitRatio; dropped in migrateData() */
   columnSpan?: 1 | 2;
 }
 
