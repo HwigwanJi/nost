@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>nost floating</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: transparent !important;
+        overflow: hidden;
+        /* The BrowserWindow itself is transparent + frameless. No default padding. */
+        -webkit-app-region: no-drag;
+        user-select: none;
+        cursor: default;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="floating-root"></div>
+    <script type="module" src="/src/floating/index.tsx"></script>
+  </body>
+</html>

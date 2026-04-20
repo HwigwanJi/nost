@@ -25,6 +25,7 @@ export interface ElectronAPI {
   storeSave: (data: unknown) => Promise<boolean>;
   getWindowPosition: () => Promise<[number, number]>;
   moveWindow: (x: number, y: number) => void;
+  windowDragEnd: () => void;
   exportData: () => Promise<{ success: boolean; filePath?: string; reason?: string }>;
   importData: () => Promise<{ success: boolean; data?: unknown; reason?: string }>;
   pickFolder: () => Promise<string | null>;
@@ -68,11 +69,16 @@ export interface ElectronAPI {
   getMonitors: () => Promise<Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>>;
   identifyMonitors: () => Promise<{ count: number }>;
   getUserHome: () => string;
+  getFilePath: (file: File) => string | null;
   openGuide: () => void;
   signalReady: () => void;
   setLoadingStatus: (msg: string) => void;
   log: (level: 'debug' | 'info' | 'warn' | 'error', msg: string, extra?: unknown) => void;
   openLogsFolder: () => void;
+  // Floating orb (Phase 1)
+  notifyFloatingSettingsChanged: () => void;
+  onFloatingSettingsChanged: (cb: () => void) => void;
+  onFloatingOpenSettings: (cb: () => void) => void;
 }
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
@@ -95,6 +101,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   storeSave: async () => true,
   getWindowPosition: async () => [0, 0] as [number, number],
   moveWindow: noop,
+  windowDragEnd: noop,
   exportData: async () => ({ success: false, reason: 'dev-mode' }),
   importData: async () => ({ success: false, reason: 'dev-mode' }),
   pickFolder: async () => null,
@@ -123,9 +130,13 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   getMonitors: async () => [],
   identifyMonitors: async () => ({ count: 1 }),
   getUserHome: () => '',
+  getFilePath: () => null,
   openGuide: noop,
   signalReady: noop,
   setLoadingStatus: noop,
   log: noop,
   openLogsFolder: noop,
+  notifyFloatingSettingsChanged: noop,
+  onFloatingSettingsChanged: noop,
+  onFloatingOpenSettings: noop,
 };

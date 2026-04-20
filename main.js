@@ -33,8 +33,39 @@ const store = new Store({ name: 'nost-data' });
 // ── 2. Module-level globals ──────────────────────────────────────────
 let mainWindow;
 let loadingWindow    = null;
+let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
 let tray             = null;
 let currentShortcut  = 'Alt+4';
+
+// Drag session state for the floating orb.
+//
+// Design: the renderer sends `floating-drag-start` only AFTER the pointer has
+// moved past a 4 px dead-zone (so bare clicks never enter drag mode). Main
+// then polls getCursorScreenPoint() at 60 Hz and sets window position so the
+// cursor stays pinned to its initial offset inside the orb. This is
+// DPI-scaling-safe and immune to renderer screenX jitter.
+//
+// Robustness — three watchdogs guard against stuck intervals:
+//   1. `drag-end`          — fires on every pointer release (incl. cancel)
+//   2. heartbeat timeout   — if the renderer stops sending heartbeats for
+//                            500 ms (e.g. crash, lost pointer capture) we
+//                            end the drag automatically
+//   3. absolute ceiling    — a drag is force-ended after 60 s no matter what
+let floatingDragOffset    = null;  // { ox, oy } — cursor offset inside window
+let floatingDragInterval  = null;  // 60Hz position-update timer
+let floatingDragWatchdog  = null;  // heartbeat-expiry timer
+let floatingDragCeiling   = null;  // absolute 60s ceiling timer
+
+function endFloatingDrag(persist = true) {
+  if (floatingDragInterval)  { clearInterval(floatingDragInterval);   floatingDragInterval  = null; }
+  if (floatingDragWatchdog)  { clearTimeout(floatingDragWatchdog);    floatingDragWatchdog  = null; }
+  if (floatingDragCeiling)   { clearTimeout(floatingDragCeiling);     floatingDragCeiling   = null; }
+  floatingDragOffset = null;
+  if (persist && floatingWindow && !floatingWindow.isDestroyed()) {
+    const [x, y] = floatingWindow.getPosition();
+    saveFloatingPosition(x, y);
+  }
+}
 
 // ── Update download state ─────────────────────────────────────────────
 // Shared by auto-updater event handlers and tray menu builder so the
@@ -89,6 +120,90 @@ function getMonitorWorkArea(monitorIndex) {
 }
 
 /**
+ * ONE place that prepares the QL_SCREEN_* env block for EVERY PS window
+ * placement call. Electron's monitor enumeration is the single source of
+ * truth; PS's own System.Windows.Forms.Screen order can differ and has
+ * caused "monitor 1 vs 2" flip-flopping across the card / node / deck /
+ * snap paths.
+ *
+ * ── Coordinate system conversion ──────────────────────────────────
+ * Electron reports in its own DIP space where:
+ *   - Each display has its native DIP size (bounds.width/height at its scale)
+ *   - Positions accumulate in a unified space based on PRIMARY's scale
+ *
+ * PS (per-monitor aware, default on Windows 10+) uses PHYSICAL pixels for
+ * MoveWindow. Passing Electron DIPs directly puts windows on the wrong
+ * physical monitor whenever primary ≠ secondary DPI. Example:
+ *   Electron: secondary starts at DIP x=1536 (primary is 1536 DIP wide)
+ *   PS phys : secondary starts at px 1920  (primary is 1920 physical wide)
+ *   1536 ≠ 1920 → window lands on primary's right edge, not secondary.
+ *
+ * Translation rule (verified against this user's setup):
+ *   phys_x = dip_x * primary_scale    (positions use primary scale)
+ *   phys_y = dip_y * primary_scale
+ *   phys_w = dip_w * display_scale    (sizes use each display's own scale)
+ *   phys_h = dip_h * display_scale
+ */
+function monitorEnvFor(monitorIndex) {
+  const screen   = getScreen();
+  const displays = screen.getAllDisplays();
+  const primary  = screen.getPrimaryDisplay();
+  const primaryScale = primary.scaleFactor || 1;
+
+  const disp = (monitorIndex >= 1 && monitorIndex <= displays.length)
+    ? displays[monitorIndex - 1]
+    : primary;
+  const dispScale = disp.scaleFactor || 1;
+  const wa = disp.workArea;
+
+  const physX = Math.round(wa.x      * primaryScale);
+  const physY = Math.round(wa.y      * primaryScale);
+  const physW = Math.round(wa.width  * dispScale);
+  const physH = Math.round(wa.height * dispScale);
+
+  // ── Per-edge border safety ────────────────────────────────────────
+  //
+  // The tile layout normally pads each side by -8 / +8 px so the window
+  // chrome hides the work-area edge (nice-maximized look). But when the
+  // *target* monitor sits next to a *different-DPI* monitor, that 8 px
+  // overshoot lands the window 8 px inside the neighbour — and Windows
+  // sees a cross-DPI straddle, fires WM_DPICHANGED on the app, which then
+  // self-resizes by the neighbour's scale factor. Claude at 1048 → 1310
+  // (= 1048×1.25) is the textbook case.
+  //
+  // Fix: on edges that touch a DPI-mismatched neighbour, set border = 0.
+  // The visible seam on that edge is a small cosmetic cost; the window
+  // size and bottom-cut problem disappears.
+  const b = disp.bounds;
+  const touchesMismatched = (side) => displays.some(other => {
+    if (other.id === disp.id) return false;
+    if (other.scaleFactor === disp.scaleFactor) return false;
+    const o = other.bounds;
+    // Horizontal seam — vertical overlap + touching x edge
+    const vOverlap = !(b.y + b.height <= o.y || o.y + o.height <= b.y);
+    const hOverlap = !(b.x + b.width  <= o.x || o.x + o.width  <= b.x);
+    if (side === 'left'  ) return vOverlap && (o.x + o.width  === b.x);
+    if (side === 'right' ) return vOverlap && (b.x + b.width  === o.x);
+    if (side === 'top'   ) return hOverlap && (o.y + o.height === b.y);
+    if (side === 'bottom') return hOverlap && (b.y + b.height === o.y);
+    return false;
+  });
+
+  return {
+    QL_SCREEN_X: String(physX),
+    QL_SCREEN_Y: String(physY),
+    QL_SCREEN_W: String(physW),
+    QL_SCREEN_H: String(physH),
+    QL_MONITOR:  String(monitorIndex ?? 0),
+    // 0 = unsafe to overshoot (different-DPI neighbour). 8 = safe.
+    QL_BORDER_LEFT:   touchesMismatched('left')   ? '0' : '8',
+    QL_BORDER_RIGHT:  touchesMismatched('right')  ? '0' : '8',
+    QL_BORDER_TOP:    touchesMismatched('top')    ? '0' : '8',
+    QL_BORDER_BOTTOM: touchesMismatched('bottom') ? '0' : '8',
+  };
+}
+
+/**
  * Safely send an IPC message to the renderer.
  * No-ops silently if mainWindow has been destroyed.
  */
@@ -104,18 +219,32 @@ function sendSafe(channel, payload) {
  */
 function runPsAsync(scriptName, envVars = {}, opts = {}) {
   return new Promise((resolve, reject) => {
+    // Force PowerShell to emit UTF-8 so non-ASCII error messages (Korean
+    // system errors, file paths with CJK chars) survive the exec round-trip
+    // unmangled. Without this, PS defaults to the OS code page (CP949 on
+    // Korean Windows) which we then mis-decode as UTF-8 → "占쏙옙" soup.
+    const scriptPath = ps(scriptName).replace(/'/g, "''");
+    const cmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `
+              + `"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
+              + `$OutputEncoding=[System.Text.Encoding]::UTF8; `
+              + `& '${scriptPath}'"`;
     exec(
-      `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps(scriptName)}"`,
+      cmd,
       {
         shell:     false,
         maxBuffer: opts.maxBuffer ?? 1024 * 1024 * 2,
         timeout:   opts.timeout   ?? 30000,
-        encoding:  opts.encoding,
+        // Explicit 'utf8' — passing `undefined` here makes Node return
+        // Buffer objects, which breaks callers that chain .trim()/.toUpperCase().
+        encoding:  opts.encoding ?? 'utf8',
         env:       { ...process.env, ...envVars },
       },
       (err, stdout, stderr) => {
         if (err) reject(err);
-        else resolve({ stdout, stderr });
+        else resolve({
+          stdout: typeof stdout === 'string' ? stdout : stdout?.toString('utf8') ?? '',
+          stderr: typeof stderr === 'string' ? stderr : stderr?.toString('utf8') ?? '',
+        });
       }
     );
   });
@@ -351,26 +480,40 @@ body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%)
  * Includes a 150 ms debounce lock to prevent rapid-fire keypresses from
  * creating a show/hide race — which can leave a blank frame on screen.
  */
+/**
+ * Show/hide the main launcher window with the same debounced, GPU-safe
+ * logic used by the global shortcut. Exposed so other triggers (tray,
+ * floating FAB) can invoke it without duplicating the safeguards.
+ */
+function toggleMainWindow() {
+  if (!mainWindow) return;
+  if (_toggleLocked) return;
+  _toggleLocked = true;
+  setTimeout(() => { _toggleLocked = false; }, 150);
+
+  if (mainWindow.isVisible()) {
+    mainWindow.hide();
+  } else {
+    mainWindow.show();
+    mainWindow.focus();
+    // Force a GPU repaint after show — transparent windows can lose their
+    // compositor backing store during rapid hide/show cycles.
+    mainWindow.webContents.invalidate();
+  }
+
+  // Main may be raised to the top; re-assert the orb's screen-saver level so
+  // it stays above the launcher and the user can click it to toggle again.
+  if (floatingWindow && !floatingWindow.isDestroyed()) {
+    floatingWindow.setAlwaysOnTop(true, 'screen-saver');
+    floatingWindow.moveTop();
+  }
+}
+
 function registerShortcut(newShortcut) {
   if (currentShortcut) globalShortcut.unregister(currentShortcut);
   currentShortcut = newShortcut;
 
-  const registered = globalShortcut.register(currentShortcut, () => {
-    // Ignore presses within 150 ms of the previous toggle
-    if (_toggleLocked) return;
-    _toggleLocked = true;
-    setTimeout(() => { _toggleLocked = false; }, 150);
-
-    if (mainWindow.isVisible()) {
-      mainWindow.hide();
-    } else {
-      mainWindow.show();
-      mainWindow.focus();
-      // Force a GPU repaint after show — transparent windows can lose their
-      // compositor backing store during rapid hide/show cycles.
-      mainWindow.webContents.invalidate();
-    }
-  });
+  const registered = globalShortcut.register(currentShortcut, toggleMainWindow);
 
   if (!registered) console.warn(`[Shortcut] Failed to register "${newShortcut}"`);
 }
@@ -402,6 +545,146 @@ function centeredBounds(pct = 75) {
     y: wa.y + Math.round((wa.height - h) / 2),
     width: w, height: h,
   };
+}
+
+// ── Floating orb window (Phase 1 MVP) ────────────────────────────────
+//
+// A separate always-on-top, frameless, transparent BrowserWindow that hosts
+// a single 48px orb. Clicking the orb toggles mainWindow (same effect as
+// pressing the global shortcut). Users can drag the window to reposition it;
+// the final position is persisted to electron-store so it survives restarts.
+//
+// The window is 8px larger than the orb on each axis to give the drop shadow
+// room — this avoids visible clipping that would otherwise need a non-trivial
+// overlay mask. Size scales with the `size` setting ("small" | "normal").
+
+// How big the BrowserWindow is vs. how big the visible orb is.
+// Window = orb + 2 * glowPadding (per side).
+//
+// The orb's drop-shadow extends ~28px blur + 10px offset; we need the window
+// to be large enough that the shadow renders without being clipped at the
+// transparent window edge. 22px on each side gives comfortable headroom on
+// hover (when the halo is at its widest) without wasting screen real estate.
+const FLOATING_ORB_GLOW_PAD = 22;
+
+function floatingWindowSizeFor(sizePreset) {
+  const orbPx = sizePreset === 'small' ? 40 : 48;
+  const winPx = orbPx + FLOATING_ORB_GLOW_PAD * 2;
+  return { orbPx, winPx };
+}
+
+/** Default orb position: bottom-right of the primary display, with a comfy inset. */
+function defaultFloatingPosition(winPx) {
+  const primary = getScreen().getPrimaryDisplay();
+  const wa = primary.workArea;
+  return {
+    x: wa.x + wa.width  - winPx - 24,
+    y: wa.y + wa.height - winPx - 24,
+  };
+}
+
+/** Read current floating settings from the persisted data blob. */
+function getFloatingSettings() {
+  const data = store.get('appData') || {};
+  const fb = data?.settings?.floatingButton;
+  return {
+    enabled:         !!fb?.enabled,
+    idleOpacity:     typeof fb?.idleOpacity === 'number' ? fb.idleOpacity : 0.65,
+    size:            fb?.size === 'small' ? 'small' : 'normal',
+    hideOnFullscreen: fb?.hideOnFullscreen !== false,
+    position:        fb?.position ?? null,
+    // Inherit the main app's accent so the orb's border + logo mark stay on-brand.
+    // Falls back to the default indigo if the user hasn't customized.
+    accentColor:     data?.settings?.accentColor ?? '#6366f1',
+  };
+}
+
+/** Persist an updated position back into the settings blob. */
+function saveFloatingPosition(x, y) {
+  const data = store.get('appData') || {};
+  data.settings = data.settings || {};
+  data.settings.floatingButton = {
+    ...(data.settings.floatingButton ?? {}),
+    position: { x, y },
+  };
+  store.set('appData', data);
+}
+
+function createFloatingWindow() {
+  if (floatingWindow && !floatingWindow.isDestroyed()) return floatingWindow;
+
+  const settings = getFloatingSettings();
+  const { winPx } = floatingWindowSizeFor(settings.size);
+  const pos = settings.position ?? defaultFloatingPosition(winPx);
+
+  floatingWindow = new BrowserWindow({
+    width: winPx, height: winPx,
+    x: Math.round(pos.x), y: Math.round(pos.y),
+    frame: false, transparent: true, resizable: false,
+    alwaysOnTop: true, skipTaskbar: true, focusable: true,
+    hasShadow: false,           // orb draws its own shadow
+    minimizable: false, maximizable: false, fullscreenable: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-floating.js'),
+      contextIsolation: true,
+      nodeIntegration:  false,
+      backgroundThrottling: false,
+    },
+  });
+
+  // Pin above ALL other windows, including fullscreen-capable ones, so the
+  // orb behaves consistently across desktops.
+  floatingWindow.setAlwaysOnTop(true, 'screen-saver');
+  floatingWindow.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
+  if (rendererUrl) {
+    floatingWindow.loadURL(`${rendererUrl}/floating.html`);
+  } else {
+    floatingWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'floating.html'));
+  }
+
+  floatingWindow.once('ready-to-show', () => {
+    floatingWindow.webContents.send('floating-settings', {
+      idleOpacity: settings.idleOpacity,
+      size:        settings.size,
+      accentColor: settings.accentColor,
+    });
+    floatingWindow.show();
+  });
+
+  floatingWindow.on('closed', () => { floatingWindow = null; });
+
+  return floatingWindow;
+}
+
+/** Ensure the floating window matches the current enabled flag. */
+function syncFloatingWindow() {
+  const { enabled } = getFloatingSettings();
+  if (enabled) {
+    if (!floatingWindow || floatingWindow.isDestroyed()) createFloatingWindow();
+  } else if (floatingWindow && !floatingWindow.isDestroyed()) {
+    floatingWindow.destroy();
+    floatingWindow = null;
+  }
+}
+
+/** Push refreshed visual settings (size, opacity) into the live orb. */
+function refreshFloatingVisuals() {
+  if (!floatingWindow || floatingWindow.isDestroyed()) return;
+  const settings = getFloatingSettings();
+  const { winPx } = floatingWindowSizeFor(settings.size);
+  const [curW, curH] = floatingWindow.getSize();
+  if (curW !== winPx || curH !== winPx) {
+    const [x, y] = floatingWindow.getPosition();
+    floatingWindow.setBounds({ x, y, width: winPx, height: winPx });
+  }
+  floatingWindow.webContents.send('floating-settings', {
+    idleOpacity: settings.idleOpacity,
+    size:        settings.size,
+    accentColor: settings.accentColor,
+  });
 }
 
 function createWindow() {
@@ -638,9 +921,36 @@ function checkForUpdateAsync() {
 // The tray menu is rebuilt dynamically whenever the update download state
 // changes so that the user always sees accurate status at a glance.
 
+/**
+ * Flip the floating-button on/off and propagate the change end-to-end:
+ * store → orb window lifecycle → tray menu → main window renderer state.
+ * Shared between tray menu and orb right-click menu so both paths stay in sync.
+ */
+function setFloatingEnabled(enabled) {
+  const data = store.get('appData') || {};
+  data.settings = data.settings || {};
+  data.settings.floatingButton = {
+    ...(data.settings.floatingButton ?? {}),
+    enabled,
+  };
+  store.set('appData', data);
+  syncFloatingWindow();
+  rebuildTrayMenu();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    // Tell the React layer to pull fresh settings so the Settings UI toggle
+    // reflects the new state the next time the user opens the dialog.
+    mainWindow.webContents.send('floating-settings-changed');
+  }
+}
+
 /** Build the menu template for the current updateState. */
 function buildTrayTemplate() {
   const versionLabel = `버전 ${app.getVersion()}`;
+  const fbEnabled = !!getFloatingSettings().enabled;
+  const floatingToggleItem = {
+    label: fbEnabled ? '플로팅 버튼 숨기기' : '플로팅 버튼 표시',
+    click: () => setFloatingEnabled(!fbEnabled),
+  };
 
   // ── Update fully downloaded — offer install ───────────────────────
   if (updateState === 'downloaded') {
@@ -661,6 +971,7 @@ function buildTrayTemplate() {
           });
         },
       },
+      floatingToggleItem,
       { type: 'separator' },
       { label: '종료', click: () => { app.isQuitting = true; app.quit(); } },
     ];
@@ -671,6 +982,7 @@ function buildTrayTemplate() {
     return [
       { label: versionLabel, enabled: false },
       { label: `⬇︎ v${updateNewVersion} 다운로드 중... ${updatePct}%`, enabled: false },
+      floatingToggleItem,
       { type: 'separator' },
       { label: '종료', click: () => { app.isQuitting = true; app.quit(); } },
     ];
@@ -726,6 +1038,7 @@ function buildTrayTemplate() {
         }
       },
     },
+    floatingToggleItem,
     { type: 'separator' },
     { label: '종료', click: () => { app.isQuitting = true; app.quit(); } },
   ];
@@ -755,14 +1068,29 @@ function registerIpcHandlers() {
   /** Hide the launcher window (e.g. after a card action). */
   ipcMain.on('hide-app', () => mainWindow.hide());
 
-  /** Move the window to an absolute screen position (right-click drag). */
-  // Lock size explicitly so right-click drag can never accidentally trigger a
-  // Windows Aero Snap resize — we write width/height back on every move.
+  /**
+   * Move the window to an absolute screen position (right-click drag).
+   *
+   * Size-drift fix: rather than read `getBounds().width/height` on every move,
+   * we latch the width/height at first drag frame and reuse it until the drag
+   * ends. Reading getBounds() mid-drag can return DWM-rounded values that, when
+   * fed back into setBounds, produce a one-pixel creep per frame — over many
+   * frames the window noticeably grows. `window-drag-end` resets the cache so
+   * subsequent resizes by the user are picked up.
+   */
+  let dragSizeCache = null;  // { width, height } | null
   ipcMain.on('window-move', (_, x, y) => {
     if (!mainWindow) return;
-    const { width, height } = mainWindow.getBounds();
-    mainWindow.setBounds({ x: Math.round(x), y: Math.round(y), width, height });
+    if (!dragSizeCache) {
+      const b = mainWindow.getBounds();
+      dragSizeCache = { width: b.width, height: b.height };
+    }
+    mainWindow.setBounds({
+      x: Math.round(x), y: Math.round(y),
+      width: dragSizeCache.width, height: dragSizeCache.height,
+    });
   });
+  ipcMain.on('window-drag-end', () => { dragSizeCache = null; });
 
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() ?? [0, 0]);
 
@@ -805,7 +1133,24 @@ function registerIpcHandlers() {
   ipcMain.handle('get-file-icon', async (_, filePath) => {
     try {
       if (!filePath || !fs.existsSync(filePath)) return null;
-      const icon = await app.getFileIcon(filePath, { size: 'large' });
+
+      // For .lnk files, Electron's app.getFileIcon() returns the generic
+      // "shortcut arrow overlay" icon — useless. Resolve the shortcut's
+      // IconLocation or TargetPath via a PS helper so we feed the real
+      // source to getFileIcon and get the target app's actual icon.
+      let iconSource = filePath;
+      if (filePath.toLowerCase().endsWith('.lnk')) {
+        try {
+          const { stdout } = await runPsAsync('resolve-lnk-icon.ps1',
+            { QL_PATH: filePath }, { timeout: 3000 });
+          const resolved = String(stdout ?? '').trim();
+          if (resolved && fs.existsSync(resolved)) {
+            iconSource = resolved;
+          }
+        } catch { /* fall through to raw .lnk */ }
+      }
+
+      const icon = await app.getFileIcon(iconSource, { size: 'large' });
       return icon.toDataURL() || null;
     } catch { return null; }
   });
@@ -921,9 +1266,24 @@ function registerIpcHandlers() {
     if (closeAfter) mainWindow.hide();
     try {
       const { stdout } = await runPsAsync('launch-or-focus-app.ps1', { QL_PATH: exePath }, { timeout: 10000 });
-      const out = stdout.trim().toUpperCase();
-      return { success: true, action: out.includes('FOCUSED') ? 'focused' : 'launched' };
+      // Defensive: even if runPsAsync's encoding guard fails for any reason,
+      // never crash the handler — coerce to string here too.
+      const out = String(stdout ?? '').trim();
+      const upper = out.toUpperCase();
+
+      // PS script outputs "ERROR: ..." when every launch attempt failed.
+      // Surface that back to the renderer so the toast says something
+      // useful instead of the misleading "launched" placeholder.
+      if (upper.startsWith('ERROR')) {
+        const msg = out.replace(/^ERROR:\s*/i, '');
+        log.warn(`[launch-or-focus-app] ${exePath} → ${msg}`);
+        return { success: false, error: msg };
+      }
+
+      log.debug(`[launch-or-focus-app] ${exePath} → ${out}`);
+      return { success: true, action: upper.includes('FOCUSED') ? 'focused' : 'launched' };
     } catch (err) {
+      log.warn(`[launch-or-focus-app] PS threw: ${err.message}`);
       return { success: false, error: err.message };
     }
   });
@@ -981,18 +1341,23 @@ function registerIpcHandlers() {
 
   ipcMain.handle('snap-window', async (_, { item, zone }) => {
     try {
-      await runPsAsync('snap-window.ps1',
-        { QL_ITEM: JSON.stringify(item), QL_ZONE: zone }, { timeout: 10000 }
-      );
+      // Snap honours the item's saved monitor preference when set
+      const monitorIdx = (item && typeof item.monitor === 'number') ? item.monitor : 0;
+      await runPsAsync('snap-window.ps1', {
+        QL_ITEM: JSON.stringify(item),
+        QL_ZONE: zone,
+        ...monitorEnvFor(monitorIdx),
+      }, { timeout: 10000 });
       return { success: true };
     } catch { return { success: false }; }
   });
 
   ipcMain.handle('maximize-window', async (_, { item, monitor = 0 }) => {
     try {
-      const { stdout } = await runPsAsync('maximize-window.ps1',
-        { QL_ITEM: JSON.stringify(item), QL_MONITOR: String(monitor) }, { timeout: 10000 }
-      );
+      const { stdout } = await runPsAsync('maximize-window.ps1', {
+        QL_ITEM: JSON.stringify(item),
+        ...monitorEnvFor(monitor),
+      }, { timeout: 10000 });
       return { success: stdout.trim() === 'OK' };
     } catch { return { success: false }; }
   });
@@ -1103,6 +1468,21 @@ function registerIpcHandlers() {
   ipcMain.handle('run-tile-ps', async (_, { identifiers, monitor = 0 }) => {
     // Electron DIP coords passed directly to PS (_Position.ps1 uses DPI-unaware context)
     const { wa }  = getMonitorWorkArea(monitor);
+
+    // Diagnostic: log Electron's view of ALL monitors + the physical pixel
+    // values monitorEnvFor is going to hand to PS. Matching these against
+    // the PS-side `[diag] mon#N bounds=...` lines makes DPI bugs obvious.
+    try {
+      const screen = getScreen();
+      const displays = screen.getAllDisplays();
+      log.debug(`[tile] electron-displays count=${displays.length} requestedMonitor=${monitor}`);
+      displays.forEach((d, i) => {
+        log.debug(`[tile] electron-mon#${i + 1} id=${d.id} primary=${d.id === screen.getPrimaryDisplay().id} bounds=(${d.bounds.x},${d.bounds.y},${d.bounds.width}x${d.bounds.height}) work=(${d.workArea.x},${d.workArea.y},${d.workArea.width}x${d.workArea.height}) scale=${d.scaleFactor}`);
+      });
+      const env = monitorEnvFor(monitor);
+      log.debug(`[tile] electron-wa-dip=(${wa.x},${wa.y},${wa.width}x${wa.height}) → physical QL_SCREEN=(${env.QL_SCREEN_X},${env.QL_SCREEN_Y},${env.QL_SCREEN_W}x${env.QL_SCREEN_H})`);
+    } catch (e) { log.warn(`[tile] diagnostic logging failed: ${e.message}`); }
+
     const count   = identifiers.length;
     const colBase = Math.floor(wa.width / count); // base column width
 
@@ -1150,11 +1530,16 @@ function registerIpcHandlers() {
       ...item, isBrowser: item.type === 'url' || item.type === 'browser',
     }));
     const psPromise  = runPsAsync('run-tile-ps.ps1', {
-      QL_SCREEN_X: String(wa.x),     QL_SCREEN_Y: String(wa.y),
-      QL_SCREEN_W: String(wa.width), QL_SCREEN_H: String(wa.height),
-      QL_MONITOR:  String(monitor),  QL_ITEMS:    JSON.stringify(flagged),
+      ...monitorEnvFor(monitor),
+      QL_ITEMS: JSON.stringify(flagged),
     }, { timeout: 45000 })
-      .then(() => ({ success: true, error: '' }))
+      .then(({ stdout }) => {
+        // Forward the PS diagnostic block into the main log so one log file
+        // captures the full tiling pipeline on cross-DPI debugging runs.
+        const lines = String(stdout ?? '').split(/\r?\n/).filter(l => l.trim().length > 0);
+        lines.forEach(l => log.debug(`[tile/ps] ${l}`));
+        return { success: true, error: '' };
+      })
       .catch(err => ({ success: false, error: err.message }));
 
     const [, psResult] = await Promise.all([browserPromise, psPromise]);
@@ -1193,12 +1578,10 @@ function registerIpcHandlers() {
 
     return new Promise(resolve => {
       setTimeout(async () => {
-        const { wa } = getMonitorWorkArea(0);
         try {
           await runPsAsync('tile-windows.ps1', {
-            QL_SCREEN_X: String(wa.x),     QL_SCREEN_Y: String(wa.y),
-            QL_SCREEN_W: String(wa.width), QL_SCREEN_H: String(wa.height),
-            QL_ITEMS:    JSON.stringify(identifiers),
+            ...monitorEnvFor(0),
+            QL_ITEMS: JSON.stringify(identifiers),
           }, { maxBuffer: 1024 * 1024 * 2, timeout: 30000 });
           resolve({ success: true, debug: '', error: '' });
         } catch (err) {
@@ -1268,6 +1651,121 @@ function registerIpcHandlers() {
 
   ipcMain.on('install-update', () => autoUpdater.quitAndInstall(false, true));
 
+  // ── 12j-b. Floating orb (Phase 1 MVP) ────────────────────────────
+  //
+  // Messages originate from the isolated floating BrowserWindow and never
+  // touch mainWindow's renderer, so they live in their own sub-section.
+
+  /** Orb left-click → toggle the main launcher (same as the global shortcut). */
+  ipcMain.on('floating-toggle-main', () => toggleMainWindow());
+
+  /** Orb right-click → native context menu rooted at the orb. */
+  ipcMain.on('floating-context-menu', () => {
+    if (!floatingWindow || floatingWindow.isDestroyed()) return;
+    const menu = Menu.buildFromTemplate([
+      { label: 'nost 토글',   click: () => toggleMainWindow() },
+      { label: '설정 열기',   click: () => {
+        if (!mainWindow) return;
+        mainWindow.show();
+        mainWindow.focus();
+        mainWindow.webContents.send('floating-open-settings');
+      } },
+      { type: 'separator' },
+      { label: '플로팅 버튼 숨기기', click: () => setFloatingEnabled(false) },
+    ]);
+    menu.popup({ window: floatingWindow });
+  });
+
+  /**
+   * Renderer reports the pointer has moved past the dead-zone — start the
+   * cursor-pinning loop. Any previous session is torn down first so repeated
+   * drags can't leak intervals.
+   *
+   * Stability notes:
+   *  - 30 Hz polling (33 ms) instead of 60 Hz. Fast enough that users can't
+   *    perceive lag, slow enough that setBounds can't chain into a feedback
+   *    loop with Windows' cursor tracking.
+   *  - Stationary dead-zone: if cursor moved < 1 DIP from the last sampled
+   *    point we skip setBounds entirely. This eliminates sub-pixel drift
+   *    where OS-reported cursor jitters by fractional pixels even when the
+   *    user's hand is perfectly still.
+   *  - Last sampled point persists across the session so drift can't sneak
+   *    in via rounding between ticks.
+   */
+  ipcMain.on('floating-drag-start', (_, clientX, clientY) => {
+    if (!floatingWindow || floatingWindow.isDestroyed()) return;
+
+    // Tear down any lingering session (shouldn't happen — belt & suspenders).
+    endFloatingDrag(/* persist */ false);
+
+    floatingDragOffset = { ox: Math.round(clientX), oy: Math.round(clientY) };
+
+    // Initial cursor & window snapshot so we can detect sub-pixel jitter.
+    const initialPt   = getScreen().getCursorScreenPoint();
+    let lastPt        = initialPt;
+    let tickCount     = 0;
+    log.debug(`[orb] drag-start offset=(${floatingDragOffset.ox},${floatingDragOffset.oy}) cursor=(${initialPt.x},${initialPt.y})`);
+
+    floatingDragInterval = setInterval(() => {
+      if (!floatingWindow || floatingWindow.isDestroyed() || !floatingDragOffset) return;
+
+      const pt = getScreen().getCursorScreenPoint();
+
+      // Dead-zone: ignore movement under 1 DIP. This is the fix for the
+      // "drag, then hold still, orb slides" bug caused by driver-level jitter.
+      // The dead-zone alone (not the polling rate) is what stops the slide,
+      // so we run at 60 Hz for responsiveness during fast shakes.
+      const dx = Math.abs(pt.x - lastPt.x);
+      const dy = Math.abs(pt.y - lastPt.y);
+      if (dx < 1 && dy < 1) return;
+      lastPt = pt;
+      tickCount++;
+
+      const [w, h] = floatingWindow.getSize();
+      floatingWindow.setBounds({
+        x: Math.round(pt.x - floatingDragOffset.ox),
+        y: Math.round(pt.y - floatingDragOffset.oy),
+        width: w, height: h,
+      });
+
+      // Throttle log output: first 2 ticks + every 60th thereafter.
+      if (tickCount <= 2 || tickCount % 60 === 0) {
+        log.debug(`[orb] tick#${tickCount} cursor=(${pt.x},${pt.y}) → win=(${pt.x - floatingDragOffset.ox},${pt.y - floatingDragOffset.oy})`);
+      }
+    }, 16);  // ≈60 Hz
+
+    floatingDragWatchdog = setTimeout(() => {
+      log.debug('[orb] watchdog: heartbeat lost — ending drag');
+      endFloatingDrag(true);
+    }, 500);
+    floatingDragCeiling = setTimeout(() => {
+      log.debug('[orb] ceiling: 60s limit — ending drag');
+      endFloatingDrag(true);
+    }, 60_000);
+  });
+
+  /** Renderer heartbeat — refresh the watchdog so the drag stays alive. */
+  ipcMain.on('floating-drag-heartbeat', () => {
+    if (floatingDragWatchdog) clearTimeout(floatingDragWatchdog);
+    if (!floatingDragInterval) return;  // no active drag — ignore stale heartbeat
+    floatingDragWatchdog = setTimeout(() => {
+      log.debug('[orb] watchdog: heartbeat lost — ending drag');
+      endFloatingDrag(true);
+    }, 500);
+  });
+
+  /** Normal drag end — renderer got pointerup/pointercancel. */
+  ipcMain.on('floating-drag-end', () => {
+    log.debug('[orb] drag-end (normal)');
+    endFloatingDrag(true);
+  });
+
+  /** Renderer writes to quicklauncherData.settings.floatingButton → tell us to sync. */
+  ipcMain.on('floating-settings-updated', () => {
+    syncFloatingWindow();
+    refreshFloatingVisuals();
+  });
+
   // ── 12k. Extension Bridge ────────────────────────────────────────
 
   ipcMain.handle('get-extension-bridge-status', () => ({
@@ -1327,6 +1825,10 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  // Spawn the floating orb if the user has it enabled. Delayed a tick so
+  // the main window initializes first — avoids a perceived double-flash.
+  setTimeout(() => syncFloatingWindow(), 200);
 
   // Notify renderer whenever monitor configuration changes
   const screen = getScreen();
@@ -1421,4 +1923,9 @@ app.on('will-quit', () => {
   // Destroy the SSE socket immediately so the Chrome extension reconnects quickly
   if (sseConnection) { sseConnection.destroy(); sseConnection = null; }
   extServer.close();
+
+  // Stop any in-flight orb drag and close the orb window so it doesn't
+  // linger as a zombie tray item.
+  endFloatingDrag(/* persist */ false);
+  if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
 });

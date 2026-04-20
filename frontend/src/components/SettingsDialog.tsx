@@ -331,6 +331,72 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.4 }}>단축키 변경 후 저장하면 즉시 반영됩니다.</p>
                 </Section>
 
+                {/* ── Floating button (Phase 1 MVP) ────────────────── */}
+                <Section>
+                  <SwitchRow
+                    icon="adjust"
+                    title="플로팅 버튼"
+                    description="화면 위에 떠 있는 작은 버튼을 항상 표시합니다. 클릭하면 단축키 없이도 nost를 토글할 수 있습니다."
+                    checked={!!form.floatingButton?.enabled}
+                    onCheckedChange={v => f('floatingButton', {
+                      enabled: v,
+                      idleOpacity: form.floatingButton?.idleOpacity ?? 0.65,
+                      size: form.floatingButton?.size ?? 'normal',
+                      hideOnFullscreen: form.floatingButton?.hideOnFullscreen ?? true,
+                      position: form.floatingButton?.position,
+                    })}
+                  />
+
+                  {form.floatingButton?.enabled && (
+                    <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      {/* Size */}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>크기</span>
+                        <div style={{ display: 'flex', background: 'var(--border-rgba)', borderRadius: 8, padding: 3, gap: 2 }}>
+                          {(['small', 'normal'] as const).map(sz => (
+                            <button
+                              key={sz}
+                              onClick={() => f('floatingButton', { ...form.floatingButton!, size: sz })}
+                              style={{
+                                padding: '4px 14px', fontSize: 11, borderRadius: 6,
+                                fontWeight: form.floatingButton?.size === sz ? 700 : 400,
+                                border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                                background: form.floatingButton?.size === sz ? 'var(--bg-rgba)' : 'transparent',
+                                color: form.floatingButton?.size === sz ? 'var(--text-color)' : 'var(--text-muted)',
+                                transition: 'all 0.15s',
+                              }}
+                            >
+                              {sz === 'small' ? '작게' : '보통'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Idle opacity */}
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>비활성 상태 투명도</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)', background: 'var(--border-rgba)', padding: '2px 8px', borderRadius: 5 }}>
+                            {Math.round((form.floatingButton?.idleOpacity ?? 0.65) * 100)}%
+                          </span>
+                        </div>
+                        <Slider
+                          value={[form.floatingButton?.idleOpacity ?? 0.65]}
+                          min={0.3} max={1} step={0.05}
+                          onValueChange={val => {
+                            const v = Array.isArray(val) ? (val as number[])[0] : (val as number);
+                            f('floatingButton', { ...form.floatingButton!, idleOpacity: v });
+                          }}
+                          className="w-full"
+                        />
+                        <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.4 }}>
+                          버튼 위로 마우스를 올리면 항상 100%가 됩니다.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </Section>
+
                 <Section>
                   <SectionLabel icon="palette" text="강조색 (Accent)" />
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -683,7 +749,13 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
           flexShrink: 0,
         }}>
           <Button variant="ghost" onClick={onClose}>취소</Button>
-          <Button onClick={() => { onSave(form); onClose(); }}>저장</Button>
+          <Button onClick={() => {
+            onSave(form);
+            // Notify main so it can spawn/destroy the floating orb window
+            // and push updated visual settings into it.
+            electronAPI.notifyFloatingSettingsChanged();
+            onClose();
+          }}>저장</Button>
         </div>
       </DialogContent>
     </Dialog>

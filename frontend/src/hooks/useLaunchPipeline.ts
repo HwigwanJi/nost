@@ -139,7 +139,11 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         );
 
         if (!r.success) {
-          showToast('실행 실패', { immediate: true, duration: 2500 });
+          // Trim the PS diagnostic so it fits a toast but stays actionable.
+          // Full detail is in the main-process log.
+          const raw = r.error ?? '알 수 없는 오류';
+          const short = raw.split(/[|\n]/)[0].trim().slice(0, 80);
+          showToast(`"${item.title}" 실행 실패: ${short}`, { immediate: true, duration: 4000 });
           return;
         }
 

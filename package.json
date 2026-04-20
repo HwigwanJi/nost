@@ -1,6 +1,6 @@
 {
   "name": "nost",
-  "version": "1.0.15",
+  "version": "1.0.17",
   "description": "",
   "main": "main.js",
   "scripts": {
@@ -20,6 +20,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "preload-floating.js",
       "icon.png",
       "frontend/dist/**/*"
     ],

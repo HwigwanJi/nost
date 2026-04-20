@@ -50,6 +50,19 @@ export interface Space {
   columnSpan?: 1 | 2;
 }
 
+export interface FloatingButtonSettings {
+  /** Master toggle: off = no floating window. */
+  enabled: boolean;
+  /** Orb fill opacity in the idle (not-hovered) state, 0.3–1.0. */
+  idleOpacity: number;
+  /** Orb size preset. */
+  size: 'small' | 'normal';
+  /** Hide the orb automatically while a fullscreen app has focus. */
+  hideOnFullscreen: boolean;
+  /** Last stored position. Defaults to bottom-right on primary display when absent. */
+  position?: { x: number; y: number };
+}
+
 export interface AppSettings {
   opacity: number;
   closeAfterOpen: boolean;
@@ -60,6 +73,7 @@ export interface AppSettings {
   accentColor?: string;          // custom accent color (hex)
   documentExtensions?: string[]; // file extensions treated as documents
   monitorDirections?: Record<number, 'w' | 'a' | 's' | 'd' | 'c'>; // Key assigned to each monitor: wasd = direction, c = current
+  floatingButton?: FloatingButtonSettings; // Phase 1: main FAB only
 }
 
 export type AppMode = 'normal' | 'pin' | 'node' | 'deck';

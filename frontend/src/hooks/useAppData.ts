@@ -58,7 +58,21 @@ export function enforcePairInvariant(spaces: Space[]): Space[] {
 }
 
 function migrateData(parsed: AppData): AppData {
-  parsed.settings = { ...parsed.settings, theme: parsed.settings.theme ?? 'dark', autoLaunch: parsed.settings.autoLaunch ?? false, autoHide: parsed.settings.autoHide ?? false, accentColor: parsed.settings.accentColor ?? '#6366f1', documentExtensions: parsed.settings.documentExtensions ?? [] };
+  parsed.settings = {
+    ...parsed.settings,
+    theme: parsed.settings.theme ?? 'dark',
+    autoLaunch: parsed.settings.autoLaunch ?? false,
+    autoHide: parsed.settings.autoHide ?? false,
+    accentColor: parsed.settings.accentColor ?? '#6366f1',
+    documentExtensions: parsed.settings.documentExtensions ?? [],
+    // Phase 1: floating button defaults off; users opt in via Settings UI.
+    floatingButton: parsed.settings.floatingButton ?? {
+      enabled: false,
+      idleOpacity: 0.65,
+      size: 'normal',
+      hideOnFullscreen: true,
+    },
+  };
   parsed.collapsedSpaceIds = parsed.collapsedSpaceIds ?? [];
   parsed.nodeGroups = parsed.nodeGroups ?? [];
   parsed.spaces = parsed.spaces.map(s => {
@@ -525,6 +539,19 @@ export function useAppData() {
     save({ ...data, dismissals });
   }, [data, save]);
 
+  /**
+   * Pull the persisted data from electron-store and replace local state.
+   * Used when the main process mutates settings out-of-band (e.g. tray menu
+   * or floating-orb right-click toggling the floating button on/off).
+   */
+  const reloadFromStore = useCallback(async () => {
+    const raw = await electronAPI.storeLoad();
+    if (!raw) return;
+    const next = migrateData(raw as AppData);
+    setDataRaw(next);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }, []);
+
   // ── Settings ─────────────────────────────────────────────
   const updateSettings = useCallback((settings: AppSettings) => {
     electronAPI.setOpacity(settings.opacity);
@@ -558,6 +585,7 @@ export function useAppData() {
     moveItemToSpace,
     updateItemAndMove,
     updateSettings,
+    reloadFromStore,
     getNodeGroupForItem,
     addNodeGroup,
     updateNodeGroup,

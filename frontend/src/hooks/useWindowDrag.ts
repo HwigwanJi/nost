@@ -32,7 +32,11 @@ export function useWindowDrag() {
     };
 
     const onMouseUp = (e: MouseEvent) => {
-      if (e.button === 2) dragRef.current = null;
+      if (e.button === 2 && dragRef.current) {
+        dragRef.current = null;
+        // Clears main-process size cache so subsequent resizes are picked up.
+        electronAPI.windowDragEnd();
+      }
     };
 
     const onContextMenu = (e: MouseEvent) => e.preventDefault();

@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   log: (level, msg, extra) => ipcRenderer.send('nost-log', level, msg, extra),
@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   storeSave: (data) => ipcRenderer.invoke('store-save', data),
   getWindowPosition: () => ipcRenderer.invoke('get-window-position'),
   moveWindow: (x, y) => ipcRenderer.send('window-move', x, y),
+  windowDragEnd: () => ipcRenderer.send('window-drag-end'),
   exportData: () => ipcRenderer.invoke('export-data'),
   importData: () => ipcRenderer.invoke('import-data'),
   runCmd: (command, closeAfter) => ipcRenderer.send('run-cmd', command, closeAfter),
@@ -46,8 +47,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMonitors: () => ipcRenderer.invoke('get-monitors'),
   identifyMonitors: () => ipcRenderer.invoke('identify-monitors'),
   getUserHome: () => require('os').homedir(),  // preload has access to Node modules
+  /**
+   * Electron 32+ removed the `File.path` property; drag-and-drop file objects
+   * now only expose `name`. This helper wraps the replacement API so callers
+   * can resolve the real filesystem path of a dropped File.
+   */
+  getFilePath: (file) => {
+    try { return webUtils.getPathForFile(file) || null; } catch { return null; }
+  },
   openGuide: () => ipcRenderer.send('open-guide'),
   signalReady: () => ipcRenderer.send('renderer-ready'),
   setLoadingStatus: (msg) => ipcRenderer.send('set-loading-status', msg),
   onMonitorsChanged: (cb) => ipcRenderer.on('monitors-changed', (_, monitors) => cb(monitors)),
+
+  // ── Floating orb (Phase 1) ─────────────────────────────────────
+  /** Notify main that floatingButton settings in the store have changed. */
+  notifyFloatingSettingsChanged: () => ipcRenderer.send('floating-settings-updated'),
+  /** Main broadcasts this when the orb's own right-click menu toggles the setting. */
+  onFloatingSettingsChanged: (cb) => ipcRenderer.on('floating-settings-changed', () => cb()),
+  /** Orb right-click > 설정 열기 — jump into the Settings dialog. */
+  onFloatingOpenSettings: (cb) => ipcRenderer.on('floating-open-settings', () => cb()),
 });

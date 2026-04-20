@@ -983,9 +983,17 @@ export default function App() {
 
     // ── File drop from File Explorer ───────────────────────────
     const files = Array.from(e.dataTransfer.files);
+    // Electron 32+ removed File.path; resolve via the webUtils bridge.
+    // Fall back through the (deprecated) path prop and finally the filename
+    // so we still work on older Electron builds and in dev.
+    const resolvePath = (file: File): string => {
+      const legacy = (file as File & { path?: string }).path;
+      if (legacy) return legacy;
+      return electronAPI.getFilePath(file) ?? file.name;
+    };
     if (files.length === 1) {
       // Single file → open ItemDialog pre-filled so the user can confirm/tweak
-      const filePath = (files[0] as File & { path?: string }).path ?? files[0].name;
+      const filePath = resolvePath(files[0]);
       const { type, title } = inferItemFromPath(filePath);
       setPrefilledItem({ type, title, value: filePath });
       setEditItem(null);
@@ -997,7 +1005,7 @@ export default function App() {
       // Multiple files → open BatchDropDialog so the user can review / toggle / retype
       // before committing. This replaces the previous silent bulk-add.
       const pending: PendingDrop[] = files.map((file, idx) => {
-        const filePath = (file as File & { path?: string }).path ?? file.name;
+        const filePath = resolvePath(file);
         const { type, title } = inferItemFromPath(filePath);
         return {
           tempId: `drop-${Date.now()}-${idx}`,
@@ -1398,6 +1406,20 @@ export default function App() {
         duration: 10000,
         actions: [{ label: '지금 설치', icon: 'restart_alt', onClick: () => electronAPI.installUpdate() }],
       });
+    });
+
+    // ── Floating orb bridges ────────────────────────────────
+    // Orb right-click > "설정 열기" pipes in here so we can jump straight
+    // to the 일반 tab where the floating settings live.
+    electronAPI.onFloatingOpenSettings(() => {
+      setSettingsInitialTab('general');
+      setDialog('settings');
+    });
+    // Main mutated the floating-button setting out-of-band (tray menu or
+    // orb right-click "숨기기"). Pull fresh settings so the Settings UI
+    // toggle reflects reality the next time the user opens it.
+    electronAPI.onFloatingSettingsChanged(() => {
+      store.reloadFromStore();
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
