@@ -459,6 +459,51 @@ export default function App() {
   useEffect(() => { appLog.debug('App mounted (first useEffect)'); }, [appLog]);
   const store = useAppData();
   const { data } = store;
+
+  // ── Floating badges (Phase 2) — subset that doesn't depend on late hooks ──
+  // Main is the authoritative owner of floatingBadges — it reacts to overlay
+  // drags/clicks and mutates electron-store directly. We mirror every push
+  // into local React state so the UI (e.g. "already pinned" hint) stays live.
+  // Listeners that need launchAndPosition / handleNodeGroupLaunch are
+  // registered further down (see the second badge useEffect) once those
+  // identifiers have been declared.
+  useEffect(() => {
+    electronAPI.onBadgesUpdated((badges) => {
+      store.setFloatingBadgesLocal(badges ?? []);
+    });
+    electronAPI.onBadgesRevealSpace(({ refId }) => {
+      const el = document.querySelector(`[data-space-id="${refId}"]`) as HTMLElement | null;
+      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }, [store]);
+
+  const floatingBadges = data.floatingBadges ?? [];
+  const spacesFloating = useMemo(() => {
+    const s = new Set<string>();
+    for (const b of floatingBadges) if (b.refType === 'space') s.add(b.refId);
+    return s;
+  }, [floatingBadges]);
+  const nodesFloating = useMemo(() => {
+    const s = new Set<string>();
+    for (const b of floatingBadges) if (b.refType === 'node') s.add(b.refId);
+    return s;
+  }, [floatingBadges]);
+  const decksFloating = useMemo(() => {
+    const s = new Set<string>();
+    for (const b of floatingBadges) if (b.refType === 'deck') s.add(b.refId);
+    return s;
+  }, [floatingBadges]);
+
+  const pinAsFloating = useCallback(async (
+    refType: 'space' | 'node' | 'deck',
+    refId: string,
+  ) => {
+    const r = await electronAPI.pinBadge(refType, refId);
+    if (!r.success) {
+      const reason = r.reason === 'missing-ref' ? '잘못된 대상' : '플로팅 실패';
+      showToast(reason);
+    }
+  }, []);
   appLog.debug(`data.spaces.length=${data?.spaces?.length ?? 'undefined'}`);
 
   const [dialog, setDialog] = useState<DialogMode>('none');
@@ -538,6 +583,37 @@ export default function App() {
     handleSaveNodeGroup, handleNodeBuildingClick, handleNodeGroupLaunch,
     handleDeckBuildingClick, handleSaveDeck, handleDeckLaunch, handleDeckGroupLaunch,
   } = useNodeDeckMode({ data, store, showToast, dismissToast, showTileOverlay });
+
+  // ── Floating badges (Phase 2) — late listeners ─────────────
+  // Registered here (not at the top of the component) because they close over
+  // launchAndPosition / handleNodeGroupLaunch / handleDeckLaunch, which are
+  // declared above this point. Earlier placement would hit TDZ on build.
+  useEffect(() => {
+    electronAPI.onBadgesLaunchItem(({ refType, refId, itemId }) => {
+      let item: LauncherItem | undefined;
+      let ownerSpaceId: string | undefined;
+      if (refType === 'space') {
+        const sp = data.spaces.find(s => s.id === refId);
+        item = sp?.items.find(i => i.id === itemId);
+        ownerSpaceId = sp?.id;
+      } else {
+        // node / deck — items may live in any space; find the owner for
+        // click-count bookkeeping.
+        for (const sp of data.spaces) {
+          const f = sp.items.find(i => i.id === itemId);
+          if (f) { item = f; ownerSpaceId = sp.id; break; }
+        }
+      }
+      if (item && ownerSpaceId) {
+        launchAndPosition(item, data.settings.closeAfterOpen);
+        store.incrementClickCount(ownerSpaceId, itemId);
+      }
+    });
+    electronAPI.onBadgesLaunchRef(({ refType, refId }) => {
+      if (refType === 'node') handleNodeGroupLaunch(refId);
+      else if (refType === 'deck') handleDeckLaunch(refId);
+    });
+  }, [data.spaces, data.settings.closeAfterOpen, launchAndPosition, handleNodeGroupLaunch, handleDeckLaunch, store]);
 
 
   // ── Toast notification — FIFO queue (non-overlapping) ────
@@ -1974,6 +2050,8 @@ export default function App() {
                             fileDragTarget={fileDragTargetSpaceId === space.id}
                             onFileDragEnter={() => setFileDragTargetSpaceId(space.id)}
                             onFileDragLeave={() => setFileDragTargetSpaceId(prev => prev === space.id ? null : prev)}
+                            onFloatOut={() => pinAsFloating('space', space.id)}
+                            isFloating={spacesFloating.has(space.id)}
                           />
                         )}
                       </SortableSpace>
@@ -2146,6 +2224,10 @@ export default function App() {
             onLaunchDeck={handleDeckLaunch}
             onDeleteDeck={store.deleteDeck}
             onUpdateDeck={(id, patch) => store.updateDeck(id, patch)}
+            onFloatOutNode={id => pinAsFloating('node', id)}
+            onFloatOutDeck={id => pinAsFloating('deck', id)}
+            floatingNodeIds={nodesFloating}
+            floatingDeckIds={decksFloating}
           />
 
           {/* DragOverlay: ghost preview while dragging a card OR a whole space */}

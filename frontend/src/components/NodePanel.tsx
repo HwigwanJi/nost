@@ -49,6 +49,11 @@ interface NodePanelProps {
   onUpdateDeck: (deckId: string, patch: Partial<Pick<Deck, 'name' | 'itemIds' | 'monitor'>>) => void;
   // ── Common ─────────────────────────────────────────────────
   allItems: LauncherItem[];
+  // ── Floating badges (Phase 2) ──────────────────────────────
+  onFloatOutNode?: (groupId: string) => void;
+  onFloatOutDeck?: (deckId: string) => void;
+  floatingNodeIds?: Set<string>;
+  floatingDeckIds?: Set<string>;
 }
 
 function getItemIcon(type: LauncherItem['type']) {
@@ -68,6 +73,7 @@ export function NodePanel({
   decks, deckBuilding, deckItems,
   onStartDeckBuild, onCancelDeckBuild, onRemoveFromDeckBuilding,
   onSaveDeck, onLaunchDeck, onDeleteDeck, onUpdateDeck,
+  onFloatOutNode, onFloatOutDeck, floatingNodeIds, floatingDeckIds,
 }: NodePanelProps) {
   const [expanded, setExpanded] = useState(true);
   const [filter, setFilter] = useState<'all' | 'node' | 'deck'>('all');
@@ -238,6 +244,8 @@ export function NodePanel({
                   onRenameCancel={() => setRenamingId(null)}
                   onReorderItems={itemIds => onReorderGroupItems(group.id, itemIds)}
                   onSetMonitor={monitor => onUpdateGroup(group.id, { monitor })}
+                  onFloatOut={onFloatOutNode ? () => onFloatOutNode(group.id) : undefined}
+                  isFloating={floatingNodeIds?.has(group.id)}
                 />
               );
             })}
@@ -290,6 +298,8 @@ export function NodePanel({
                   onLaunch={() => onLaunchDeck(deck.id)}
                   onDelete={() => onDeleteDeck(deck.id)}
                   onUpdateDeck={onUpdateDeck}
+                  onFloatOut={onFloatOutDeck ? () => onFloatOutDeck(deck.id) : undefined}
+                  isFloating={floatingDeckIds?.has(deck.id)}
                 />
               );
             })}
@@ -420,6 +430,7 @@ function NodeGroupCard({
   draggingItemId,
   onLaunch, onDelete, onStartRename, onRenameDraftChange,
   onRenameConfirm, onRenameCancel, onReorderItems, onSetMonitor,
+  onFloatOut, isFloating,
 }: {
   group: NodeGroup; items: LauncherItem[]; allItems: LauncherItem[]; monitorCount: number;
   isRenaming: boolean; renameDraft: string;
@@ -428,6 +439,7 @@ function NodeGroupCard({
   onRenameDraftChange: (v: string) => void; onRenameConfirm: () => void;
   onRenameCancel: () => void; onReorderItems: (itemIds: string[]) => void;
   onSetMonitor: (monitor: number | undefined) => void;
+  onFloatOut?: () => void; isFloating?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
@@ -550,6 +562,12 @@ function NodeGroupCard({
             </button>
           ) : (
             <>
+              {onFloatOut && !isFloating && (
+                <button onClick={e => { e.stopPropagation(); onFloatOut(); }}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="플로팅 뱃지로 분리">
+                  <Icon name="open_in_new" size={11} />
+                </button>
+              )}
               <button onClick={e => { e.stopPropagation(); setEditing(true); }}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="편집">
                 <Icon name="edit" size={11} />
@@ -687,11 +705,12 @@ function NodeGroupCard({
 }
 
 /* ── Deck card ──────────────────────────────────────────────── */
-function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelete, onUpdateDeck }: {
+function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelete, onUpdateDeck, onFloatOut, isFloating }: {
   deck: Deck; items: LauncherItem[]; monitorCount: number;
   draggingItemId?: string | null;
   onLaunch: () => void; onDelete: () => void;
   onUpdateDeck: (deckId: string, patch: Partial<Pick<Deck, 'name' | 'itemIds' | 'monitor'>>) => void;
+  onFloatOut?: () => void; isFloating?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -756,6 +775,11 @@ function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelet
             <button onClick={() => { if (renaming) { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); } setEditing(false); }} style={{ padding: '1px 6px', fontSize: 9, fontWeight: 700, background: DECK_COLOR, color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit' }}>완료</button>
           ) : (
             <>
+              {onFloatOut && !isFloating && (
+                <button onClick={e => { e.stopPropagation(); onFloatOut(); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="플로팅 뱃지로 분리">
+                  <Icon name="open_in_new" size={11} />
+                </button>
+              )}
               <button onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="편집">
                 <Icon name="edit" size={11} />
               </button>

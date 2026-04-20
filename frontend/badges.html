@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <title>nost badges</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: transparent !important;
+        overflow: hidden;
+        width: 100vw;
+        height: 100vh;
+        -webkit-app-region: no-drag;
+        user-select: none;
+        cursor: default;
+      }
+      /* Badge wrapper uses absolute coords inside a full-viewport layer. */
+      #badge-root { position: absolute; inset: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="badge-root"></div>
+    <script type="module" src="/src/badges/index.tsx"></script>
+  </body>
+</html>

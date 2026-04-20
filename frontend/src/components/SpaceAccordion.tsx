@@ -44,6 +44,8 @@ interface SpaceAccordionProps {
   onAddItem: () => void;
   onScanItem: () => void;
   onToggleCollapse: () => void;
+  onFloatOut?: () => void;
+  isFloating?: boolean;
   defaultOpen?: boolean;
   // Monitor (per-space override)
   onSetMonitor?: (itemId: string, monitor: number | undefined) => void;
@@ -95,6 +97,8 @@ export function SpaceAccordion({
   onAddItem,
   onScanItem,
   onToggleCollapse,
+  onFloatOut,
+  isFloating = false,
   defaultOpen = true,
   onSetMonitor,
   onConvertToContainer,
@@ -301,6 +305,17 @@ export function SpaceAccordion({
         >
           {/* Sort */}
           <ActionBtn icon="sort" title="정렬" onClick={onSortByUsage} />
+
+          {/* Float out as badge — pins this space as a draggable floating badge
+              outside the main window. Already-floating spaces don't show this
+              (prevents duplicate pins). */}
+          {onFloatOut && !isFloating && (
+            <ActionBtn
+              icon="open_in_new"
+              title="플로팅 뱃지로 분리"
+              onClick={onFloatOut}
+            />
+          )}
 
           {/* More */}
           <DropdownMenu>

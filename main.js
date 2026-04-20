@@ -34,6 +34,7 @@ const store = new Store({ name: 'nost-data' });
 let mainWindow;
 let loadingWindow    = null;
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
+let badgeOverlay     = null;   // Phase 2 single overlay window hosting every floating badge
 let tray             = null;
 let currentShortcut  = 'Alt+4';
 
@@ -770,6 +771,246 @@ function refreshFloatingVisuals() {
     size:        settings.size,
     accentColor: settings.accentColor,
   });
+}
+
+// ── Floating badges overlay (Phase 2) ────────────────────────────────
+//
+// A SINGLE transparent always-on-top BrowserWindow that spans the union of
+// all displays and hosts every pinned badge (space / node / deck). The
+// RAM-cheap alternative to spawning one BrowserWindow per badge.
+//
+// Click-through: the window runs with `setIgnoreMouseEvents(true, {forward: true})`
+// so mouse events pass through empty regions. Renderer flips capture off while
+// the pointer hovers a badge rect (via `badges-set-capture` IPC) and flips it
+// back on when the pointer leaves.
+
+/** Bounding box of the virtual desktop (union of all display bounds). */
+function getVirtualDesktopBounds() {
+  const displays = getScreen().getAllDisplays();
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const d of displays) {
+    const b = d.bounds;
+    if (b.x < minX) minX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.x + b.width  > maxX) maxX = b.x + b.width;
+    if (b.y + b.height > maxY) maxY = b.y + b.height;
+  }
+  if (!isFinite(minX)) return { x: 0, y: 0, width: 1920, height: 1080 };
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * Resolve every FloatingBadge in the store to the display-ready BadgeData
+ * the overlay renderer expects. Filters out dangling entries whose referenced
+ * space/node/deck has been deleted.
+ */
+function buildBadgePayload(data) {
+  const spaces = data?.spaces ?? [];
+  const nodes  = data?.nodeGroups ?? [];
+  const decks  = data?.decks ?? [];
+  const badges = data?.floatingBadges ?? [];
+
+  // Flatten all spaces' items so node/deck can resolve by itemId cheaply.
+  const allItems = new Map();
+  for (const s of spaces) {
+    for (const i of (s.items ?? [])) allItems.set(i.id, i);
+  }
+
+  // Strip a LauncherItem down to just what the mini-window needs to render
+  // and fire a launch. Keeps the IPC payload small even for big spaces.
+  function slimItem(i, space) {
+    return {
+      id: i.id,
+      title: i.title,
+      type: i.type,
+      value: i.value,
+      icon: i.icon,
+      iconType: i.iconType,
+      color: i.color,
+      // pinnedIds is the authoritative pin source (see ghost/clean work)
+      pinned: !!space?.pinnedIds?.includes(i.id),
+    };
+  }
+
+  const out = [];
+  for (const b of badges) {
+    if (b.refType === 'space') {
+      const s = spaces.find(x => x.id === b.refId);
+      if (!s) continue;
+      // Hide container-absorbed cards (hiddenInSpace) and sort pinned first
+      // so the mini-window matches what the user sees in the main grid.
+      const visible = (s.items ?? []).filter(i => !i.hiddenInSpace);
+      const pinnedIds = new Set(s.pinnedIds ?? []);
+      const sorted = [
+        ...visible.filter(i => pinnedIds.has(i.id)),
+        ...visible.filter(i => !pinnedIds.has(i.id)),
+      ];
+      out.push({
+        id: b.id, refType: 'space', refId: b.refId,
+        x: b.x, y: b.y,
+        label: s.name,
+        color: s.color,
+        icon: s.icon ?? null,
+        iconIsEmoji: isEmojiLike(s.icon),
+        count: visible.length,
+        items: sorted.map(i => slimItem(i, s)),
+      });
+    } else if (b.refType === 'node') {
+      const n = nodes.find(x => x.id === b.refId);
+      if (!n) continue;
+      const items = (n.itemIds ?? [])
+        .map(id => allItems.get(id))
+        .filter(Boolean)
+        .map(i => slimItem(i, spaces.find(s => (s.items ?? []).some(x => x.id === i.id))));
+      out.push({
+        id: b.id, refType: 'node', refId: b.refId,
+        x: b.x, y: b.y,
+        label: n.name,
+        color: '#a78bfa',
+        icon: 'hub',
+        iconIsEmoji: false,
+        count: items.length,
+        items,
+      });
+    } else if (b.refType === 'deck') {
+      const d = decks.find(x => x.id === b.refId);
+      if (!d) continue;
+      const items = (d.itemIds ?? [])
+        .map(id => allItems.get(id))
+        .filter(Boolean)
+        .map(i => slimItem(i, spaces.find(s => (s.items ?? []).some(x => x.id === i.id))));
+      out.push({
+        id: b.id, refType: 'deck', refId: b.refId,
+        x: b.x, y: b.y,
+        label: d.name,
+        color: '#f97316',
+        icon: 'layers',
+        iconIsEmoji: false,
+        count: items.length,
+        items,
+      });
+    }
+  }
+  return out;
+}
+
+/** Rough emoji detector — if it's a single visible char and not an ASCII letter, treat as emoji. */
+function isEmojiLike(s) {
+  if (!s || typeof s !== 'string') return false;
+  // Material Symbol names are lowercase ASCII with underscores.
+  if (/^[a-z0-9_]+$/.test(s)) return false;
+  // Anything else is likely an emoji / symbol.
+  return true;
+}
+
+function pushBadgeState() {
+  if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+  const data = store.get('appData') || {};
+  const bounds = getVirtualDesktopBounds();
+  const badges = buildBadgePayload(data);
+  badgeOverlay.webContents.send('badges-state', {
+    badges,
+    overlayOrigin: { x: bounds.x, y: bounds.y },
+    overlaySize:   { width: bounds.width, height: bounds.height },
+  });
+}
+
+/** Destroy the overlay if it exists (called when no badges remain). */
+function destroyBadgeOverlay() {
+  if (badgeOverlay && !badgeOverlay.isDestroyed()) {
+    badgeOverlay.destroy();
+  }
+  badgeOverlay = null;
+}
+
+function createBadgeOverlay() {
+  if (badgeOverlay && !badgeOverlay.isDestroyed()) return badgeOverlay;
+  const bounds = getVirtualDesktopBounds();
+
+  // Dedicated session so Chromium doesn't contend over cache with the main
+  // window (same lesson as floating orb).
+  const badgeSession = session.fromPartition('badge-overlay-memory');
+  try {
+    badgeSession.clearCache();
+    badgeSession.clearStorageData({
+      storages: ['cachestorage', 'cookies', 'localstorage', 'shadercache', 'serviceworkers'],
+    }).catch(() => {});
+  } catch (_) {}
+
+  badgeOverlay = new BrowserWindow({
+    x: bounds.x, y: bounds.y,
+    width: bounds.width, height: bounds.height,
+    frame: false, transparent: true, resizable: false,
+    alwaysOnTop: true, skipTaskbar: true,
+    hasShadow: false,
+    focusable: false,   // never steal focus — badges are gestural only
+    minimizable: false, maximizable: false, fullscreenable: false,
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-badges.js'),
+      contextIsolation: true,
+      nodeIntegration:  false,
+      backgroundThrottling: false,
+      session: badgeSession,
+    },
+  });
+
+  // Click-through by default; renderer flips off while hovering a badge.
+  badgeOverlay.setIgnoreMouseEvents(true, { forward: true });
+
+  // Stay above fullscreen apps on every workspace so badges act like a global HUD.
+  badgeOverlay.setAlwaysOnTop(true, 'screen-saver');
+  badgeOverlay.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
+  if (rendererUrl) {
+    badgeOverlay.loadURL(`${rendererUrl}/badges.html`);
+  } else {
+    badgeOverlay.loadFile(path.join(__dirname, 'frontend', 'dist', 'badges.html'));
+  }
+
+  badgeOverlay.once('ready-to-show', () => {
+    badgeOverlay.showInactive();  // show without stealing focus
+    pushBadgeState();
+  });
+
+  badgeOverlay.on('closed', () => { badgeOverlay = null; });
+
+  return badgeOverlay;
+}
+
+/** Ensure the overlay reflects current state: alive iff any badges exist. */
+function syncBadgeOverlay() {
+  const data = store.get('appData') || {};
+  const has  = Array.isArray(data.floatingBadges) && data.floatingBadges.length > 0;
+  if (has) {
+    if (!badgeOverlay || badgeOverlay.isDestroyed()) {
+      createBadgeOverlay();
+    } else {
+      // Overlay dimensions may be stale if display config changed.
+      const b = getVirtualDesktopBounds();
+      const cur = badgeOverlay.getBounds();
+      if (cur.x !== b.x || cur.y !== b.y || cur.width !== b.width || cur.height !== b.height) {
+        badgeOverlay.setBounds(b);
+      }
+      pushBadgeState();
+    }
+  } else {
+    destroyBadgeOverlay();
+  }
+}
+
+/** Mutate the appData blob with a callback, persist, and refresh the overlay. */
+function mutateBadges(fn) {
+  const data = store.get('appData') || {};
+  const list = Array.isArray(data.floatingBadges) ? [...data.floatingBadges] : [];
+  const next = fn(list);
+  data.floatingBadges = next ?? list;
+  store.set('appData', data);
+  syncBadgeOverlay();
+  // Also tell the main renderer so its UI reflects the change (e.g. hide the
+  // "float" action for spaces that are already pinned).
+  sendSafe('badges-updated', data.floatingBadges);
 }
 
 function createWindow() {
@@ -1855,6 +2096,122 @@ function registerIpcHandlers() {
     refreshFloatingVisuals();
   });
 
+  // ── 12j-bis. Floating badges overlay (Phase 2) ────────────────────
+
+  /** Main renderer commits store.floatingBadges → refresh the overlay. */
+  ipcMain.on('badges-sync', () => syncBadgeOverlay());
+
+  /**
+   * Pin a space/node/deck as a floating badge. Called from the main renderer
+   * after the user clicks the "float" action or throws a card out of the
+   * main window.
+   *
+   * `screenX/screenY` is the desired landing position in screen coords. If
+   * the caller doesn't know (e.g. the action came from a keyboard shortcut),
+   * pass null/undefined and we place near the bottom-right of the primary.
+   */
+  ipcMain.handle('badges-pin', (_e, { refType, refId, screenX, screenY }) => {
+    if (!refType || !refId) return { success: false, reason: 'missing-ref' };
+    const bounds = getScreen().getPrimaryDisplay().workArea;
+    const defaultX = bounds.x + bounds.width  - 120;
+    const defaultY = bounds.y + bounds.height - 120;
+    const id = `fb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    mutateBadges(list => {
+      // Prevent duplicate pins of the same ref.
+      if (list.some(b => b.refType === refType && b.refId === refId)) return list;
+      list.push({
+        id, refType, refId,
+        x: Number.isFinite(screenX) ? screenX : defaultX,
+        y: Number.isFinite(screenY) ? screenY : defaultY,
+      });
+      return list;
+    });
+    return { success: true, id };
+  });
+
+  /** Mini-window → launch a single item. Forwards to the main renderer so
+   *  the full launch pipeline (polling, positioning, slow-notice toast) runs
+   *  exactly as if the user clicked the card in the main grid. */
+  ipcMain.on('badges-launch-item', (_e, payload) => {
+    if (!payload || !payload.refType || !payload.refId || !payload.itemId) return;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // Don't show/focus main — the mini-window is meant to be a focused mini
+    // launcher that doesn't disturb the user's current layout.
+    sendSafe('badges-launch-item', payload);
+  });
+
+  /** Mini-window → launch a whole node/deck group. */
+  ipcMain.on('badges-launch-ref', (_e, payload) => {
+    if (!payload || !payload.refType || !payload.refId) return;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    sendSafe('badges-launch-ref', payload);
+  });
+
+  /** Overlay sends this when the user drops a badge back inside the main
+   *  window OR right-clicks → unpin. */
+  ipcMain.on('badges-unpin', (_e, badgeId) => {
+    mutateBadges(list => list.filter(b => b.id !== badgeId));
+  });
+
+  /** Overlay sends this when a drag ends outside the main window. */
+  ipcMain.on('badges-reposition', (_e, badgeId, x, y) => {
+    mutateBadges(list => list.map(b =>
+      b.id === badgeId ? { ...b, x: Math.round(x), y: Math.round(y) } : b
+    ));
+  });
+
+  /** Overlay flips its click-through mode as the pointer enters/leaves badges. */
+  ipcMain.on('badges-set-capture', (_e, capture) => {
+    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+    if (capture) {
+      badgeOverlay.setIgnoreMouseEvents(false);
+    } else {
+      badgeOverlay.setIgnoreMouseEvents(true, { forward: true });
+    }
+  });
+
+  /** Overlay asks whether a screen point is inside the main nost window —
+   *  used for the "drag-back-to-unpin" gesture. */
+  ipcMain.handle('badges-is-inside-main', (_e, x, y) => {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return false;
+    const b = mainWindow.getBounds();
+    return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
+  });
+
+  /** Overlay right-click → show a native context menu anchored at cursor. */
+  ipcMain.on('badges-context-menu', (_e, badgeId) => {
+    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+    const menu = Menu.buildFromTemplate([
+      {
+        label: '실행',
+        click: () => {
+          const data = store.get('appData') || {};
+          const b = (data.floatingBadges || []).find(x => x.id === badgeId);
+          if (!b) return;
+          // For space: open main window and scroll to it. For node/deck:
+          // fire the group launch directly.
+          if (b.refType === 'space') {
+            if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
+            mainWindow?.focus();
+            sendSafe('badges-reveal-space', { refId: b.refId });
+          } else {
+            sendSafe('badges-launch-ref', { refType: b.refType, refId: b.refId });
+          }
+        },
+      },
+      { type: 'separator' },
+      {
+        label: '플로팅 해제',
+        click: () => mutateBadges(list => list.filter(b => b.id !== badgeId)),
+      },
+      {
+        label: '모든 플로팅 해제',
+        click: () => mutateBadges(() => []),
+      },
+    ]);
+    menu.popup({ window: badgeOverlay });
+  });
+
   // ── 12k. Extension Bridge ────────────────────────────────────────
 
   ipcMain.handle('get-extension-bridge-status', () => ({
@@ -1919,6 +2276,9 @@ app.whenReady().then(() => {
   // the main window initializes first — avoids a perceived double-flash.
   setTimeout(() => syncFloatingWindow(), 200);
 
+  // Restore floating badges if any were pinned in a previous session.
+  setTimeout(() => syncBadgeOverlay(), 300);
+
   // Notify renderer whenever monitor configuration changes
   const screen = getScreen();
   const sendMonitorChange = () => {
@@ -1932,6 +2292,10 @@ app.whenReady().then(() => {
   screen.on('display-added',           sendMonitorChange);
   screen.on('display-removed',         sendMonitorChange);
   screen.on('display-metrics-changed', sendMonitorChange);
+  // Badge overlay spans the virtual desktop — resize it when displays change.
+  screen.on('display-added',           () => syncBadgeOverlay());
+  screen.on('display-removed',         () => syncBadgeOverlay());
+  screen.on('display-metrics-changed', () => syncBadgeOverlay());
 
   // ── Auto-updater (packaged builds only) ──────────────────────────
   if (app.isPackaged) {

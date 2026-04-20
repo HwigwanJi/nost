@@ -608,6 +608,21 @@ export function useAppData() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   }, []);
 
+  // ── Floating badges (Phase 2) ────────────────────────────
+  // Main is the source of truth for the floatingBadges array — mutations from
+  // the overlay (click/unpin/drag) flow back through the `badges-updated` IPC,
+  // and this setter reconciles local state without triggering a redundant
+  // storeSave (main has already persisted to electron-store).
+  const setFloatingBadgesLocal = useCallback((next: import('../types').FloatingBadge[]) => {
+    setDataRaw(prev => {
+      if (JSON.stringify(prev.floatingBadges) === JSON.stringify(next)) return prev;
+      const patched = { ...prev, floatingBadges: next };
+      // Mirror into localStorage so next session's sync-load reflects latest.
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(patched));
+      return patched;
+    });
+  }, []);
+
   // ── Settings ─────────────────────────────────────────────
   const updateSettings = useCallback((settings: AppSettings) => {
     electronAPI.setOpacity(settings.opacity);
@@ -653,6 +668,7 @@ export function useAppData() {
     updateDeck,
     deleteDeck,
     saveContainerSlots,
+    setFloatingBadgesLocal,
     dismissSuggestion,
   };
 }

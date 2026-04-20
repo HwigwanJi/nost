@@ -79,6 +79,18 @@ export interface ElectronAPI {
   notifyFloatingSettingsChanged: () => void;
   onFloatingSettingsChanged: (cb: () => void) => void;
   onFloatingOpenSettings: (cb: () => void) => void;
+  // Floating badges (Phase 2)
+  pinBadge: (
+    refType: 'space' | 'node' | 'deck',
+    refId: string,
+    screenX?: number,
+    screenY?: number,
+  ) => Promise<{ success: boolean; id?: string; reason?: string }>;
+  syncBadges: () => void;
+  onBadgesLaunchItem: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string; itemId: string }) => void) => void;
+  onBadgesLaunchRef: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => void;
+  onBadgesRevealSpace: (cb: (payload: { refId: string }) => void) => void;
+  onBadgesUpdated: (cb: (badges: import('./types').FloatingBadge[]) => void) => void;
 }
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
@@ -139,4 +151,10 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   notifyFloatingSettingsChanged: noop,
   onFloatingSettingsChanged: noop,
   onFloatingOpenSettings: noop,
+  pinBadge: async () => ({ success: false, reason: 'dev-mode' }),
+  syncBadges: noop,
+  onBadgesLaunchItem: noop,
+  onBadgesLaunchRef: noop,
+  onBadgesRevealSpace: noop,
+  onBadgesUpdated: noop,
 };

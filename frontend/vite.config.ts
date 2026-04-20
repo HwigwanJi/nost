@@ -27,6 +27,7 @@ export default defineConfig({
       input: {
         main:     path.resolve(__dirname, 'index.html'),
         floating: path.resolve(__dirname, 'floating.html'),
+        badges:   path.resolve(__dirname, 'badges.html'),
       },
     },
   },

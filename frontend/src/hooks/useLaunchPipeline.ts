@@ -6,6 +6,7 @@ import type { LauncherItem } from '../types';
 const POLL_INTERVAL = 400;   // ms between polls
 const MAX_WAIT     = 15000;  // 15s timeout
 const SETTLE_DELAY = 200;    // ms after window found, before positioning
+const SLOW_NOTICE  = 2500;   // ms before upgrading spinner to "시간이 소요될 수 있습니다"
 
 type ShowToast = (
   msg: string,
@@ -171,7 +172,12 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
 
         // action === 'launched' — app just started, fall through to polling
         if (!needsPositioning) {
-          showToast(`${item.title}`, { immediate: true, duration: 3000 });
+          // App/document launches are often slow (Adobe, Office, IDEs).
+          // No polling on this branch, so tell the user up-front instead of
+          // leaving a silent toast that vanishes before the window appears.
+          showToast(`"${item.title}" 여는 중 — 시간이 소요될 수 있습니다`, {
+            immediate: true, duration: 3500,
+          });
           return;
         }
 
@@ -183,6 +189,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
 
       const startTime = Date.now();
       let windowFound = false;
+      let slowNoticeShown = false;
 
       while (Date.now() - startTime < MAX_WAIT) {
         await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
@@ -192,6 +199,15 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         if (results[0]?.alive) {
           windowFound = true;
           break;
+        }
+        // Upgrade the spinner after SLOW_NOTICE ms so the user knows the
+        // launch is still in progress (Adobe, Office docs, Premiere, etc.
+        // routinely take 5–10s on first open).
+        if (!slowNoticeShown && Date.now() - startTime >= SLOW_NOTICE) {
+          slowNoticeShown = true;
+          showToast(`"${item.title}" 여는 중 — 시간이 소요될 수 있습니다`, {
+            spinner: true, immediate: true,
+          });
         }
       }
 

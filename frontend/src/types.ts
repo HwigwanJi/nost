@@ -92,6 +92,22 @@ export interface NodeGroup {
   monitor?: number;   // preferred monitor for launch
 }
 
+/**
+ * Floating badge — a pinned-out-of-main-window shortcut to a Space / Node / Deck.
+ *
+ * All badges render inside ONE overlay BrowserWindow to keep RAM flat (vs one
+ * window per badge). The overlay uses `setIgnoreMouseEvents(true, {forward: true})`
+ * so clicks pass through the empty canvas, and only flips to capture mode while
+ * the pointer is hovering a badge rect.
+ */
+export interface FloatingBadge {
+  id: string;                  // unique (generated at pin time)
+  refType: 'space' | 'node' | 'deck';
+  refId: string;               // Space.id / NodeGroup.id / Deck.id
+  x: number;                   // screen coords (absolute, multi-monitor)
+  y: number;
+}
+
 export interface AppData {
   spaces: Space[];
   settings: AppSettings;
@@ -101,6 +117,7 @@ export interface AppData {
   decks?: Deck[];               // sequential launch groups
   dismissedSuggestions?: string[]; // DEPRECATED — kept for migration; read via migrateData
   dismissals?: Record<string, { at: number; count: number }>; // ghost dismissal cooldown: value → last dismiss time + count
+  floatingBadges?: FloatingBadge[]; // spaces/nodes/decks pinned as floating badges
 }
 
 // How long a dismissed suggestion stays hidden (ms). After this window elapses,

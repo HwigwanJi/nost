@@ -1,5 +1,20 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// Resolve homedir ONCE at preload load time. Calling require('os') lazily
+// inside an exposed contextBridge function fails intermittently with
+// "module not found: os" when Electron's preload runs under sandbox or when
+// the Node module cache has been torn down — which crashed the renderer
+// mid-session (see main.log 2026-04-20 16:45:38). Falling back to env vars
+// keeps getUserHome() working even if os resolution ever fails.
+let __cachedHome = '';
+try { __cachedHome = require('os').homedir() || ''; } catch {}
+if (!__cachedHome) {
+  __cachedHome = process.env.USERPROFILE
+    || (process.env.HOMEDRIVE && process.env.HOMEPATH ? process.env.HOMEDRIVE + process.env.HOMEPATH : '')
+    || process.env.HOME
+    || '';
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
   log: (level, msg, extra) => ipcRenderer.send('nost-log', level, msg, extra),
   openLogsFolder: () => ipcRenderer.send('open-logs-folder'),
@@ -46,7 +61,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRecentItems: () => ipcRenderer.invoke('get-recent-items'),
   getMonitors: () => ipcRenderer.invoke('get-monitors'),
   identifyMonitors: () => ipcRenderer.invoke('identify-monitors'),
-  getUserHome: () => require('os').homedir(),  // preload has access to Node modules
+  getUserHome: () => __cachedHome,  // resolved once at preload load (see top of file)
   /**
    * Electron 32+ removed the `File.path` property; drag-and-drop file objects
    * now only expose `name`. This helper wraps the replacement API so callers
@@ -67,4 +82,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFloatingSettingsChanged: (cb) => ipcRenderer.on('floating-settings-changed', () => cb()),
   /** Orb right-click > 설정 열기 — jump into the Settings dialog. */
   onFloatingOpenSettings: (cb) => ipcRenderer.on('floating-open-settings', () => cb()),
+
+  // ── Floating badges (Phase 2) ─────────────────────────────────
+  /** Pin a space / node / deck as a floating badge at the given screen coord
+   *  (or a default position if the coord is omitted). */
+  pinBadge: (refType, refId, screenX, screenY) =>
+    ipcRenderer.invoke('badges-pin', { refType, refId, screenX, screenY }),
+  /** Notify main that floatingBadges in the store has been mutated externally
+   *  (e.g. after an import) so the overlay rebuilds. */
+  syncBadges: () => ipcRenderer.send('badges-sync'),
+  /** Mini-window fired a single-item launch. Main renderer should route
+   *  the item through its full launch pipeline. */
+  onBadgesLaunchItem: (cb) =>
+    ipcRenderer.on('badges-launch-item', (_, payload) => cb(payload)),
+  /** Mini-window fired a node/deck group launch ("묶음 실행" / "순차 실행"). */
+  onBadgesLaunchRef: (cb) =>
+    ipcRenderer.on('badges-launch-ref', (_, payload) => cb(payload)),
+  /** Badge context-menu "실행" on a space ref → scroll that space into view. */
+  onBadgesRevealSpace: (cb) =>
+    ipcRenderer.on('badges-reveal-space', (_, payload) => cb(payload)),
+  /** Fires whenever the floatingBadges list changes — main renderer can
+   *  update UI (e.g. hide the "float" button for already-pinned items). */
+  onBadgesUpdated: (cb) =>
+    ipcRenderer.on('badges-updated', (_, badges) => cb(badges)),
 });
