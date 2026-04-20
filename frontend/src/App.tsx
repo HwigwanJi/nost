@@ -6,6 +6,8 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { SpaceAccordion } from './components/SpaceAccordion';
 import { PresetToggle } from './components/PresetToggle';
 import { TourOverlay } from './tour/TourOverlay';
+import { PaywallModal, type PaywallReason } from './components/PaywallModal';
+import { useEntitlement } from './hooks/useEntitlement';
 import { ItemDialog } from './components/ItemDialog';
 import { ItemWizard } from './components/ItemWizard';
 import { ScanDialog } from './components/ScanDialog';
@@ -462,6 +464,69 @@ export default function App() {
   const store = useAppData();
   const { data } = store;
 
+  // ── Entitlement (Phase 5) ────────────────────────────────────
+  // Single source of truth for "is this user on Pro?". Every gate in the
+  // tree calls this (or reads the memoised result via props). The modal
+  // below is shown whenever a component triggers `openPaywall(reason)`.
+  const entitlement = useEntitlement(data);
+  const [paywall, setPaywall] = useState<{ open: boolean; reason: PaywallReason }>(
+    { open: false, reason: 'generic' }
+  );
+  const openPaywall = useCallback((reason: PaywallReason = 'generic') => {
+    setPaywall({ open: true, reason });
+  }, []);
+  const closePaywall = useCallback(() => setPaywall(p => ({ ...p, open: false })), []);
+
+  // ── Centralised quota checks (Phase 5) ───────────────────────
+  // Every mutation that touches a limited resource (card, space, node, deck,
+  // floating badge, preset switch, container toggle) funnels its pre-check
+  // through these helpers. Returns `true` when the action is allowed; opens
+  // the paywall modal and returns `false` otherwise. Callers then just guard:
+  //     if (!checks.card()) return;
+  //     store.addItem(...)
+  const quotaChecks = useMemo(() => {
+    const currentCardTotal = (data.spaces ?? []).reduce(
+      (sum, s) => sum + (s.items ?? []).length, 0,
+    );
+    return {
+      card: () => {
+        if (entitlement.canAddCard(currentCardTotal)) return true;
+        openPaywall('card-limit');
+        return false;
+      },
+      space: () => {
+        if (entitlement.canAddSpace(data.spaces.length)) return true;
+        openPaywall('space-limit');
+        return false;
+      },
+      node: () => {
+        if (entitlement.canAddNode((data.nodeGroups ?? []).length)) return true;
+        openPaywall('node-limit');
+        return false;
+      },
+      deck: () => {
+        if (entitlement.canAddDeck((data.decks ?? []).length)) return true;
+        openPaywall('deck-limit');
+        return false;
+      },
+      floatingBadge: () => {
+        if (entitlement.canAddFloatingBadge((data.floatingBadges ?? []).length)) return true;
+        openPaywall('floating-badge-limit');
+        return false;
+      },
+      preset: (id: '1' | '2' | '3') => {
+        if (entitlement.canUsePreset(id)) return true;
+        openPaywall('preset-lock');
+        return false;
+      },
+      container: () => {
+        if (entitlement.canUseContainer()) return true;
+        openPaywall('container-lock');
+        return false;
+      },
+    };
+  }, [data.spaces, data.nodeGroups, data.decks, data.floatingBadges, entitlement, openPaywall]);
+
   // ── Floating badges (Phase 2) — subset that doesn't depend on late hooks ──
   // Main is the authoritative owner of floatingBadges — it reacts to overlay
   // drags/clicks and mutates electron-store directly. We mirror every push
@@ -500,6 +565,7 @@ export default function App() {
     refType: 'space' | 'node' | 'deck',
     refId: string,
   ) => {
+    if (!quotaChecks.floatingBadge()) return;
     const r = await electronAPI.pinBadge(refType, refId);
     if (!r.success) {
       const reason = r.reason === 'missing-ref' ? '잘못된 대상' : '플로팅 실패';
@@ -859,11 +925,12 @@ export default function App() {
       }
     } else {
       // New item — pre-generate ID so we can trigger the entry animation immediately
+      if (!quotaChecks.card()) return;
       const newId = generateId();
       store.addItem(spaceId, item as Omit<LauncherItem, 'id'>, newId);
       markItemsAsNew([newId]);
     }
-  }, [store, data.spaces, markItemsAsNew]);
+  }, [store, data.spaces, markItemsAsNew, quotaChecks]);
 
   // ── Item launcher (shared between card clicks & commands) ─
   const launchItem = useCallback((item: LauncherItem, spaceId: string) => {
@@ -1790,7 +1857,7 @@ export default function App() {
             <PresetToggle
               presets={store.presets}
               activeId={store.activePresetId}
-              onSelect={id => store.setActivePreset(id)}
+              onSelect={id => { if (quotaChecks.preset(id)) store.setActivePreset(id); }}
               onRename={(id, label) => store.renamePreset(id, label)}
             />
 
@@ -1872,7 +1939,7 @@ export default function App() {
                 stays interactive so the user can always dismiss the window. */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               {[
-                { icon: 'add_circle', title: '새 스페이스', fn: () => store.addSpace(),                dim: true  },
+                { icon: 'add_circle', title: '새 스페이스', fn: () => { if (quotaChecks.space()) store.addSpace(); }, dim: true  },
                 { icon: 'settings',   title: '환경설정',   fn: () => setDialog('settings'),            dim: true  },
                 { icon: 'close',      title: '닫기(Esc)',  fn: () => electronAPI.hideApp(),            dim: false },
               ].map(btn => (
@@ -2044,7 +2111,7 @@ export default function App() {
                 <Icon name="space_dashboard" size={44} color="var(--text-dim)" style={{ opacity: 0.5 }} />
                 <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>스페이스를 추가하고 아이템을 등록해보세요!</p>
                 <button
-                  onClick={() => store.addSpace()}
+                  onClick={() => { if (quotaChecks.space()) store.addSpace(); }}
                   style={{ marginTop: 4, padding: '7px 18px', background: '#6366f1', border: 'none', borderRadius: 8, color: '#fff', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
                 >
                   + 새 스페이스
@@ -2091,11 +2158,12 @@ export default function App() {
                             onScanItem={() => openScan(space.id)}
                             defaultOpen={!(data.collapsedSpaceIds ?? []).includes(space.id)}
                             onSetMonitor={(itemId, monitor) => handleSetMonitor(space.id, itemId, monitor)}
-                            onConvertToContainer={itemId => handleConvertToContainer(space.id, itemId)}
+                            onConvertToContainer={itemId => { if (quotaChecks.container()) handleConvertToContainer(space.id, itemId); }}
                             onConvertFromContainer={itemId => handleConvertFromContainer(space.id, itemId)}
                             onEditSlots={(itemId, dir) => handleEditSlots(space.id, itemId, dir)}
                             ghostItems={ghostCards.ghostsForSpace(space.id)}
                             onGhostAccept={(ghost) => {
+                              if (!quotaChecks.card()) return;
                               store.addItem(ghost.spaceId, { title: ghost.title, value: ghost.value, type: ghost.type });
                               ghostCards.accept(ghost);
                               showToast(`"${ghost.title}" 추가됨`);
@@ -2259,7 +2327,7 @@ export default function App() {
             allItems={allItems}
             nodeEditMode={nodeEditMode}
             nodeBuilding={nodeBuilding}
-            onStartEdit={handleStartNodeEdit}
+            onStartEdit={() => { if (quotaChecks.node()) handleStartNodeEdit(); }}
             onCancelEdit={handleCancelNodeEdit}
             onRemoveFromBuilding={id => setNodeBuilding(prev => prev.filter(x => x !== id))}
             onSaveGroup={handleSaveNodeGroup}
@@ -2272,7 +2340,7 @@ export default function App() {
             decks={decks}
             deckBuilding={deckBuilding}
             deckItems={deckItems}
-            onStartDeckBuild={() => handleModeChange('deck')}
+            onStartDeckBuild={() => { if (quotaChecks.deck()) handleModeChange('deck'); }}
             onCancelDeckBuild={() => { setDeckBuilding(false); setDeckItems([]); setActiveMode('normal'); }}
             onRemoveFromDeckBuilding={id => setDeckItems(prev => prev.filter(x => x !== id))}
             onSaveDeck={handleSaveDeck}
@@ -2469,6 +2537,20 @@ export default function App() {
       {/* Tour overlay — self-hidden when no tour is running (early-return null).
           Mount high in the tree so its spotlight sits above dialogs/toasters. */}
       <TourOverlay onComplete={id => store.markTourCompleted(id)} />
+      {/* Paywall — lives here so any component in the tree can open it via
+          the handlers passed down through props. Rendered above TourOverlay
+          so the upgrade CTA beats any running tour in z-order. */}
+      <PaywallModal
+        open={paywall.open}
+        reason={paywall.reason}
+        entitlement={entitlement}
+        onClose={closePaywall}
+        onStartTrial={() => {
+          store.startTrialIfEligible();
+          closePaywall();
+          showToast('14일 무료 체험 시작');
+        }}
+      />
       <Toaster
         position="bottom-center"
         offset={16}

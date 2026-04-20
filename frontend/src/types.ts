@@ -74,7 +74,79 @@ export interface AppSettings {
   documentExtensions?: string[]; // file extensions treated as documents
   monitorDirections?: Record<number, 'w' | 'a' | 's' | 'd' | 'c'>; // Key assigned to each monitor: wasd = direction, c = current
   floatingButton?: FloatingButtonSettings; // Phase 1: main FAB only
+  license?: License;             // Phase 5: paid-tier entitlement cache
 }
+
+// ── Licensing & Entitlement (Phase 5) ─────────────────────────────
+//
+// The license record is the client-side cache of what the backend knows about
+// this user's subscription. Authoritative source is the server's
+// /api/license/verify endpoint; the client stores the last verified snapshot
+// so offline usage has a grace window (see LICENSE_GRACE_DAYS below).
+//
+// `tier === 'pro'` is ONLY honoured when:
+//   - status === 'active' AND periodEndsAt > now, OR
+//   - status === 'trial'  AND trialEndsAt  > now, OR
+//   - status === 'active' AND periodEndsAt + GRACE > now (7-day soft expiry)
+//
+// Anything outside of that collapses to effective free-tier. The hook
+// `useEntitlement` (see hooks/useEntitlement.ts) centralises this policy so
+// component call sites never reinvent the predicate.
+
+export type LicenseTier = 'free' | 'pro';
+
+export type LicenseStatus =
+  | 'none'          // never signed in / paid
+  | 'trial'         // in free-trial window
+  | 'active'        // paid, billing-key live
+  | 'past_due'      // last auto-charge failed; in grace window
+  | 'canceled'      // user canceled; active until periodEndsAt
+  | 'expired';      // past periodEndsAt + grace
+
+export interface License {
+  tier: LicenseTier;
+  status: LicenseStatus;
+  /** Server-issued email or user id; for display. */
+  identity?: string;
+  /** Unix ms when the trial started locally (trial is client-awarded once). */
+  trialStartedAt?: number;
+  /** Unix ms when the trial expires. */
+  trialEndsAt?: number;
+  /** Unix ms when the current paid period ends (renewal target). */
+  periodEndsAt?: number;
+  /** Server-issued opaque token used with /license/verify. */
+  licenseKey?: string;
+  /** Device fingerprint registered with the server (ours). */
+  deviceId?: string;
+  /** Last successful /license/verify timestamp — used for offline grace. */
+  lastVerifiedAt?: number;
+}
+
+/** Free-plan limits. A Pro subscription removes every cap. */
+export const FREE_LIMITS = {
+  /** Max cards across ALL spaces in the active preset. */
+  totalCards: 20,
+  /** Max spaces in the active preset. */
+  spaces: 4,
+  /** Max nodes in the active preset. */
+  nodes: 1,
+  /** Max decks in the active preset. */
+  decks: 1,
+  /** Max floating badges (any type). */
+  floatingBadges: 1,
+  /** Presets 2 and 3 are Pro-only; preset 1 is always free. */
+  presets: 1,
+  /** Container feature (slot-based cards) is Pro-only. */
+  containerEnabled: false,
+} as const;
+
+/** Trial window length in milliseconds. */
+export const TRIAL_DURATION_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** Offline-verify grace window — if server unreachable, Pro remains valid
+ *  up to this many days past the last successful verification. */
+export const LICENSE_GRACE_DAYS = 7;
+
 
 export type AppMode = 'normal' | 'pin' | 'node' | 'deck' | 'clean';
 

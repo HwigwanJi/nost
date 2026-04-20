@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId } from '../types';
+import { newTrialLicense } from './useEntitlement';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
 import { createLogger } from '../lib/logger';
@@ -844,6 +845,42 @@ export function useAppData() {
     });
   }, []);
 
+  // ── Licensing (Phase 5) ───────────────────────────────────
+  /**
+   * Replace the license snapshot. Called by useLicenseSync when the server
+   * returns a fresh verify response, by the checkout flow on successful
+   * payment, and by startTrial() below.
+   */
+  const setLicense = useCallback((license: import('../types').License | undefined) => {
+    setRawData(prev => {
+      const next: AppData = {
+        ...prev,
+        settings: { ...prev.settings, license },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  /** Client-award the 14-day trial. Idempotent — if a trial is already active
+   *  or previously consumed, this is a no-op. The server re-signs the trial
+   *  window on first login so stolen clocks can't extend it. */
+  const startTrialIfEligible = useCallback(() => {
+    setRawData(prev => {
+      const existing = prev.settings.license;
+      // Trial is a one-shot gift — any prior license (even expired) forfeits it.
+      if (existing) return prev;
+      const next: AppData = {
+        ...prev,
+        settings: { ...prev.settings, license: newTrialLicense() },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
   // ── Settings ─────────────────────────────────────────────
   const updateSettings = useCallback((settings: AppSettings) => {
     electronAPI.setOpacity(settings.opacity);
@@ -898,5 +935,8 @@ export function useAppData() {
     renamePreset,
     completedTours: raw.completedTours ?? [],
     markTourCompleted,
+    // ── Licensing (Phase 5) ────────────────────────────────────
+    setLicense,
+    startTrialIfEligible,
   };
 }
