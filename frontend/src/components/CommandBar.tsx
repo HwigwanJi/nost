@@ -16,6 +16,12 @@ export type ParsedCommand =
   | { kind: 'pin'; spaceIdx: number; cardIdx: number }
   | { kind: 'resize-window'; pct: 50 | 75 | 100 }
   | { kind: 'help' }
+  // ── Phase 4 additions ─────────────────────────────────────
+  | { kind: 'switch-preset'; presetId: '1' | '2' | '3' }      // /1 /2 /3
+  | { kind: 'toggle-theme' }                                    // /theme
+  | { kind: 'set-opacity'; value: number }                      // /opacity N  (0–100)
+  | { kind: 'start-tutorial'; tourId?: string }                 // /tutorial [id]
+  | { kind: 'clean-unpinned'; scope: 'space' | 'all'; spaceIdx?: number }  // /clean [n]
   | { kind: 'invalid'; reason: string };
 
 export interface Suggestion {
@@ -106,6 +112,42 @@ export function parseCommand(input: string, spaces: Space[], _nodeGroups: NodeGr
     if (/^(50|75|100)$/.test(body)) {
       const pct = parseInt(body) as 50 | 75 | 100;
       return { kind: 'resize-window', pct };
+    }
+
+    // ── Phase 4 — presets / theme / opacity / tutorial / clean ──
+
+    // /1 /2 /3  → switch active preset
+    if (/^[123]$/.test(body)) {
+      return { kind: 'switch-preset', presetId: body as '1' | '2' | '3' };
+    }
+
+    // /theme → toggle light/dark
+    if (/^theme$/i.test(body)) return { kind: 'toggle-theme' };
+
+    // /opacity N  (N = 0–100 → launcher opacity)
+    if (/^opacity(\s.*)?$/i.test(body)) {
+      const raw = body.replace(/^opacity\s*/i, '').trim();
+      if (!raw) return { kind: 'invalid', reason: '/opacity 0~100 형식으로 입력 (예: /opacity 85)' };
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n < 0 || n > 100) {
+        return { kind: 'invalid', reason: `0~100 사이의 숫자가 필요합니다 (받은 값: "${raw}")` };
+      }
+      return { kind: 'set-opacity', value: Math.max(10, n) / 100 };  // floor at 10% so the app stays clickable
+    }
+
+    // /tutorial [id] → start tour
+    if (/^(tutorial|tour|guide)(\s.*)?$/i.test(body)) {
+      const id = body.replace(/^(tutorial|tour|guide)\s*/i, '').trim() || undefined;
+      return { kind: 'start-tutorial', tourId: id };
+    }
+
+    // /clean [n] → delete unpinned cards in space n (1-indexed), or all spaces if no n
+    if (/^clean(\s.*)?$/i.test(body)) {
+      const rest = body.replace(/^clean\s*/i, '').trim();
+      if (!rest) return { kind: 'clean-unpinned', scope: 'all' };
+      const n = parseInt(rest, 10);
+      if (Number.isFinite(n) && n >= 1) return { kind: 'clean-unpinned', scope: 'space', spaceIdx: n - 1 };
+      return { kind: 'invalid', reason: `/clean 또는 /clean n (예: /clean 2)` };
     }
 
     // Unknown slash command
@@ -199,6 +241,24 @@ export function buildSuggestions(
     return [{ icon: 'open_in_full', label: `런처 크기 ${cmd.pct}%`, sub: labels[cmd.pct], onSelect: () => onExecute(cmd) }];
   }
 
+  // ── Phase 4 ────────────────────────────────────────────────
+  if (cmd.kind === 'switch-preset') {
+    return [{ icon: 'dashboard', label: `프리셋 ${cmd.presetId}로 전환`, sub: '독립된 작업 공간으로 바꿉니다', onSelect: () => onExecute(cmd) }];
+  }
+  if (cmd.kind === 'toggle-theme') {
+    return [{ icon: 'dark_mode', label: '테마 전환', sub: '다크 ↔ 라이트', onSelect: () => onExecute(cmd) }];
+  }
+  if (cmd.kind === 'set-opacity') {
+    return [{ icon: 'opacity', label: `투명도 ${Math.round(cmd.value * 100)}%`, sub: '런처 창 배경 투명도', onSelect: () => onExecute(cmd) }];
+  }
+  if (cmd.kind === 'start-tutorial') {
+    return [{ icon: 'school', label: cmd.tourId ? `튜토리얼 "${cmd.tourId}" 시작` : '튜토리얼 선택', sub: cmd.tourId ? '가이드 오버레이 실행' : '사용 가능한 튜토리얼 목록', onSelect: () => onExecute(cmd) }];
+  }
+  if (cmd.kind === 'clean-unpinned') {
+    const sub = cmd.scope === 'all' ? '모든 스페이스에서 고정되지 않은 카드 삭제' : `스페이스 ${(cmd.spaceIdx ?? 0) + 1}의 고정되지 않은 카드 삭제`;
+    return [{ icon: 'cleaning_services', label: '청소', sub, onSelect: () => onExecute(cmd) }];
+  }
+
   if (cmd.kind === 'invalid') {
     return [{ icon: 'error', label: cmd.reason, sub: '', onSelect: () => {}, dimmed: true }];
   }
@@ -242,12 +302,17 @@ function itemIcon(item: LauncherItem): string {
 const HELP_CONTENT = [
   { cmd: '/n-m', desc: 'n번 스페이스의 m번 카드 실행' },
   { cmd: '//n', desc: 'n번 노드(워크플로우) 실행' },
+  { cmd: '/1  /2  /3', desc: '프리셋(작업 공간) 전환' },
   { cmd: '/setting', desc: '설정 열기' },
+  { cmd: '/tutorial', desc: '튜토리얼 시작' },
   { cmd: '/clipboard', desc: '클립보드 → 첫 번째 빈 슬롯에 저장' },
   { cmd: '/clipboard n-m', desc: '클립보드 → n번 스페이스 m번 위치에 저장' },
   { cmd: '/tile n-m n-m', desc: '두 카드를 분할화면으로 실행' },
   { cmd: '/new 이름', desc: '새 스페이스 생성' },
   { cmd: '/pin n-m', desc: '해당 카드 핀 토글' },
+  { cmd: '/clean [n]', desc: '고정되지 않은 카드 청소 (n 없으면 전체)' },
+  { cmd: '/theme', desc: '다크 / 라이트 테마 전환' },
+  { cmd: '/opacity N', desc: '런처 투명도 (0~100, 예: /opacity 85)' },
   { cmd: '/50  /75  /100', desc: '런처 창 크기를 화면 대비 해당 비율로 조정 (중앙 배치)' },
   { cmd: '텍스트', desc: '카드 전체 검색 (실시간 필터)' },
 ];

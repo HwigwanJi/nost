@@ -108,16 +108,54 @@ export interface FloatingBadge {
   y: number;
 }
 
-export interface AppData {
+/**
+ * Preset — a fully independent "board" of spaces + nodes + decks. The app
+ * ships with exactly 3 presets (ids '1' / '2' / '3'); the user switches
+ * between them via the pill toggle next to the search bar. Everything that
+ * represents *user workspace* lives here. Truly global concerns (shortcut,
+ * theme, accent, dismissal cooldowns) stay on AppData root.
+ */
+export interface Preset {
+  id: '1' | '2' | '3';
+  label: string;                // user-editable, default "프리셋 N"
   spaces: Space[];
+  nodeGroups?: NodeGroup[];
+  decks?: Deck[];
+  collapsedSpaceIds?: string[];
+  floatingBadges?: FloatingBadge[];
+}
+
+export type PresetId = Preset['id'];
+
+/**
+ * App data as seen by components — the active preset's workspace fields are
+ * always populated at the top level by the `useAppData` flat-view shim, so
+ * hundreds of `data.spaces.map(...)` call sites keep compiling. On-disk the
+ * authoritative owner of these fields is `presets[activePresetId]`; the
+ * shim mirrors it upward on every render and shreds writes back down.
+ */
+export interface AppData {
+  // ── Active preset's workspace (flat view) ──────────────────────
+  // These are *mirrors* of presets[activePresetId] — treat as read-only from
+  // the component side; mutate via the hook's `save`, which redirects into
+  // the owning preset.
+  spaces: Space[];
+  nodeGroups?: NodeGroup[];
+  decks?: Deck[];
+  collapsedSpaceIds?: string[];
+  floatingBadges?: FloatingBadge[];
+
+  // ── Preset machinery ───────────────────────────────────────────
+  presets: Preset[];             // always length 3 (ids '1' / '2' / '3')
+  activePresetId: PresetId;
+
+  // ── Global ─────────────────────────────────────────────────────
   settings: AppSettings;
   shortcut: string;
-  collapsedSpaceIds?: string[];  // UI state: which spaces are collapsed
-  nodeGroups?: NodeGroup[];      // linked item groups for split-screen
-  decks?: Deck[];               // sequential launch groups
-  dismissedSuggestions?: string[]; // DEPRECATED — kept for migration; read via migrateData
-  dismissals?: Record<string, { at: number; count: number }>; // ghost dismissal cooldown: value → last dismiss time + count
-  floatingBadges?: FloatingBadge[]; // spaces/nodes/decks pinned as floating badges
+  dismissedSuggestions?: string[]; // DEPRECATED — migrated into dismissals
+  dismissals?: Record<string, { at: number; count: number }>;
+  /** Completed-tour ids so we don't auto-start the same one twice. */
+  completedTours?: string[];
 }
 
 // How long a dismissed suggestion stays hidden (ms). After this window elapses,

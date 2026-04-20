@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots } from '../types';
+import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId } from '../types';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
 import { createLogger } from '../lib/logger';
@@ -8,27 +8,53 @@ const log = createLogger('useAppData');
 
 const STORAGE_KEY = 'quicklauncherData';
 
-function defaultData(): AppData {
-  const defaultSpace: Space = {
+/** Build a brand-new preset with a single default space. */
+function buildDefaultPreset(id: PresetId, seeded: boolean): Preset {
+  const firstSpace: Space = {
     id: generateId(),
-    name: '즐겨찾기',
-    items: [
+    name: seeded ? '즐겨찾기' : '새 스페이스',
+    items: seeded ? [
       { id: generateId(), type: 'url', title: '네이버', value: 'https://www.naver.com', clickCount: 0, pinned: false },
       { id: generateId(), type: 'url', title: '다음', value: 'https://www.daum.net', clickCount: 0, pinned: false },
       { id: generateId(), type: 'url', title: '유튜브', value: 'https://www.youtube.com', clickCount: 0, pinned: false },
       { id: generateId(), type: 'url', title: '구글', value: 'https://www.google.com', clickCount: 0, pinned: false },
       { id: generateId(), type: 'url', title: '지메일', value: 'https://mail.google.com', clickCount: 0, pinned: false },
       { id: generateId(), type: 'url', title: '카카오', value: 'https://www.kakao.com', clickCount: 0, pinned: false },
-    ],
+    ] : [],
     color: undefined,
     sortMode: 'custom',
     pinnedIds: [],
   };
   return {
-    spaces: [defaultSpace],
+    id,
+    label: `프리셋 ${id}`,
+    spaces: [firstSpace],
+    nodeGroups: [],
+    decks: [],
+    collapsedSpaceIds: [],
+    floatingBadges: [],
+  };
+}
+
+function defaultData(): AppData {
+  const presets = [
+    buildDefaultPreset('1', true),
+    buildDefaultPreset('2', false),
+    buildDefaultPreset('3', false),
+  ];
+  const active = presets[0];
+  return {
+    presets,
+    activePresetId: '1',
+    // Top-level mirrors of active preset (required by the AppData type; kept
+    // in sync by the `setDataRaw` shim on every write).
+    spaces: active.spaces,
+    nodeGroups: active.nodeGroups,
+    decks: active.decks,
+    collapsedSpaceIds: active.collapsedSpaceIds,
+    floatingBadges: active.floatingBadges,
     settings: { opacity: 0.95, closeAfterOpen: false, shortcut: 'Alt+4', theme: 'dark', autoLaunch: false },
     shortcut: 'Alt+4',
-    collapsedSpaceIds: [],
   };
 }
 
@@ -57,7 +83,36 @@ export function enforcePairInvariant(spaces: Space[]): Space[] {
   return out;
 }
 
+/**
+ * Normalise one space's shape (pairing / pins / item defaults). Extracted so
+ * migrateData() can apply it inside every preset uniformly.
+ */
+function normaliseSpace(s: Space): Space {
+  const { columnSpan: _cs, widthWeight: _ww, ...rest } = s;
+  return {
+    ...rest,
+    sortMode: s.sortMode ?? 'custom',
+    pinnedIds: s.pinnedIds ?? [],
+    pairedWithNext: s.pairedWithNext ?? false,
+    splitRatio: s.pairedWithNext ? (s.splitRatio ?? 0.5) : undefined,
+    items: s.items.map(i => ({ ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false })),
+  };
+}
+
+function normalisePreset(p: Preset): Preset {
+  return {
+    ...p,
+    label: p.label ?? `프리셋 ${p.id}`,
+    spaces: enforcePairInvariant((p.spaces ?? []).map(normaliseSpace)),
+    nodeGroups: p.nodeGroups ?? [],
+    decks: p.decks ?? [],
+    collapsedSpaceIds: p.collapsedSpaceIds ?? [],
+    floatingBadges: p.floatingBadges ?? [],
+  };
+}
+
 function migrateData(parsed: AppData): AppData {
+  // ── Settings defaults (global — same as before) ─────────────
   parsed.settings = {
     ...parsed.settings,
     theme: parsed.settings.theme ?? 'dark',
@@ -65,7 +120,6 @@ function migrateData(parsed: AppData): AppData {
     autoHide: parsed.settings.autoHide ?? false,
     accentColor: parsed.settings.accentColor ?? '#6366f1',
     documentExtensions: parsed.settings.documentExtensions ?? [],
-    // Phase 1: floating button defaults off; users opt in via Settings UI.
     floatingButton: parsed.settings.floatingButton ?? {
       enabled: false,
       idleOpacity: 0.65,
@@ -73,31 +127,58 @@ function migrateData(parsed: AppData): AppData {
       hideOnFullscreen: true,
     },
   };
-  parsed.collapsedSpaceIds = parsed.collapsedSpaceIds ?? [];
-  parsed.nodeGroups = parsed.nodeGroups ?? [];
-  parsed.spaces = parsed.spaces.map(s => {
-    // Phase 3: drop legacy widthWeight/columnSpan. New model uses pairedWithNext
-    // + splitRatio (see types.ts). Existing spaces load as solo by default; users
-    // can re-pair via drag. Preserve any already-set pair state for re-loads.
-    const { columnSpan: _cs, widthWeight: _ww, ...rest } = s;
-    return {
-      ...rest,
-      sortMode: s.sortMode ?? 'custom',
-      pinnedIds: s.pinnedIds ?? [],
-      pairedWithNext: s.pairedWithNext ?? false,
-      splitRatio: s.pairedWithNext ? (s.splitRatio ?? 0.5) : undefined,
-      items: s.items.map(i => ({ ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false })),
+
+  // ── Preset shape migration ──────────────────────────────────
+  // Older save files stored spaces/nodeGroups/decks/etc. at the top level.
+  // Move any legacy flat fields into presets[0] so the rest of the app can
+  // uniformly treat "active preset" as the source of truth.
+  if (!Array.isArray(parsed.presets) || parsed.presets.length === 0) {
+    const legacySpaces = parsed.spaces ?? [];
+    const legacyPreset: Preset = {
+      id: '1',
+      label: '프리셋 1',
+      spaces: legacySpaces.length > 0 ? legacySpaces : buildDefaultPreset('1', true).spaces,
+      nodeGroups: parsed.nodeGroups ?? [],
+      decks: parsed.decks ?? [],
+      collapsedSpaceIds: parsed.collapsedSpaceIds ?? [],
+      floatingBadges: parsed.floatingBadges ?? [],
     };
-  });
-  parsed.spaces = enforcePairInvariant(parsed.spaces);
-  // F5 migration: flat dismissedSuggestions[] → dismissals{ value: { at, count } }.
-  // We fold the legacy list in with a synthetic timestamp of 0 so it still reads
-  // as "long ago" — cooldown check will let it reappear if signal strengthens.
+    parsed.presets = [
+      legacyPreset,
+      buildDefaultPreset('2', false),
+      buildDefaultPreset('3', false),
+    ];
+  }
+
+  // Ensure exactly 3 presets in the '1','2','3' id order.
+  const byId = new Map<PresetId, Preset>();
+  for (const p of parsed.presets) byId.set(p.id, normalisePreset(p));
+  parsed.presets = (['1', '2', '3'] as PresetId[]).map(id =>
+    byId.get(id) ?? buildDefaultPreset(id, false)
+  );
+
+  if (parsed.activePresetId !== '1' && parsed.activePresetId !== '2' && parsed.activePresetId !== '3') {
+    parsed.activePresetId = '1';
+  }
+
+  // Mirror active preset onto top-level flat fields — the AppData type treats
+  // spaces[] as required; the shim in useAppData keeps them synced on writes.
+  const activeForMirror = parsed.presets.find(p => p.id === parsed.activePresetId) ?? parsed.presets[0];
+  parsed.spaces            = activeForMirror.spaces;
+  parsed.nodeGroups        = activeForMirror.nodeGroups;
+  parsed.decks             = activeForMirror.decks;
+  parsed.collapsedSpaceIds = activeForMirror.collapsedSpaceIds;
+  parsed.floatingBadges    = activeForMirror.floatingBadges;
+
+  // ── Dismissals migration (global) ────────────────────────────
   if (!parsed.dismissals) {
     const dismissals: Record<string, { at: number; count: number }> = {};
     (parsed.dismissedSuggestions ?? []).forEach(v => { dismissals[v] = { at: 0, count: 1 }; });
     parsed.dismissals = dismissals;
   }
+
+  parsed.completedTours = parsed.completedTours ?? [];
+
   return parsed;
 }
 
@@ -136,37 +217,177 @@ function dismissLoadingScreen() {
 
 export function useAppData() {
   log.debug('useAppData() function called');
-  const [data, setDataRaw] = useState<AppData>(() => loadDataSync());
+  // `raw` is the true on-disk shape (presets[] + globals). All mutating
+  // callers still see a backward-compat "flat" view via `data` (below) — the
+  // `save` shim intercepts their writes and redirects per-preset keys into
+  // presets[activePresetId].
+  const [raw, setRawData] = useState<AppData>(() => loadDataSync());
   const [isFirstRun, setIsFirstRun] = useState(false);
 
   // On mount: load from electron-store (migrating from localStorage if needed)
   useEffect(() => {
     log.debug('useAppData mount effect running');
-    setLoadingProgress(60); // React mounted
+    setLoadingProgress(60);
     electronAPI.setLoadingStatus('데이터 불러오는 중...');
     electronAPI.storeLoad().then(stored => {
-      log.debug(`storeLoad resolved. hasSpaces=${!!(stored && typeof stored === 'object' && 'spaces' in (stored as AppData))}`);
-      if (stored && typeof stored === 'object' && 'spaces' in (stored as AppData)) {
-        setDataRaw(migrateData(stored as AppData));
+      const hasStore = !!(stored && typeof stored === 'object' && (
+        'presets' in (stored as AppData) || 'spaces' in (stored as AppData)
+      ));
+      log.debug(`storeLoad resolved. hasStore=${hasStore}`);
+      if (hasStore) {
+        setRawData(migrateData(stored as AppData));
       } else {
         const localRaw = localStorage.getItem(STORAGE_KEY);
         if (!localRaw) setIsFirstRun(true);
         const localData = loadDataSync();
         electronAPI.storeSave(localData);
       }
-      setLoadingProgress(90); // data ready
+      setLoadingProgress(90);
       electronAPI.setLoadingStatus('화면 그리는 중...');
       requestAnimationFrame(() => requestAnimationFrame(() => {
         log.debug('double-rAF fired → dismissLoadingScreen');
         dismissLoadingScreen();
-      })); // after first paint
+      }));
     }).catch(err => log.error('storeLoad rejected', err));
   }, []);
 
+  // `raw` already has its top-level flat fields mirrored to the active preset
+  // (migrateData + every shim call maintains this invariant), so `data` is
+  // literally `raw` — no extra object allocation per render.
+  const data: AppData = raw;
+
+  /**
+   * Commit a mutation. `next` is the flat-view shape callers produce via
+   * `save({ ...data, ... })`. Per-preset fields land on the active preset;
+   * global fields land on raw.
+   *
+   * We intentionally DO NOT read `next.presets` or `next.activePresetId` —
+   * those are managed only by `setActivePreset` / `renamePreset`, which
+   * mutate `raw` directly. Allowing `save` to overwrite them would let a
+   * stale data-view spread clobber a newly-switched preset.
+   */
   const save = useCallback((next: AppData) => {
-    setDataRaw(next);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    electronAPI.storeSave(next);
+    setRawData(prev => {
+      const activeId = prev.activePresetId;
+      const nextPresets = prev.presets.map(p => p.id === activeId ? {
+        ...p,
+        spaces:            next.spaces            ?? p.spaces,
+        nodeGroups:        next.nodeGroups        ?? p.nodeGroups,
+        decks:             next.decks             ?? p.decks,
+        collapsedSpaceIds: next.collapsedSpaceIds ?? p.collapsedSpaceIds,
+        floatingBadges:    next.floatingBadges    ?? p.floatingBadges,
+      } : p);
+      const active = nextPresets.find(p => p.id === activeId)!;
+      const newRaw: AppData = {
+        ...prev,
+        settings:        next.settings        ?? prev.settings,
+        shortcut:        next.shortcut        ?? prev.shortcut,
+        dismissals:      next.dismissals      ?? prev.dismissals,
+        completedTours:  next.completedTours  ?? prev.completedTours,
+        presets: nextPresets,
+        // Refresh flat-view mirrors from the authoritative preset.
+        spaces:            active.spaces,
+        nodeGroups:        active.nodeGroups,
+        decks:             active.decks,
+        collapsedSpaceIds: active.collapsedSpaceIds,
+        floatingBadges:    active.floatingBadges,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newRaw));
+      electronAPI.storeSave(newRaw);
+      return newRaw;
+    });
+  }, []);
+
+  // ── Preset management ───────────────────────────────────────
+  const setActivePreset = useCallback((id: PresetId) => {
+    setRawData(prev => {
+      if (prev.activePresetId === id) return prev;
+      const active = prev.presets.find(p => p.id === id) ?? prev.presets[0];
+      const next: AppData = {
+        ...prev,
+        activePresetId: id,
+        // Swap in the new preset's mirrors so `data.spaces` etc. flips atomically.
+        spaces:            active.spaces,
+        nodeGroups:        active.nodeGroups,
+        decks:             active.decks,
+        collapsedSpaceIds: active.collapsedSpaceIds,
+        floatingBadges:    active.floatingBadges,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      // Persist first, THEN tell main to rebuild the badge overlay so it sees
+      // the fresh floatingBadges belonging to the newly-active preset.
+      electronAPI.storeSave(next).then(() => electronAPI.syncBadges());
+      return next;
+    });
+  }, []);
+
+  const renamePreset = useCallback((id: PresetId, label: string) => {
+    setRawData(prev => {
+      const trimmed = label.trim() || `프리셋 ${id}`;
+      const next = {
+        ...prev,
+        presets: prev.presets.map(p => p.id === id ? { ...p, label: trimmed } : p),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const markTourCompleted = useCallback((tourId: string) => {
+    setRawData(prev => {
+      if ((prev.completedTours ?? []).includes(tourId)) return prev;
+      const next = { ...prev, completedTours: [...(prev.completedTours ?? []), tourId] };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  /**
+   * Flat-view setter shim. A handful of legacy callers (setFloatingBadgesLocal,
+   * setPairSplitRatio, bulk item operations, …) call `setDataRaw(prev => ...)`
+   * and read `prev.spaces` / `prev.collapsedSpaceIds` / etc. at the top level.
+   * After the preset refactor those fields live under `activePreset`, so this
+   * shim rewrites the updater callback to operate on a flat-view snapshot and
+   * folds any returned per-preset mutations back into the raw shape.
+   *
+   * Direct `setDataRaw(nextAppData)` calls fall through to `setRawData` as-is
+   * — the only caller who does that (reloadFromStore) supplies an already-
+   * migrated full AppData which is what we want persisted wholesale.
+   */
+  const setDataRaw = useCallback((updater: AppData | ((prev: AppData) => AppData)) => {
+    if (typeof updater !== 'function') {
+      setRawData(updater);
+      return;
+    }
+    setRawData(prevRaw => {
+      const flatNext = updater(prevRaw);
+      if (flatNext === prevRaw) return prevRaw;
+      const activeId = prevRaw.activePresetId;
+      const nextPresets = prevRaw.presets.map(p => p.id === activeId ? {
+        ...p,
+        spaces:            flatNext.spaces            ?? p.spaces,
+        nodeGroups:        flatNext.nodeGroups        ?? p.nodeGroups,
+        decks:             flatNext.decks             ?? p.decks,
+        collapsedSpaceIds: flatNext.collapsedSpaceIds ?? p.collapsedSpaceIds,
+        floatingBadges:    flatNext.floatingBadges    ?? p.floatingBadges,
+      } : p);
+      const active = nextPresets.find(p => p.id === activeId)!;
+      return {
+        ...prevRaw,
+        settings:        flatNext.settings        ?? prevRaw.settings,
+        shortcut:        flatNext.shortcut        ?? prevRaw.shortcut,
+        dismissals:      flatNext.dismissals      ?? prevRaw.dismissals,
+        completedTours:  flatNext.completedTours  ?? prevRaw.completedTours,
+        presets: nextPresets,
+        spaces:            active.spaces,
+        nodeGroups:        active.nodeGroups,
+        decks:             active.decks,
+        collapsedSpaceIds: active.collapsedSpaceIds,
+        floatingBadges:    active.floatingBadges,
+      };
+    });
   }, []);
 
   // ── Spaces ──────────────────────────────────────────────
@@ -601,10 +822,10 @@ export function useAppData() {
    * or floating-orb right-click toggling the floating button on/off).
    */
   const reloadFromStore = useCallback(async () => {
-    const raw = await electronAPI.storeLoad();
-    if (!raw) return;
-    const next = migrateData(raw as AppData);
-    setDataRaw(next);
+    const loaded = await electronAPI.storeLoad();
+    if (!loaded) return;
+    const next = migrateData(loaded as AppData);
+    setRawData(next);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
   }, []);
 
@@ -670,5 +891,12 @@ export function useAppData() {
     saveContainerSlots,
     setFloatingBadgesLocal,
     dismissSuggestion,
+    // ── Preset + tour (Phase 4) ────────────────────────────────
+    presets: raw.presets,
+    activePresetId: raw.activePresetId,
+    setActivePreset,
+    renamePreset,
+    completedTours: raw.completedTours ?? [],
+    markTourCompleted,
   };
 }

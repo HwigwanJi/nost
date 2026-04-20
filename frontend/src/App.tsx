@@ -4,6 +4,8 @@ import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { SpaceAccordion } from './components/SpaceAccordion';
+import { PresetToggle } from './components/PresetToggle';
+import { TourOverlay } from './tour/TourOverlay';
 import { ItemDialog } from './components/ItemDialog';
 import { ItemWizard } from './components/ItemWizard';
 import { ScanDialog } from './components/ScanDialog';
@@ -1271,10 +1273,51 @@ export default function App() {
       return;
     }
 
+    // ── Phase 4 — new commands ────────────────────────────────
+    if (cmd.kind === 'switch-preset') {
+      store.setActivePreset(cmd.presetId);
+      const label = store.presets.find(p => p.id === cmd.presetId)?.label ?? `프리셋 ${cmd.presetId}`;
+      showToast(`${label}로 전환`);
+      return;
+    }
+
+    if (cmd.kind === 'toggle-theme') {
+      const nextTheme = data.settings.theme === 'dark' ? 'light' : 'dark';
+      store.updateSettings({ ...data.settings, theme: nextTheme });
+      showToast(nextTheme === 'dark' ? '다크 테마' : '라이트 테마');
+      return;
+    }
+
+    if (cmd.kind === 'set-opacity') {
+      store.updateSettings({ ...data.settings, opacity: cmd.value });
+      showToast(`투명도 ${Math.round(cmd.value * 100)}%`);
+      return;
+    }
+
+    if (cmd.kind === 'start-tutorial') {
+      // The tutorial runtime reads this ref and starts the matching tour.
+      // If no id given, opens the tour picker.
+      window.dispatchEvent(new CustomEvent('nost:start-tour', { detail: { tourId: cmd.tourId ?? null } }));
+      return;
+    }
+
+    if (cmd.kind === 'clean-unpinned') {
+      if (cmd.scope === 'all') {
+        const deleted = store.deleteUnpinnedInAllSpaces();
+        showToast(`${deleted}개 카드 청소됨`);
+      } else {
+        const sp = data.spaces[cmd.spaceIdx ?? 0];
+        if (!sp) { showToast(`스페이스 ${(cmd.spaceIdx ?? 0) + 1} 없음`); return; }
+        const deleted = store.deleteUnpinnedInSpace(sp.id);
+        showToast(`${deleted}개 카드 청소됨 — ${sp.name}`);
+      }
+      return;
+    }
+
     if (cmd.kind === 'invalid') {
       showToast(`${cmd.reason}`);
     }
-  }, [data.spaces, data.nodeGroups, store, showToast, launchItem, handleNodeGroupLaunch, handleTogglePin]);
+  }, [data.spaces, data.nodeGroups, data.settings, store, showToast, launchItem, handleNodeGroupLaunch, handleTogglePin]);
 
   // ── DnD sensors ───────────────────────────────────────────
   // Single UnifiedPointerSensor handles BOTH left-click (space reorder) and
@@ -1743,8 +1786,20 @@ export default function App() {
               <NostLogo size={12} color="var(--text-muted)" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} />
             </div>
 
+            {/* Preset toggle — three independent workspace slots */}
+            <PresetToggle
+              presets={store.presets}
+              activeId={store.activePresetId}
+              onSelect={id => store.setActivePreset(id)}
+              onRename={(id, label) => store.renamePreset(id, label)}
+            />
+
             {/* Search — inert while a tool is active (data-mode-dim) */}
-            <div style={{ flex: 1, position: 'relative', WebkitAppRegion: 'no-drag' } as React.CSSProperties} data-mode-dim="true">
+            <div
+              data-tour-id="search-input"
+              style={{ flex: 1, position: 'relative', WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+              data-mode-dim="true"
+            >
               <Icon name={isSlashMode ? 'terminal' : 'search'} size={15} color={isSlashMode ? 'var(--accent)' : 'var(--text-dim)'} style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
               <input
                 value={query}
@@ -2411,6 +2466,9 @@ export default function App() {
           onOpenExtensionSettings={() => openSettingsTab('extension')}
         />
       )}
+      {/* Tour overlay — self-hidden when no tour is running (early-return null).
+          Mount high in the tree so its spotlight sits above dialogs/toasters. */}
+      <TourOverlay onComplete={id => store.markTourCompleted(id)} />
       <Toaster
         position="bottom-center"
         offset={16}

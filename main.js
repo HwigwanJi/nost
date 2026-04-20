@@ -1000,17 +1000,33 @@ function syncBadgeOverlay() {
   }
 }
 
-/** Mutate the appData blob with a callback, persist, and refresh the overlay. */
+/** Mutate the appData blob with a callback, persist, and refresh the overlay.
+ *
+ *  Preset-aware: the authoritative owner of floatingBadges is the ACTIVE
+ *  preset under data.presets[]. The top-level data.floatingBadges is a
+ *  renderer-side flat-view mirror. We write BOTH so the next load's mirror-
+ *  refresh doesn't discard our mutation. */
 function mutateBadges(fn) {
   const data = store.get('appData') || {};
-  const list = Array.isArray(data.floatingBadges) ? [...data.floatingBadges] : [];
-  const next = fn(list);
-  data.floatingBadges = next ?? list;
+  const activeId = data.activePresetId;
+  const presets = Array.isArray(data.presets) ? data.presets : [];
+  const activeIdx = presets.findIndex(p => p && p.id === activeId);
+  // Source of truth: active preset's list; fall back to top-level for pre-
+  // migration stores.
+  const src = activeIdx >= 0
+    ? (presets[activeIdx].floatingBadges ?? [])
+    : (Array.isArray(data.floatingBadges) ? data.floatingBadges : []);
+  const list = [...src];
+  const next = fn(list) ?? list;
+
+  if (activeIdx >= 0) {
+    data.presets = presets.map((p, i) => i === activeIdx ? { ...p, floatingBadges: next } : p);
+  }
+  data.floatingBadges = next;  // keep the flat mirror in sync
+
   store.set('appData', data);
   syncBadgeOverlay();
-  // Also tell the main renderer so its UI reflects the change (e.g. hide the
-  // "float" action for spaces that are already pinned).
-  sendSafe('badges-updated', data.floatingBadges);
+  sendSafe('badges-updated', next);
 }
 
 function createWindow() {
