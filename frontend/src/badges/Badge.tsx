@@ -84,17 +84,39 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
   const [landing, setLanding]   = useState(true); // one-shot "boing" on mount
 
   // Drag bookkeeping.
+  //
+  // We capture pointer position via clientX/clientY (window-relative CSS
+  // pixels) rather than screenX/screenY. Chromium on Windows returns screenX
+  // in *physical* pixels when DPI scaling is active, so mixing a physical-
+  // pixel delta with a DIP-based badge origin made the badge drift by the
+  // monitor's scale factor after the first drag. clientX is guaranteed CSS
+  // pixels in the overlay window's frame, and the overlay is sized in DIP
+  // 1:1, so `clientDelta` is a correct DIP delta.
   const dragRef = useRef<{
-    startScreenX: number; startScreenY: number;  // pointer at pointerdown (screen)
-    startBadgeX:  number; startBadgeY:  number;  // badge at pointerdown (screen)
+    startClientX: number; startClientY: number;  // pointer at pointerdown (window CSS px)
+    startBadgeX:  number; startBadgeY:  number;  // badge at pointerdown (screen DIP)
     started: boolean;
   } | null>(null);
 
-  // Run the landing animation for 420 ms after mount, then remove the class.
+  // Run the landing animation for 260 ms after mount, then remove the class.
+  // Shorter + gentler than the original 420ms / 1.18× peak — the bouncier
+  // version created a "badge shrank after drag" illusion because scale(1)
+  // felt noticeably smaller than the freshly-landed scale(1.08) peak.
   useEffect(() => {
-    const t = setTimeout(() => setLanding(false), 420);
+    const t = setTimeout(() => setLanding(false), 260);
     return () => clearTimeout(t);
   }, []);
+
+  // When main's authoritative push catches up with our optimistic localPos,
+  // drop the optimistic state. Otherwise a stale `localPos` would keep
+  // masking `data.x/y` forever, and the NEXT drag's math anchors against
+  // data.x while the element is visually rendered at localPos — producing a
+  // noticeable jump at drag start ("이상한 곳으로 튄다").
+  useEffect(() => {
+    if (localPos && localPos.x === data.x && localPos.y === data.y) {
+      setLocalPos(null);
+    }
+  }, [data.x, data.y, localPos]);
 
   const color = data.color ?? DEFAULT_COLOR;
 
@@ -109,10 +131,14 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     setPressed(true);
     dragRef.current = {
-      startScreenX: e.screenX,
-      startScreenY: e.screenY,
-      startBadgeX:  data.x,
-      startBadgeY:  data.y,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      // Anchor against the CURRENTLY rendered position (localPos may still
+      // hold an optimistic value from a previous drag that main hasn't echoed
+      // back yet). Reading only `data.x` here was the source of the visible
+      // "jump to stale position" on the second drag.
+      startBadgeX:  localPos?.x ?? data.x,
+      startBadgeY:  localPos?.y ?? data.y,
       started: false,
     };
   };
@@ -120,8 +146,8 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
   const handlePointerMove = (e: React.PointerEvent) => {
     const s = dragRef.current;
     if (!s) return;
-    const dx = e.screenX - s.startScreenX;
-    const dy = e.screenY - s.startScreenY;
+    const dx = e.clientX - s.startClientX;
+    const dy = e.clientY - s.startClientY;
     if (!s.started && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
     if (!s.started) {
       s.started = true;
@@ -150,8 +176,14 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     setDragging(false);
     const finalX = (localPos?.x ?? data.x);
     const finalY = (localPos?.y ?? data.y);
+    // The isInsideMainWindow check needs SCREEN coords — translate the final
+    // badge screen coord from the drop pointer's client coord via the overlay
+    // origin. Using e.screenX directly was unreliable on fractional-DPI
+    // Windows setups (same physical-vs-DIP mismatch as the drag math).
+    const dropScreenX = originX + e.clientX;
+    const dropScreenY = originY + e.clientY;
     try {
-      const inside = await api.isInsideMainWindow(e.screenX, e.screenY);
+      const inside = await api.isInsideMainWindow(dropScreenX, dropScreenY);
       if (inside) {
         api.unpin(data.id);
         return;
@@ -159,7 +191,8 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     } catch { /* ignore — fall through to reposition */ }
     api.reposition(data.id, finalX, finalY);
     // Keep the optimistic local position until the next state push from main
-    // overwrites `data.x/y`. Avoids a one-frame snap-back.
+    // catches up (see the useEffect near the top — it clears localPos when
+    // data.x/y match, so subsequent drags anchor against the fresh coord).
   };
 
   const handlePointerCancel = (e: React.PointerEvent) => {
@@ -195,7 +228,7 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
       ? 'none'
       : 'transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 180ms ease',
     willChange: 'transform',
-    animation: landing ? 'nost-badge-land 420ms cubic-bezier(0.34, 1.56, 0.64, 1)' : undefined,
+    animation: landing ? 'nost-badge-land 260ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
   };
 
   // ── Icon resolution ──────────────────────────────────────
@@ -249,9 +282,8 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
           overlay has no external CSS dependency. */}
       <style>{`
         @keyframes nost-badge-land {
-          0%   { transform: scale(0.2) translateY(-18px); opacity: 0; }
-          55%  { transform: scale(1.18) translateY(2px);  opacity: 1; }
-          80%  { transform: scale(0.96) translateY(0);    opacity: 1; }
+          0%   { transform: scale(0.55) translateY(-8px); opacity: 0; }
+          70%  { transform: scale(1.04) translateY(0);    opacity: 1; }
           100% { transform: scale(1)    translateY(0);    opacity: 1; }
         }
       `}</style>
