@@ -36,6 +36,13 @@ let loadingWindow    = null;
 let tray             = null;
 let currentShortcut  = 'Alt+4';
 
+// ── Update download state ─────────────────────────────────────────────
+// Shared by auto-updater event handlers and tray menu builder so the
+// tray always reflects the true download status.
+let updateState      = 'idle';   // 'idle' | 'downloading' | 'downloaded'
+let updatePct        = 0;        // 0-100
+let updateNewVersion = '';       // e.g. "1.0.15"
+
 // Debounce guard — prevents rapid Alt+4 keypresses from racing show/hide.
 // Without this the transparent window's GPU backing store can be lost,
 // leaving a blank frame with only the OS window outline visible.
@@ -624,6 +631,117 @@ function checkForUpdateAsync() {
     autoUpdater.once('error',                onErr);
     autoUpdater.checkForUpdates().catch(err => { cleanup(); resolve({ status: 'error', message: err.message }); });
   });
+}
+
+// ── 11b. Tray Menu Builder ────────────────────────────────────────────
+//
+// The tray menu is rebuilt dynamically whenever the update download state
+// changes so that the user always sees accurate status at a glance.
+
+/** Build the menu template for the current updateState. */
+function buildTrayTemplate() {
+  const versionLabel = `버전 ${app.getVersion()}`;
+
+  // ── Update fully downloaded — offer install ───────────────────────
+  if (updateState === 'downloaded') {
+    return [
+      { label: versionLabel, enabled: false },
+      {
+        label: `🆕 v${updateNewVersion} 준비됨 — 재시작하여 설치`,
+        click: () => {
+          dialog.showMessageBox({
+            type: 'info',
+            title: 'nost 업데이트',
+            message: `v${updateNewVersion} 업데이트가 준비됐습니다.`,
+            detail: '지금 재시작하면 업데이트가 자동으로 설치됩니다.',
+            buttons: ['재시작하여 설치', '나중에'],
+            defaultId: 0,
+          }).then(({ response }) => {
+            if (response === 0) autoUpdater.quitAndInstall(false, true);
+          });
+        },
+      },
+      { type: 'separator' },
+      { label: '종료', click: () => { app.isQuitting = true; app.quit(); } },
+    ];
+  }
+
+  // ── Downloading in progress — show % and block redundant checks ───
+  if (updateState === 'downloading') {
+    return [
+      { label: versionLabel, enabled: false },
+      { label: `⬇︎ v${updateNewVersion} 다운로드 중... ${updatePct}%`, enabled: false },
+      { type: 'separator' },
+      { label: '종료', click: () => { app.isQuitting = true; app.quit(); } },
+    ];
+  }
+
+  // ── Idle — standard check ─────────────────────────────────────────
+  return [
+    { label: versionLabel, enabled: false },
+    {
+      label: '업데이트 확인',
+      click: async () => {
+        // Re-read state in case it changed since menu was opened
+        if (updateState === 'downloaded') {
+          const { response } = await dialog.showMessageBox({
+            type: 'info', title: 'nost 업데이트',
+            message: `v${updateNewVersion} 업데이트가 준비됐습니다.`,
+            detail: '지금 재시작하면 업데이트가 자동으로 설치됩니다.',
+            buttons: ['재시작하여 설치', '나중에'], defaultId: 0,
+          });
+          if (response === 0) autoUpdater.quitAndInstall(false, true);
+          return;
+        }
+        if (updateState === 'downloading') {
+          dialog.showMessageBox({
+            type: 'info', title: '업데이트 다운로드 중',
+            message: `v${updateNewVersion} 다운로드 중입니다 (${updatePct}%).`,
+            detail: 'nost 앱 창을 열면 진행 상황을 확인할 수 있습니다.',
+          });
+          return;
+        }
+
+        const result = await checkForUpdateAsync();
+        if (result.status === 'up-to-date') {
+          dialog.showMessageBox({ type: 'info', title: '업데이트',
+            message: `최신 버전입니다. (v${app.getVersion()})` });
+        } else if (result.status === 'update-available') {
+          dialog.showMessageBox({ type: 'info', title: '업데이트 발견',
+            message: `새 버전 v${result.newVersion}이 있습니다.`,
+            detail: '백그라운드에서 자동으로 다운로드됩니다.\n완료되면 트레이 알림으로 알려드립니다.' });
+        } else if (result.status === 'dev-mode') {
+          dialog.showMessageBox({ type: 'info', title: '업데이트',
+            message: '개발 모드에서는 업데이트를 확인할 수 없습니다.' });
+        } else {
+          let msg = result.message ?? '알 수 없는 오류';
+          if (/404/.test(msg)) {
+            msg = '업데이트 정보를 찾을 수 없습니다 (404).\n최신 릴리즈에 업데이트 파일이 없을 수 있습니다.';
+          } else {
+            const first = msg.split('\n')[0].trim();
+            msg = first.length > 120 ? first.slice(0, 120) + '…' : first;
+          }
+          dialog.showMessageBox({ type: 'warning', title: '업데이트 오류',
+            message: `업데이트 확인에 실패했습니다:\n\n${msg}` });
+        }
+      },
+    },
+    { type: 'separator' },
+    { label: '종료', click: () => { app.isQuitting = true; app.quit(); } },
+  ];
+}
+
+/** Rebuild the tray context menu and tooltip to reflect current updateState. */
+function rebuildTrayMenu() {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate(buildTrayTemplate()));
+  if (updateState === 'downloading') {
+    tray.setToolTip(`nost — 업데이트 다운로드 중 ${updatePct}%`);
+  } else if (updateState === 'downloaded') {
+    tray.setToolTip(`nost — v${updateNewVersion} 업데이트 준비됨`);
+  } else {
+    tray.setToolTip('nost');
+  }
 }
 
 // ── 12. IPC Handlers ─────────────────────────────────────────────────
@@ -1226,15 +1344,47 @@ app.whenReady().then(() => {
 
   // ── Auto-updater (packaged builds only) ──────────────────────────
   if (app.isPackaged) {
-    autoUpdater.logger           = null; // suppress verbose internal logging
-    autoUpdater.autoDownload     = true;
+    autoUpdater.logger               = null;  // suppress verbose internal logging
+    autoUpdater.autoDownload         = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
-    autoUpdater.on('update-available',  (info) => sendSafe('update-available',         { version: info.version }));
-    autoUpdater.on('download-progress', (info) => sendSafe('update-download-progress', { percent: Math.round(info.percent) }));
-    autoUpdater.on('update-downloaded', (info) => sendSafe('update-downloaded',         { version: info.version }));
-    // Reset the progress bar in the UI if the download fails
-    autoUpdater.on('error', () => sendSafe('update-download-progress', null));
+    autoUpdater.on('update-available', (info) => {
+      updateNewVersion = info.version;
+      updateState      = 'downloading';
+      sendSafe('update-available', { version: info.version });
+      rebuildTrayMenu();
+    });
+
+    autoUpdater.on('download-progress', (info) => {
+      updateState = 'downloading';
+      updatePct   = Math.round(info.percent);
+      sendSafe('update-download-progress', { percent: updatePct });
+      rebuildTrayMenu();
+    });
+
+    autoUpdater.on('update-downloaded', (info) => {
+      updateNewVersion = info.version;
+      updateState      = 'downloaded';
+      updatePct        = 100;
+      sendSafe('update-downloaded', { version: info.version });
+      rebuildTrayMenu();
+
+      // Balloon notification so the user sees the result even if the app is hidden
+      try {
+        tray?.displayBalloon({
+          title:   'nost 업데이트 준비됨',
+          content: `v${info.version}이 다운로드됐습니다.\n트레이 아이콘 우클릭 → 재시작하여 설치`,
+          iconType: 'info',
+        });
+      } catch (_) { /* balloon not supported on all Windows versions */ }
+    });
+
+    // Reset UI state if the download fails
+    autoUpdater.on('error', () => {
+      updateState = 'idle';
+      sendSafe('update-download-progress', null);
+      rebuildTrayMenu();
+    });
 
     // Non-blocking update check 5 s after launch (cold-start safety margin)
     setTimeout(() => autoUpdater.checkForUpdates().catch(() => {}), 5000);
@@ -1252,39 +1402,7 @@ app.whenReady().then(() => {
   }
 
   tray = new Tray(icon);
-  tray.setToolTip('nost');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: `버전 ${app.getVersion()}`, enabled: false },
-    {
-      label: '업데이트 확인',
-      click: async () => {
-        const result = await checkForUpdateAsync();
-        if (result.status === 'up-to-date') {
-          dialog.showMessageBox({ type: 'info', title: '업데이트',
-            message: `최신 버전입니다. (v${app.getVersion()})` });
-        } else if (result.status === 'update-available') {
-          dialog.showMessageBox({ type: 'info', title: '업데이트 발견',
-            message: `새 버전 v${result.newVersion}이 있습니다.\n백그라운드에서 다운로드 중입니다.` });
-        } else if (result.status === 'dev-mode') {
-          dialog.showMessageBox({ type: 'info', title: '업데이트',
-            message: '개발 모드에서는 업데이트를 확인할 수 없습니다.' });
-        } else {
-          // Trim the raw error message to something readable
-          let msg = result.message ?? '알 수 없는 오류';
-          if (/404/.test(msg)) {
-            msg = '업데이트 정보를 찾을 수 없습니다 (404).\n최신 릴리즈에 업데이트 파일이 없을 수 있습니다.';
-          } else {
-            const first = msg.split('\n')[0].trim();
-            msg = first.length > 120 ? first.slice(0, 120) + '…' : first;
-          }
-          dialog.showMessageBox({ type: 'warning', title: '업데이트 오류',
-            message: `업데이트 확인에 실패했습니다:\n\n${msg}` });
-        }
-      },
-    },
-    { type: 'separator' },
-    { label: '종료', click: () => { app.isQuitting = true; app.quit(); } },
-  ]));
+  rebuildTrayMenu();
   tray.on('click', () => { mainWindow.show(); mainWindow.focus(); });
 
   // macOS: re-create window when dock icon is clicked and no windows exist

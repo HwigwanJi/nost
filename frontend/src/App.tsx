@@ -1380,17 +1380,24 @@ export default function App() {
   // ── Auto-updater notifications ────────────────────────────
   const [updateDownloaded, setUpdateDownloaded] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [updateNewVer, setUpdateNewVer] = useState<string | null>(null);
   useEffect(() => {
     electronAPI.onUpdateAvailable((info) => {
-      showToast(`🆕 업데이트 ${info.version} 다운로드 중...`);
+      setUpdateNewVer(info.version);
+      showToast(`v${info.version} 다운로드 시작...`, { duration: 2500 });
     });
     electronAPI.onUpdateDownloadProgress((info) => {
       setDownloadProgress(info ? info.percent : null);
     });
     electronAPI.onUpdateDownloaded((info) => {
+      setUpdateNewVer(info.version);
       setDownloadProgress(null);
       setUpdateDownloaded(true);
-      showToast(`${info.version} 다운로드 완료 — 설정에서 재시작하세요`);
+      // Toast with direct install action button
+      showToast(`v${info.version} 다운로드 완료`, {
+        duration: 10000,
+        actions: [{ label: '지금 설치', icon: 'restart_alt', onClick: () => electronAPI.installUpdate() }],
+      });
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1944,6 +1951,63 @@ export default function App() {
               )}
 
           </div>
+
+          {/* ── Update progress strip ─────────────────── */}
+          {/* Slim persistent bar at the bottom of the main content column.     */}
+          {/* Visible during download and after download (until user installs). */}
+          {(downloadProgress != null || updateDownloaded) && (
+            <div style={{
+              flexShrink: 0,
+              borderTop: '1px solid var(--border-rgba)',
+              background: 'var(--surface)',
+              padding: '6px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+            }}>
+              {updateDownloaded ? (
+                /* ── Downloaded: install button ── */
+                <>
+                  <Icon name="system_update" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                  <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>
+                    {updateNewVer ? `v${updateNewVer}` : '업데이트'} 준비됨
+                  </span>
+                  <button
+                    onClick={() => electronAPI.installUpdate()}
+                    style={{
+                      flexShrink: 0, padding: '4px 12px', borderRadius: 6,
+                      background: 'var(--accent)', border: 'none',
+                      color: '#fff', fontSize: 11, fontWeight: 600,
+                      cursor: 'pointer', fontFamily: 'inherit',
+                      display: 'flex', alignItems: 'center', gap: 5,
+                    }}
+                  >
+                    <Icon name="restart_alt" size={13} />
+                    재시작하여 설치
+                  </button>
+                </>
+              ) : (
+                /* ── Downloading: progress bar ── */
+                <>
+                  <Icon name="download" size={14} color="var(--text-dim)" style={{ flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 10, color: 'var(--text-dim)' }}>
+                      <span>{updateNewVer ? `v${updateNewVer} 다운로드 중...` : '업데이트 다운로드 중...'}</span>
+                      <span>{downloadProgress}%</span>
+                    </div>
+                    <div style={{ height: 3, background: 'var(--border-rgba)', borderRadius: 2, overflow: 'hidden' }}>
+                      <div style={{
+                        width: `${downloadProgress}%`, height: '100%',
+                        background: 'var(--accent)', borderRadius: 2,
+                        transition: 'width 0.5s ease',
+                      }} />
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           </div>{/* close main content */}
 
           {/* ── Right Panel: Node + Deck (tabs) ──── */}
