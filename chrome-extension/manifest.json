@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "nost Bridge",
+  "name": "__MSG_extName__",
   "version": "1.0.0",
-  "description": "nost와 브라우저 탭을 연동합니다",
+  "description": "__MSG_extDescription__",
+  "default_locale": "ko",
   "permissions": ["tabs", "activeTab"],
   "host_permissions": ["http://127.0.0.1:14502/*"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "nost",
+    "default_title": "__MSG_actionTitle__",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

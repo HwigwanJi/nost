@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "nost Bridge",
+    "description": "Extension display name"
+  },
+  "extDescription": {
+    "message": "nost 데스크톱 런처와 브라우저 탭을 로컬로 연동합니다. 수집되는 데이터 없음.",
+    "description": "Store listing description"
+  },
+  "actionTitle": {
+    "message": "nost",
+    "description": "Toolbar button tooltip"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "extName": {
+    "message": "nost Bridge",
+    "description": "Extension display name"
+  },
+  "extDescription": {
+    "message": "Bridges browser tabs with the nost desktop launcher over local loopback. No data collected, no external network.",
+    "description": "Store listing description"
+  },
+  "actionTitle": {
+    "message": "nost",
+    "description": "Toolbar button tooltip"
+  }
+}
