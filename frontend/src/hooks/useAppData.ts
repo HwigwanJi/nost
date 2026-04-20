@@ -356,6 +356,62 @@ export function useAppData() {
     });
   }, []);
 
+  /**
+   * Delete every unpinned, non-container item in a single space.
+   *
+   * Pin state in this app is tracked via `space.pinnedIds` (an id-set on the
+   * space), NOT `item.pinned` (a legacy boolean used for initial seed data).
+   * The pin-mode click handler in App.tsx toggles pinnedIds and never
+   * touches `i.pinned`, so a filter on `i.pinned` would see every user-pinned
+   * card as unpinned. We intersect against `pinnedIds` to match UI reality.
+   *
+   * Containers are also preserved — they hold layout metadata (slots) and
+   * removing them orphans their child windows.
+   */
+  const deleteUnpinnedInSpace = useCallback((spaceId: string): number => {
+    let removed = 0;
+    setDataRaw(prev => {
+      const target = prev.spaces.find(s => s.id === spaceId);
+      if (!target) return prev;
+      const pinSet = new Set(target.pinnedIds ?? []);
+      const keep = target.items.filter(i => pinSet.has(i.id) || i.isContainer);
+      removed = target.items.length - keep.length;
+      if (removed === 0) return prev;
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => s.id === spaceId ? { ...s, items: keep } : s),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+    return removed;
+  }, []);
+
+  /**
+   * Delete unpinned items across every space. Preserves the space structure —
+   * only items are touched, empty spaces remain.
+   */
+  const deleteUnpinnedInAllSpaces = useCallback((): number => {
+    let removed = 0;
+    setDataRaw(prev => {
+      let total = 0;
+      const nextSpaces = prev.spaces.map(s => {
+        const pinSet = new Set(s.pinnedIds ?? []);
+        const keep = s.items.filter(i => pinSet.has(i.id) || i.isContainer);
+        total += s.items.length - keep.length;
+        return { ...s, items: keep };
+      });
+      removed = total;
+      if (removed === 0) return prev;
+      const next: AppData = { ...prev, spaces: nextSpaces };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+    return removed;
+  }, []);
+
   // ── Undo helpers (functional-update form — no stale closure risk) ──
   // Always reads latest state via `prev`, so the closure captured at delete-time
   // still restores correctly even after subsequent state changes.
@@ -578,6 +634,8 @@ export function useAppData() {
     updateItem,
     deleteItem,
     deleteItems,
+    deleteUnpinnedInSpace,
+    deleteUnpinnedInAllSpaces,
     restoreItem,
     restoreSpace,
     incrementClickCount,

@@ -1,9 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { Space, LauncherItem } from '../types';
 import { ItemCard } from './ItemCard';
 import { GhostCard } from './GhostCard';
-import { useAppState } from '../contexts/AppContext';
+import { useAppState, useAppActions } from '../contexts/AppContext';
 import {
   SortableContext,
   rectSortingStrategy,
@@ -113,7 +113,13 @@ export function SpaceAccordion({
   const [draft, setDraft] = useState(space.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const { searchQuery } = useAppState();
+  const { searchQuery, activeMode } = useAppState();
+  const { onCleanSpace } = useAppActions();
+  // Pin state is tracked via space.pinnedIds, not item.pinned — the clean
+  // tool must count against the same source of truth that pin-mode writes to,
+  // otherwise the header badge claims items are deletable when they aren't.
+  const pinIdSet = useMemo(() => new Set(space.pinnedIds ?? []), [space.pinnedIds]);
+  const unpinnedCount = space.items.filter(i => !pinIdSet.has(i.id) && !i.isContainer).length;
 
   useEffect(() => {
     if (isRenaming) inputRef.current?.focus();
@@ -247,11 +253,51 @@ export function SpaceAccordion({
           </span>
         )}
 
-        {/* ── Right action buttons (visible on hover) ── */}
+        {/* ── Clean-mode action (only visible in clean mode) ───
+            Replaces the standard hover menu entirely so the tool's primary
+            action dominates the header visually. Always visible (not
+            hover-gated) because clean mode is deliberately disruptive. */}
+        {activeMode === 'clean' && (
+          <div
+            className="flex items-center gap-1 flex-shrink-0"
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
+            style={{ marginRight: 8 }}
+          >
+            <button
+              onClick={() => onCleanSpace(space.id)}
+              disabled={unpinnedCount === 0}
+              title={unpinnedCount === 0 ? '삭제할 카드 없음' : `${unpinnedCount}개 카드 삭제`}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 6,
+                border: 'none',
+                background: unpinnedCount === 0 ? 'var(--border-rgba)' : 'var(--color-destructive)',
+                color: unpinnedCount === 0 ? 'var(--text-dim)' : 'var(--color-destructive-foreground)',
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: unpinnedCount === 0 ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+            >
+              <Icon name="delete_sweep" size={13} />
+              청소 ({unpinnedCount})
+            </button>
+          </div>
+        )}
+
+        {/* ── Right action buttons (visible on hover) ──
+            Hidden in clean mode — the clean button above takes over the
+            header, and other actions should stay out of the way. */}
         <div
           className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
           onPointerDown={e => e.stopPropagation()}
           onClick={e => e.stopPropagation()}
+          style={activeMode === 'clean' ? { display: 'none' } : undefined}
+          data-mode-dim="true"
         >
           {/* Sort */}
           <ActionBtn icon="sort" title="정렬" onClick={onSortByUsage} />

@@ -99,6 +99,15 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           accentColor="#f97316"
         />
 
+        <SidebarButton
+          icon="cleaning_services"
+          label="청소"
+          active={activeMode === 'clean'}
+          expanded={expanded}
+          onClick={() => onModeChange(activeMode === 'clean' ? 'normal' : 'clean')}
+          accentColor="var(--color-destructive)"
+        />
+
         <div style={{ height: 1, background: 'var(--border-rgba)', margin: '4px 6px' }} />
 
         <SidebarButton

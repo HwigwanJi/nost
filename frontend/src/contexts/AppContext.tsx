@@ -39,6 +39,8 @@ export interface AppActions {
   onDeckModeClick: (itemId: string) => void;
   onDeckGroupLaunch: (itemId: string) => void;
   onWindowInactiveClick: (item: LauncherItem) => void;
+  /** Clean-mode action: delete every unpinned/non-container item in a space. */
+  onCleanSpace: (spaceId: string) => void;
 }
 
 const AppStateCtx = createContext<AppState | null>(null);

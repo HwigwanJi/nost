@@ -76,7 +76,7 @@ export interface AppSettings {
   floatingButton?: FloatingButtonSettings; // Phase 1: main FAB only
 }
 
-export type AppMode = 'normal' | 'pin' | 'node' | 'deck';
+export type AppMode = 'normal' | 'pin' | 'node' | 'deck' | 'clean';
 
 export interface Deck {
   id: string;

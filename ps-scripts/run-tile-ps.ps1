@@ -170,7 +170,11 @@ $tiledSet = [System.Collections.Generic.HashSet[long]]::new()
 for ($j = 0; $j -lt $count; $j++) {
     if (@($items)[$j].isBrowser -eq $true) { $hwnds[$j] = [IntPtr]0; $tiledSet.Add(0) | Out-Null }
 }
-$deadline = (Get-Date).AddSeconds(30)
+# 45 s deadline covers slow-to-open apps: PowerPoint / Word show a splash
+# window whose MainWindowHandle is 0 for 3-6 s, and cold-start Creative Cloud
+# launches can take 10-20 s before their main window is ready for
+# positioning. 30 s wasn't enough in practice — bumped to 45 s.
+$deadline = (Get-Date).AddSeconds(45)
 do {
     for ($i = 0; $i -lt $count; $i++) {
         if (-not $hwnds.ContainsKey($i)) {
@@ -183,7 +187,13 @@ do {
         if ($hwnds.ContainsKey($i)) {
             $hwndInt = [long]$hwnds[$i]
             if ($hwndInt -gt 0 -and -not $tiledSet.Contains($hwndInt)) {
-                Start-Sleep -Milliseconds 400
+                # 800ms gap between tiles — heavy apps like PowerPoint /
+                # Excel are still processing layout from the previous tile
+                # (WM_DPICHANGED, ribbon reflow, splash → main transition)
+                # at 400ms, and the next MoveWindow call gets ignored. 800ms
+                # is the empirical floor where PowerPoint reliably accepts a
+                # second placement without dropping it.
+                Start-Sleep -Milliseconds 800
                 Tile-Hwnd $hwnds[$i] $i
                 $tiledSet.Add($hwndInt) | Out-Null
             }
@@ -194,8 +204,14 @@ do {
     if ($allFound) { break }
     Start-Sleep -Milliseconds 500
 } while ((Get-Date) -lt $deadline)
-# Settle passes: verify positions, re-tile only if needed
-$settleDelays = @(800, 600, 600)
+
+# Settle passes: verify positions, re-tile stragglers.
+#
+# More passes (5) with longer gaps (1200, 1000, 1000, 800, 800) because
+# heavy Office apps can take 2-4s to fully commit a window rect after
+# receiving MoveWindow. Without this, a tile that "landed then bounced
+# back" because PowerPoint wasn't ready gets stuck half-placed.
+$settleDelays = @(1200, 1000, 1000, 800, 800)
 foreach ($delayMs in $settleDelays) {
     Start-Sleep -Milliseconds $delayMs
     $needsRetile = $false
@@ -203,11 +219,15 @@ foreach ($delayMs in $settleDelays) {
         if ($hwnds.ContainsKey($i) -and [long]$hwnds[$i] -gt 0) {
             $rect = Get-WindowRectSafe $hwnds[$i]
             $c = Get-ColLayout $i
-            if ([Math]::Abs($rect.Left - $c.x) -gt 4 -or [Math]::Abs($rect.Top - $c.y) -gt 4 -or
-                [Math]::Abs(($rect.Right - $rect.Left) - $c.w) -gt 4 -or [Math]::Abs(($rect.Bottom - $rect.Top) - $c.h) -gt 4) {
+            $dx = [Math]::Abs($rect.Left - $c.x)
+            $dy = [Math]::Abs($rect.Top  - $c.y)
+            $dw = [Math]::Abs(($rect.Right - $rect.Left) - $c.w)
+            $dh = [Math]::Abs(($rect.Bottom - $rect.Top) - $c.h)
+            if ($dx -gt 4 -or $dy -gt 4 -or $dw -gt 4 -or $dh -gt 4) {
+                Write-Output "[settle] idx=$i drift=($dx,$dy,$dw,$dh) re-tiling after ${delayMs}ms"
                 Tile-Hwnd $hwnds[$i] $i
                 $needsRetile = $true
-                Start-Sleep -Milliseconds 80
+                Start-Sleep -Milliseconds 120
             }
         }
     }

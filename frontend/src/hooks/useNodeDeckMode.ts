@@ -36,22 +36,38 @@ export function useNodeDeckMode({
   );
 
   // ── Mode change ───────────────────────────────────────────
+  //
+  // Tool-mode exclusivity:
+  //   - Same tool while active → toggles off (quick exit shortcut)
+  //   - Different tool while in a tool → BLOCKED with a toast; user must
+  //     ESC (or click the active tool) first. Prevents accidental loss of
+  //     in-progress work like a half-built node group.
+  //   - normal ↔ any tool → allowed as before.
   const handleModeChange = useCallback((mode: AppMode) => {
-    if (mode !== 'node') { setNodeEditMode(false); setNodeBuilding([]); }
-    if (mode !== 'deck') { setDeckBuilding(false); setDeckItems([]); }
-    dismissToast();
-    setActiveMode(mode);
-    if (mode === 'pin') showToast('📌 고정 모드 — 카드 클릭하면 핀 토글', { persistent: true });
-    if (mode === 'node') {
-      setNodeEditMode(true);
-      setNodeBuilding([]);
-      showToast('🔗 노드 편집 — 카드를 순서대로 클릭 (최대 3개)', { persistent: true });
-    }
-    if (mode === 'deck') {
-      setDeckBuilding(true);
-      setDeckItems([]);
-      showToast('🗂 덱 편집 — 카드를 클릭해서 덱에 추가', { persistent: true });
-    }
+    setActiveMode(current => {
+      if (current !== 'normal' && mode !== 'normal' && current !== mode) {
+        showToast('ESC로 현재 도구를 먼저 해제하세요', { duration: 2000 });
+        return current;
+      }
+
+      if (mode !== 'node') { setNodeEditMode(false); setNodeBuilding([]); }
+      if (mode !== 'deck') { setDeckBuilding(false); setDeckItems([]); }
+      dismissToast();
+
+      if (mode === 'pin')   showToast('📌 고정 모드 — 카드 클릭하면 핀 토글', { persistent: true });
+      if (mode === 'clean') showToast('🧹 청소 모드 — 스페이스의 청소 버튼을 눌러 고정 안 된 카드 삭제 (ESC로 해제)', { persistent: true });
+      if (mode === 'node') {
+        setNodeEditMode(true);
+        setNodeBuilding([]);
+        showToast('🔗 노드 편집 — 카드를 순서대로 클릭 (최대 3개)', { persistent: true });
+      }
+      if (mode === 'deck') {
+        setDeckBuilding(true);
+        setDeckItems([]);
+        showToast('🗂 덱 편집 — 카드를 클릭해서 덱에 추가', { persistent: true });
+      }
+      return mode;
+    });
   }, [showToast, dismissToast]);
 
   // ── Node handlers ─────────────────────────────────────────

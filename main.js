@@ -148,18 +148,29 @@ function monitorEnvFor(monitorIndex) {
   const screen   = getScreen();
   const displays = screen.getAllDisplays();
   const primary  = screen.getPrimaryDisplay();
-  const primaryScale = primary.scaleFactor || 1;
 
   const disp = (monitorIndex >= 1 && monitorIndex <= displays.length)
     ? displays[monitorIndex - 1]
     : primary;
-  const dispScale = disp.scaleFactor || 1;
   const wa = disp.workArea;
 
-  const physX = Math.round(wa.x      * primaryScale);
-  const physY = Math.round(wa.y      * primaryScale);
-  const physW = Math.round(wa.width  * dispScale);
-  const physH = Math.round(wa.height * dispScale);
+  // IMPORTANT — pass raw Electron DIP values, NOT physical pixels.
+  //
+  // PS runs DPI-unaware, which means Windows already virtualizes its
+  // coordinate system to primary's DIP space. When we call MoveWindow with
+  // value X, Windows multiplies by primary.scaleFactor to get physical.
+  // If we ALSO multiply in this function, we double-scale:
+  //   Electron DIP 1536 → (we ×1.25) → PS 1920 → (Windows ×1.25) → physical 2400
+  // and the window lands ~500 px past the monitor's right edge.
+  //
+  // Electron's DIP numbers happen to match exactly what the DPI-unaware PS
+  // process sees — both coordinate systems are "primary-scale-virtualized
+  // DIP". Hand the values off unchanged and Windows does the right thing
+  // for every monitor regardless of its DPI.
+  const physX = wa.x;
+  const physY = wa.y;
+  const physW = wa.width;
+  const physH = wa.height;
 
   // ── Per-edge border safety ────────────────────────────────────────
   //
@@ -228,7 +239,7 @@ function runPsAsync(scriptName, envVars = {}, opts = {}) {
               + `"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; `
               + `$OutputEncoding=[System.Text.Encoding]::UTF8; `
               + `& '${scriptPath}'"`;
-    exec(
+    const child = exec(
       cmd,
       {
         shell:     false,
@@ -247,6 +258,30 @@ function runPsAsync(scriptName, envVars = {}, opts = {}) {
         });
       }
     );
+
+    // Optional streaming callback — caller passes opts.onLine to receive
+    // each line of PS stdout as it's written, instead of waiting for the
+    // process to fully exit. Critical for long-running scripts like
+    // run-tile-ps where 45 s poll loops otherwise look like "hung".
+    if (typeof opts.onLine === 'function' && child.stdout) {
+      let buf = '';
+      child.stdout.on('data', (chunk) => {
+        buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+        let nl;
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl).replace(/\r$/, '');
+          buf = buf.slice(nl + 1);
+          if (line.length > 0) {
+            try { opts.onLine(line); } catch (_) {}
+          }
+        }
+      });
+      child.stdout.on('end', () => {
+        if (buf.trim()) {
+          try { opts.onLine(buf.trim()); } catch (_) {}
+        }
+      });
+    }
   });
 }
 
@@ -485,27 +520,59 @@ body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%)
  * logic used by the global shortcut. Exposed so other triggers (tray,
  * floating FAB) can invoke it without duplicating the safeguards.
  */
+/**
+ * Transparent-window GPU recovery.
+ *
+ * On Windows, a frameless + transparent BrowserWindow shares a compositor
+ * backing store with DWM. Rapid hide/show (global shortcut hammered, tray
+ * double-clicked, or auto-hide triggering during a focus race) can leave
+ * the window with a stale/empty backing — the user sees just the faint
+ * drop-shadow outline and no content.
+ *
+ * `webContents.invalidate()` alone asks Chromium to repaint, but the
+ * compositor itself still thinks the window is "up to date" and suppresses
+ * the frame. The robust fix is a 1-pixel bounds nudge: Windows treats it as
+ * a resize, rebuilds the surface, and the next paint lands visibly. We snap
+ * back to the original bounds in the same tick so the user never sees the
+ * jiggle.
+ */
+function recoverTransparentBacking(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const b = win.getBounds();
+    win.setBounds({ x: b.x, y: b.y, width: b.width + 1, height: b.height });
+    win.setBounds(b);
+    win.webContents.invalidate();
+  } catch (_) { /* window may have been destroyed mid-flight */ }
+}
+
 function toggleMainWindow() {
-  if (!mainWindow) return;
+  if (app.isQuitting) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   if (_toggleLocked) return;
   _toggleLocked = true;
   setTimeout(() => { _toggleLocked = false; }, 150);
 
-  if (mainWindow.isVisible()) {
-    mainWindow.hide();
-  } else {
-    mainWindow.show();
-    mainWindow.focus();
-    // Force a GPU repaint after show — transparent windows can lose their
-    // compositor backing store during rapid hide/show cycles.
-    mainWindow.webContents.invalidate();
+  try {
+    if (mainWindow.isVisible()) {
+      mainWindow.hide();
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
+      recoverTransparentBacking(mainWindow);
+    }
+  } catch (e) {
+    console.warn('[toggleMainWindow]', e.message);
+    return;
   }
 
   // Main may be raised to the top; re-assert the orb's screen-saver level so
   // it stays above the launcher and the user can click it to toggle again.
   if (floatingWindow && !floatingWindow.isDestroyed()) {
-    floatingWindow.setAlwaysOnTop(true, 'screen-saver');
-    floatingWindow.moveTop();
+    try {
+      floatingWindow.setAlwaysOnTop(true, 'screen-saver');
+      floatingWindow.moveTop();
+    } catch (_) { /* orb may have been destroyed */ }
   }
 }
 
@@ -617,6 +684,23 @@ function createFloatingWindow() {
   const { winPx } = floatingWindowSizeFor(settings.size);
   const pos = settings.position ?? defaultFloatingPosition(winPx);
 
+  // Dedicated in-memory session for the orb.
+  //
+  // Sharing the default session with mainWindow caused Chromium to serialize
+  // cache moves across both renderers, producing "Unable to move the cache
+  // (0x5)" + "Gpu Cache Creation failed" errors on startup whenever the
+  // floating window spawned alongside the main window. The orb is a single
+  // static SVG with no data to cache, so an isolated memory-only session
+  // (no cache, no HTTP cache, no GPU disk cache) is the right fit — zero
+  // contention, zero disk I/O, and the main app's cache stays untouched.
+  const orbSession = session.fromPartition('floating-orb-memory');
+  try {
+    orbSession.clearCache();  // idempotent no-op if already clean
+    orbSession.clearStorageData({
+      storages: ['cachestorage', 'cookies', 'localstorage', 'shadercache', 'serviceworkers'],
+    }).catch(() => {});
+  } catch (_) {}
+
   floatingWindow = new BrowserWindow({
     width: winPx, height: winPx,
     x: Math.round(pos.x), y: Math.round(pos.y),
@@ -630,6 +714,7 @@ function createFloatingWindow() {
       contextIsolation: true,
       nodeIntegration:  false,
       backgroundThrottling: false,
+      session: orbSession,        // isolated from mainWindow's cache
     },
   });
 
@@ -1046,15 +1131,17 @@ function buildTrayTemplate() {
 
 /** Rebuild the tray context menu and tooltip to reflect current updateState. */
 function rebuildTrayMenu() {
-  if (!tray) return;
-  tray.setContextMenu(Menu.buildFromTemplate(buildTrayTemplate()));
-  if (updateState === 'downloading') {
-    tray.setToolTip(`nost — 업데이트 다운로드 중 ${updatePct}%`);
-  } else if (updateState === 'downloaded') {
-    tray.setToolTip(`nost — v${updateNewVersion} 업데이트 준비됨`);
-  } else {
-    tray.setToolTip('nost');
-  }
+  if (!tray || tray.isDestroyed?.()) return;
+  try {
+    tray.setContextMenu(Menu.buildFromTemplate(buildTrayTemplate()));
+    if (updateState === 'downloading') {
+      tray.setToolTip(`nost — 업데이트 다운로드 중 ${updatePct}%`);
+    } else if (updateState === 'downloaded') {
+      tray.setToolTip(`nost — v${updateNewVersion} 업데이트 준비됨`);
+    } else {
+      tray.setToolTip('nost');
+    }
+  } catch (_) { /* tray destroyed mid-rebuild (e.g. during app quit) */ }
 }
 
 // ── 12. IPC Handlers ─────────────────────────────────────────────────
@@ -1532,14 +1619,16 @@ function registerIpcHandlers() {
     const psPromise  = runPsAsync('run-tile-ps.ps1', {
       ...monitorEnvFor(monitor),
       QL_ITEMS: JSON.stringify(flagged),
-    }, { timeout: 45000 })
-      .then(({ stdout }) => {
-        // Forward the PS diagnostic block into the main log so one log file
-        // captures the full tiling pipeline on cross-DPI debugging runs.
-        const lines = String(stdout ?? '').split(/\r?\n/).filter(l => l.trim().length > 0);
-        lines.forEach(l => log.debug(`[tile/ps] ${l}`));
-        return { success: true, error: '' };
-      })
+    }, {
+      timeout: 60000,  // PS's internal deadline is 45s + settle passes; breathing room
+      // Stream each PS stdout line into the main log as it's emitted
+      // (instead of waiting for PS to exit). When the tile pipeline is slow
+      // — e.g. waiting for Office splash window — this lets us distinguish
+      // "still searching" from "hung" in real time instead of staring at a
+      // silent log for 45 s and assuming tiling failed.
+      onLine: (line) => log.debug(`[tile/ps] ${line}`),
+    })
+      .then(() => ({ success: true, error: '' }))
       .catch(err => ({ success: false, error: err.message }));
 
     const [, psResult] = await Promise.all([browserPromise, psPromise]);
@@ -1905,7 +1994,10 @@ app.whenReady().then(() => {
 
   tray = new Tray(icon);
   rebuildTrayMenu();
-  tray.on('click', () => { mainWindow.show(); mainWindow.focus(); });
+  // Route through toggleMainWindow so a stale click during app quit doesn't
+  // crash with "Object has been destroyed" — the helper guards destroyed
+  // windows, handles GPU backing recovery, and keeps the orb layered above.
+  tray.on('click', () => toggleMainWindow());
 
   // macOS: re-create window when dock icon is clicked and no windows exist
   app.on('activate', () => {
@@ -1915,6 +2007,19 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  // Flag set BEFORE the quit cascade so late events (tray click, shortcut,
+  // IPC) can bail early instead of racing against destroyed windows.
+  app.isQuitting = true;
+  // Destroy the tray first — its native message loop can fire a 'click'
+  // after mainWindow is gone, which is the source of the
+  // "Object has been destroyed at Tray.<anonymous>" uncaught exception.
+  if (tray && !tray.isDestroyed?.()) {
+    try { tray.removeAllListeners(); tray.destroy(); } catch (_) {}
+    tray = null;
+  }
 });
 
 app.on('will-quit', () => {

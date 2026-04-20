@@ -403,6 +403,9 @@ export function ItemCard({
     if (activeMode === 'pin') { onPinModeClick(); return; }
     if (activeMode === 'node') { onNodeModeClick(); return; }
     if (activeMode === 'deck') { onDeckModeClick(); return; }
+    // Clean mode owns the pointer: individual card clicks do nothing —
+    // deletion is always space-scoped via the accordion's 청소 button.
+    if (activeMode === 'clean') return;
     if (isInactive && item.type === 'window') { onInactiveClick(); return; }
 
     // All cards (including containers): short click = launch normally

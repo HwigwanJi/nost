@@ -633,39 +633,20 @@ export default function App() {
   // ── Sync mode → body class + custom cursor ────────────────
   useEffect(() => {
     document.getElementById('ql-mode-cursor')?.remove();
-    document.body.classList.remove('mode-pin', 'mode-node', 'mode-deck');
+    document.body.classList.remove('mode-pin', 'mode-node', 'mode-deck', 'mode-clean', 'mode-tool');
 
-    if (activeMode === 'pin') document.body.classList.add('mode-pin');
-    if (activeMode === 'node') document.body.classList.add('mode-node');
-    if (activeMode === 'deck') document.body.classList.add('mode-deck');
+    if (activeMode === 'pin')   document.body.classList.add('mode-pin',   'mode-tool');
+    if (activeMode === 'node')  document.body.classList.add('mode-node',  'mode-tool');
+    if (activeMode === 'deck')  document.body.classList.add('mode-deck',  'mode-tool');
+    if (activeMode === 'clean') document.body.classList.add('mode-clean', 'mode-tool');
 
-    if (activeMode === 'normal') return;
-
-    const colorMap: Record<string, string> = { pin: '#f59e0b', node: '#6366f1', deck: '#f97316' };
-    const color = colorMap[activeMode] ?? '';
-    if (!color) return;
-
-    // Icon-based fill cursors — each mode gets a recognizable filled icon
-    // pin: filled pushpin path, node: hub circles+lines, deck: stacked bars
-    const iconMap: Record<string, string> = {
-      pin:  `<circle cx='16' cy='16' r='16' fill='${color}'/><path d='M18 3v2l-1 1v5l3 2v2h-4v5h-2v-5H10v-2l3-2V6l-1-1V3h6z' fill='white'/>`,
-      node: `<circle cx='16' cy='16' r='16' fill='${color}'/><circle cx='16' cy='11' r='2.5' fill='white'/><circle cx='10' cy='21' r='2.5' fill='white'/><circle cx='22' cy='21' r='2.5' fill='white'/><line x1='16' y1='13.5' x2='10' y2='18.5' stroke='white' stroke-width='1.4'/><line x1='16' y1='13.5' x2='22' y2='18.5' stroke='white' stroke-width='1.4'/>`,
-      deck: `<circle cx='16' cy='16' r='16' fill='${color}'/><rect x='8' y='10' width='16' height='3' rx='1.5' fill='white'/><rect x='8' y='14.5' width='16' height='3' rx='1.5' fill='white' opacity='0.75'/><rect x='8' y='19' width='16' height='3' rx='1.5' fill='white' opacity='0.5'/>`,
-    };
-    const icon = iconMap[activeMode] ?? '';
-
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'>${icon}</svg>`;
-    const cursorUrl = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, default`;
-
-    // Inject a <style> so the cursor overrides even elements with cursor:pointer
-    const styleEl = document.createElement('style');
-    styleEl.id = 'ql-mode-cursor';
-    styleEl.textContent = `* { cursor: ${cursorUrl} !important; }`;
-    document.head.appendChild(styleEl);
+    // Cursor visuals are owned by index.css via the body.mode-* classes —
+    // arrow + colored badge with a mode icon. We used to inject a JS-built
+    // cursor here, but that duplicated and overrode the CSS rules, defeating
+    // the established arrow+badge design. Body class handling below is enough.
 
     return () => {
-      document.getElementById('ql-mode-cursor')?.remove();
-      document.body.classList.remove('mode-pin', 'mode-node', 'mode-deck');
+      document.body.classList.remove('mode-pin', 'mode-node', 'mode-deck', 'mode-clean', 'mode-tool');
     };
   }, [activeMode]);
 
@@ -1054,6 +1035,47 @@ export default function App() {
       }],
     });
   }, [store, data.spaces, showToast, markItemsAsNew]);
+
+  /**
+   * Clean-mode action — delete every unpinned, non-container item in the
+   * given space. Confirmation uses the native dialog so the destruction
+   * can't be triggered by an accidental pointer event. Pinned and container
+   * items are preserved intentionally.
+   */
+  // Pin truth lives on space.pinnedIds (see useAppData.deleteUnpinnedInSpace
+  // for the full explanation). The filter here must match for the confirm
+  // count to agree with what actually gets deleted.
+  const handleCleanSpace = useCallback((spaceId: string) => {
+    const space = data.spaces.find(s => s.id === spaceId);
+    if (!space) return;
+    const pinSet = new Set(space.pinnedIds ?? []);
+    const victims = space.items.filter(i => !pinSet.has(i.id) && !i.isContainer);
+    if (victims.length === 0) {
+      showToast('삭제할 카드 없음 (모두 고정됨)', { duration: 1800 });
+      return;
+    }
+    const ok = window.confirm(`"${space.name}"의 고정되지 않은 카드 ${victims.length}개를 삭제합니다. 계속하시겠습니까?`);
+    if (!ok) return;
+    const removed = store.deleteUnpinnedInSpace(spaceId);
+    showToast(`"${space.name}"에서 ${removed}개 카드 삭제`, { duration: 2500 });
+  }, [data.spaces, store, showToast]);
+
+  const handleCleanAllSpaces = useCallback(() => {
+    const total = data.spaces.reduce((acc, s) => {
+      const pinSet = new Set(s.pinnedIds ?? []);
+      return acc + s.items.filter(i => !pinSet.has(i.id) && !i.isContainer).length;
+    }, 0);
+    if (total === 0) {
+      showToast('삭제할 카드 없음 (모두 고정됨)', { duration: 1800 });
+      return;
+    }
+    const ok = window.confirm(`모든 스페이스에서 고정되지 않은 카드 ${total}개를 삭제합니다. 계속하시겠습니까?`);
+    if (!ok) return;
+    const removed = store.deleteUnpinnedInAllSpaces();
+    showToast(`${removed}개 카드 삭제됨`, { duration: 2500 });
+    // Exit clean mode after a full sweep — the obvious "done" state.
+    setActiveMode('normal');
+  }, [data.spaces, store, showToast, setActiveMode]);
 
   const handlePinModeClick = useCallback((itemId: string) => {
     // Find which space contains this item
@@ -1466,7 +1488,8 @@ export default function App() {
     onDeckModeClick: handleDeckBuildingClick,
     onDeckGroupLaunch: handleDeckGroupLaunch,
     onWindowInactiveClick: handleWindowInactiveClick,
-  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeBuildingClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick]);
+    onCleanSpace: handleCleanSpace,
+  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeBuildingClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace]);
 
   return (
     <AppStateProvider value={appState}>
@@ -1644,8 +1667,8 @@ export default function App() {
               <NostLogo size={12} color="var(--text-muted)" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties} />
             </div>
 
-            {/* Search */}
-            <div style={{ flex: 1, position: 'relative', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+            {/* Search — inert while a tool is active (data-mode-dim) */}
+            <div style={{ flex: 1, position: 'relative', WebkitAppRegion: 'no-drag' } as React.CSSProperties} data-mode-dim="true">
               <Icon name={isSlashMode ? 'terminal' : 'search'} size={15} color={isSlashMode ? 'var(--accent)' : 'var(--text-dim)'} style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }} />
               <input
                 value={query}
@@ -1713,12 +1736,14 @@ export default function App() {
               )}
             </div>
 
-            {/* Header actions */}
+            {/* Header actions — marked data-mode-dim so they go inert while
+                a tool is active (CSS in index.css picks this up). Close
+                stays interactive so the user can always dismiss the window. */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
               {[
-                { icon: 'add_circle', title: '새 스페이스', fn: () => store.addSpace() },
-                { icon: 'settings', title: '환경설정', fn: () => setDialog('settings') },
-                { icon: 'close', title: '닫기(Esc)', fn: () => electronAPI.hideApp() },
+                { icon: 'add_circle', title: '새 스페이스', fn: () => store.addSpace(),                dim: true  },
+                { icon: 'settings',   title: '환경설정',   fn: () => setDialog('settings'),            dim: true  },
+                { icon: 'close',      title: '닫기(Esc)',  fn: () => electronAPI.hideApp(),            dim: false },
               ].map(btn => (
                 <button
                   key={btn.icon}
@@ -1726,6 +1751,7 @@ export default function App() {
                   title={btn.title}
                   className="action-icon-btn"
                   style={{ width: 28, height: 28 }}
+                  {...(btn.dim ? { 'data-mode-dim': 'true' } : {})}
                 >
                   <Icon name={btn.icon} size={17} />
                 </button>
@@ -1777,6 +1803,67 @@ export default function App() {
               onAdd={handleClipboardAdd}
               onDismiss={() => setClipSuggestion(null)}
             />
+          )}
+
+          {/* ── Clean-mode action bar ────────────────
+              Slides in below the title bar in the same inline slot as the
+              clipboard-quick-add suggestion. Explains the tool, offers a
+              one-shot sweep across every space, and a dedicated exit chip. */}
+          {activeMode === 'clean' && (
+            <div style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 10px 6px 12px',
+              borderBottom: '1px solid var(--border-rgba)',
+              background: 'var(--surface)',
+              animation: 'slideDown 0.2s ease',
+            }}>
+              <style>{`@keyframes slideDown { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }`}</style>
+              <Icon name="cleaning_services" size={13} color="var(--color-destructive)" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>각 스페이스의 청소 버튼 또는 </span>
+                <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-destructive)' }}>한 번에 처리</span>
+              </div>
+              <button
+                onClick={handleCleanAllSpaces}
+                style={{
+                  padding: '2px 8px',
+                  borderRadius: 5,
+                  border: '1px solid var(--color-destructive)',
+                  background: 'var(--color-destructive)',
+                  color: 'var(--color-destructive-foreground)',
+                  fontSize: 10,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  flexShrink: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 3,
+                }}
+              >
+                <Icon name="delete_sweep" size={11} />
+                모든 스페이스
+              </button>
+              <button
+                onClick={() => setActiveMode('normal')}
+                title="종료 (Esc)"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: 2,
+                  display: 'flex',
+                  alignItems: 'center',
+                  opacity: 0.5,
+                  flexShrink: 0,
+                }}
+              >
+                <Icon name="close" size={13} color="var(--text-muted)" />
+              </button>
+            </div>
           )}
 
           {/* ── Extension banner ─────────────────────── */}

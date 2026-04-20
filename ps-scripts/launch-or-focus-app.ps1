@@ -61,6 +61,35 @@ if ($target -match '\.lnk$') {
 
 $exeName = [System.IO.Path]::GetFileNameWithoutExtension($target)
 
+# ── Document vs executable routing for focus stage ───────────────────
+# For documents (.pptx, .docx, .pdf, etc.), the right "already running"
+# check is whether an app is displaying a window whose title contains the
+# filename — NOT a process named after the file.
+$ext = [System.IO.Path]::GetExtension($target).ToLower()
+$executableExts = @('.exe', '.bat', '.cmd', '.lnk', '.msi', '.com', '.ps1')
+$isDocument = $ext.Length -gt 0 -and -not ($executableExts -contains $ext)
+
+if ($isDocument) {
+    $fileBase    = [System.IO.Path]::GetFileNameWithoutExtension($target)
+    $fileWithExt = [System.IO.Path]::GetFileName($target)
+
+    # Needle progression + EnumWindows — see Find-Hwnd for full rationale.
+    $needles = @($fileWithExt, $fileBase)
+    if ($fileBase.Length -gt 20) { $needles += $fileBase.Substring(0, 20) }
+    if ($fileBase.Length -gt 10) { $needles += $fileBase.Substring(0, 10) }
+
+    foreach ($needle in $needles) {
+        $hits = [NostWin32]::FindWindowsByTitleContains($needle)
+        if ($hits.Count -gt 0) {
+            [NostWin32]::ShowWindow($hits[0], 9)
+            [NostWin32]::SetForegroundWindow($hits[0])
+            Write-Output "FOCUSED"
+            exit
+        }
+    }
+    # Not currently open — fall through to ShellExecute launch.
+}
+
 # ── Already-running window? → focus it ───────────────────────────────
 # Stage 1: match by full exe path. Access denied on elevated processes is
 # swallowed by the inner try/catch so the pipeline can continue.

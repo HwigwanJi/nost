@@ -391,6 +391,22 @@ body.mode-deck * {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M4,2 L4,21 L8,17 L12.5,26 L15,25 L10.5,16 L17.5,16 Z' fill='white' stroke='black' stroke-width='1.2' stroke-linejoin='round' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%23f97316'/%3E%3Crect x='19' y='19.5' width='10' height='2.2' rx='0.8' fill='white'/%3E%3Crect x='19' y='22.9' width='10' height='2.2' rx='0.8' fill='white'/%3E%3Crect x='19' y='26.3' width='10' height='2.2' rx='0.8' fill='white'/%3E%3C/svg%3E") 4 2, default !important;
 }
 
+body.mode-clean,
+body.mode-clean * {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M4,2 L4,21 L8,17 L12.5,26 L15,25 L10.5,16 L17.5,16 Z' fill='white' stroke='black' stroke-width='1.2' stroke-linejoin='round' stroke-linecap='round'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%23ef4444'/%3E%3Cpath d='M20.5 19.5h7l-.5 2h-6l-.5-2zm1 2.5h5l-.3 5.5c-.03.55-.5 1-1 1h-2.4c-.5 0-.97-.45-1-1L21.5 22z' fill='white'/%3E%3C/svg%3E") 4 2, default !important;
+}
+
+/* ─── Tool-mode exclusivity ──────────────────────────────── */
+/* Elements marked [data-mode-dim] are non-tool actions (settings, search,
+   dialog triggers, etc.) that should be inert while a tool is active. The
+   user must press ESC (or re-click the active tool) to escape. */
+body.mode-tool [data-mode-dim] {
+  pointer-events: none !important;
+  opacity: 0.35 !important;
+  filter: saturate(0.5);
+  transition: opacity 0.15s;
+}
+
 /* ─── Space resize handle ───────────────────────────────── */
 /* Reveal the indicator line when hovering the handle or while resizing */
 .space-resize-handle:hover .space-resize-line {
