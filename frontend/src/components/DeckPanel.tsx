@@ -189,28 +189,54 @@ function DeckCard({ deck, items, monitorCount, onLaunch, onDelete, onUpdateDeck 
       style={{ margin: '4px 6px', borderRadius: 10, border: `1px solid ${editing ? '#f97316' : 'var(--border-rgba)'}`, background: editing ? 'rgba(249,115,22,0.06)' : 'var(--surface)', transition: 'all 0.15s', overflow: 'hidden', cursor: editing ? 'default' : 'pointer' }}
     >
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', padding: '7px 8px 4px', gap: 4 }}>
-        <Icon name="stacks" size={12} color="#f97316" style={{ flexShrink: 0 }} />
+      <div style={{ display: 'flex', alignItems: 'center', padding: '8px 10px 6px', gap: 6 }}>
+        <Icon name="stacks" size={13} color="#f97316" style={{ flexShrink: 0 }} />
         {renaming ? (
           <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); } if (e.key === 'Escape') setRenaming(false); }}
-            onBlur={() => { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); }}
+            onBlur={e => {
+              const next = e.relatedTarget as HTMLElement | null;
+              if (next?.closest('[data-rename-done]')) return;
+              onUpdateDeck(deck.id, { name: renameDraft });
+              setRenaming(false);
+            }}
             onClick={e => e.stopPropagation()}
-            style={{ flex: 1, background: 'transparent', border: 'none', outline: '1px solid var(--border-focus)', borderRadius: 3, fontSize: 11, fontWeight: 600, color: 'var(--text-color)', fontFamily: 'inherit', padding: '1px 4px' }}
+            style={{
+              flex: 1, minWidth: 0,
+              background: 'var(--bg-rgba)',
+              border: '1px solid #f97316',
+              outline: 'none',
+              borderRadius: 6,
+              fontSize: 12, fontWeight: 600,
+              color: 'var(--text-color)',
+              fontFamily: 'inherit',
+              padding: '5px 8px',
+              height: 26,
+              boxSizing: 'border-box',
+            }}
           />
         ) : (
-          <span onDoubleClick={e => { e.stopPropagation(); setRenameDraft(deck.name); setRenaming(true); }} style={{ flex: 1, fontSize: 11, fontWeight: 600, color: 'var(--text-color)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{deck.name}</span>
+          <span onDoubleClick={e => { e.stopPropagation(); setRenameDraft(deck.name); setRenaming(true); }} style={{ flex: 1, fontSize: 12, fontWeight: 600, color: 'var(--text-color)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{deck.name}</span>
         )}
-        <div style={{ display: 'flex', gap: 2 }} onClick={e => e.stopPropagation()}>
-          {editing ? (
-            <button onClick={() => setEditing(false)} style={{ padding: '1px 6px', fontSize: 9, fontWeight: 700, background: '#f97316', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontFamily: 'inherit' }}>완료</button>
+        <div style={{ display: 'flex', gap: 2, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+          {(editing || renaming) ? (
+            <button
+              data-rename-done
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => { if (renaming) { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); } setEditing(false); }}
+              style={{
+                padding: '4px 10px', fontSize: 11, fontWeight: 700,
+                background: '#f97316', color: '#fff',
+                border: 'none', borderRadius: 6, cursor: 'pointer',
+                fontFamily: 'inherit', height: 26, lineHeight: 1,
+              }}>완료</button>
           ) : (
             <>
-              <button onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="편집">
-                <Icon name="edit" size={11} />
+              <button onClick={e => { e.stopPropagation(); setEditing(true); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, color: 'var(--text-dim)', borderRadius: 5 }} title="편집">
+                <Icon name="edit" size={13} />
               </button>
-              <button onClick={e => { e.stopPropagation(); onDelete(); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 2, color: 'var(--text-dim)', borderRadius: 4 }} title="삭제">
-                <Icon name="delete" size={11} />
+              <button onClick={e => { e.stopPropagation(); onDelete(); }} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, color: 'var(--text-dim)', borderRadius: 5 }} title="삭제">
+                <Icon name="delete" size={13} />
               </button>
             </>
           )}

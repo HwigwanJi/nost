@@ -216,7 +216,7 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     background: `linear-gradient(145deg, ${hexToRgba(color, 0.92)}, ${hexToRgba(color, 0.68)})`,
     border: `1.5px solid ${hexToRgba(color, hover ? 0.95 : 0.7)}`,
     boxShadow: hover
-      ? `0 8px 22px rgba(0,0,0,0.42), 0 0 0 3px ${hexToRgba(color, 0.22)}`
+      ? `0 8px 22px rgba(0,0,0,0.42) , 0 0 0 3px ${hexToRgba(color, 0.22)}`
       : '0 3px 12px rgba(0,0,0,0.32)',
     display: 'flex',
     alignItems: 'center',
@@ -224,11 +224,9 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     position: 'relative',
     color: '#fff',
     fontSize: data.iconIsEmoji ? 24 : 22,
-    fontFamily: data.iconIsEmoji
-      ? 'inherit'
-      : '"Material Symbols Rounded", "Material Symbols Outlined"',
-    fontWeight: data.iconIsEmoji ? 400 : 500,
-    fontVariationSettings: data.iconIsEmoji ? undefined : '"FILL" 1, "wght" 500',
+    // Font-family for Material Symbols lives on the inner span (see ms-rounded
+    // class in badges.html). Emojis inherit the Pretendard-backed body stack
+    // so they render with the same kerning as the rest of the overlay.
     userSelect: 'none',
     overflow: 'hidden',
   };
@@ -270,11 +268,13 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
         title={`${data.label} — 클릭: 미니 창 열기 · 드래그: 이동 · 창으로 드롭: 복귀 · 우클릭: 메뉴`}
       >
         <div style={disc}>
-          {hasIcon
-            ? iconContent
-            : data.color
+          {hasIcon ? (
+            data.iconIsEmoji
+              ? <span>{iconContent}</span>
+              : <span className="ms-rounded" style={{ fontSize: 22 }}>{iconContent}</span>
+          ) : data.color
               ? <span style={colorDot} />
-              : iconContent}
+              : <span>{iconContent}</span>}
         </div>
       </div>
     </>

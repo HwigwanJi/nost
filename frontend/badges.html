@@ -14,6 +14,31 @@
         -webkit-app-region: no-drag;
         user-select: none;
         cursor: default;
+        /* Pretendard Variable — matches the main window. Must land before
+           any component paints so Korean labels don't flash in the OS fallback
+           font for a frame. */
+        font-family: 'Pretendard Variable', Pretendard, -apple-system, 'Noto Sans KR', sans-serif;
+        font-feature-settings: 'ss18';
+        color: #f3f4f6;
+      }
+      /* Utility class used by Badge / MiniWindow to render Material Symbols.
+         Centralising here lets us use `className` instead of inline font-family
+         (which the font-loader sometimes sees before the @font-face is ready). */
+      .ms-rounded {
+        font-family: 'Material Symbols Rounded Variable', 'Material Symbols Rounded', 'Material Symbols Outlined';
+        font-weight: 500;
+        font-style: normal;
+        line-height: 1;
+        letter-spacing: normal;
+        text-transform: none;
+        display: inline-block;
+        white-space: nowrap;
+        word-wrap: normal;
+        direction: ltr;
+        -webkit-font-feature-settings: 'liga';
+        font-feature-settings: 'liga';
+        -webkit-font-smoothing: antialiased;
+        font-variation-settings: 'FILL' 1, 'wght' 500, 'GRAD' 0, 'opsz' 24;
       }
       /* Badge wrapper uses absolute coords inside a full-viewport layer. */
       #badge-root { position: absolute; inset: 0; }

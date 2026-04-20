@@ -189,7 +189,6 @@ export function MiniWindow({
     width: 18, height: 18,
     flexShrink: 0,
     color: 'rgba(255,255,255,0.75)',
-    fontFamily: '"Material Symbols Rounded", "Material Symbols Outlined"',
     fontSize: 16,
     display: 'inline-flex',
     alignItems: 'center',
@@ -293,13 +292,12 @@ export function MiniWindow({
                       }}
                     />
                   ) : (
-                    <span style={rowIcon}>{iconGlyph}</span>
+                    <span className="ms-rounded" style={rowIcon}>{iconGlyph}</span>
                   )}
                   <span style={rowText}>{it.title}</span>
                   {it.pinned && (
-                    <span style={{
-                      fontSize: 9, color: hexToRgba(c, 0.9),
-                      fontFamily: '"Material Symbols Rounded"',
+                    <span className="ms-rounded" style={{
+                      fontSize: 11, color: hexToRgba(c, 0.9),
                     }}>keep</span>
                   )}
                 </div>
@@ -317,7 +315,7 @@ export function MiniWindow({
             }}
             title={badge.refType === 'node' ? '묶음 실행' : '순차 실행'}
           >
-            <span style={{ fontFamily: '"Material Symbols Rounded"', fontSize: 13 }}>
+            <span className="ms-rounded" style={{ fontSize: 14 }}>
               {badge.refType === 'node' ? 'hub' : 'play_arrow'}
             </span>
             {badge.refType === 'node' ? '묶음 실행' : '순차 실행'}
