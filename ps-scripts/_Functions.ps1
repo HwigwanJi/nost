@@ -27,13 +27,38 @@ function Find-ExplorerHwnd {
     return $null
 }
 
+function Resolve-AppPath {
+    # Resolve a Windows shortcut (.lnk) to its real target executable path.
+    # Returns the original path unchanged for non-.lnk inputs or on error.
+    #
+    # Store/MSIX app shortcuts use TargetPath=explorer.exe + Arguments=shell:AppsFolder\<AUMID>.
+    # For these we return $null (caller must handle AUMID separately) rather
+    # than returning explorer.exe, which would incorrectly match a file-explorer window.
+    param([string]$path)
+    if ($path -match '\.lnk$') {
+        try {
+            $wsh = New-Object -ComObject WScript.Shell
+            $lnk = $wsh.CreateShortcut($path)
+            if ($lnk.TargetPath -match 'explorer\.exe$' -and
+                $lnk.Arguments  -match 'shell:AppsFolder\\') {
+                return $null   # Store app — caller should skip process-match
+            }
+            if ($lnk.TargetPath) { return $lnk.TargetPath }
+        } catch {}
+    }
+    return $path
+}
+
 function Find-Hwnd {
     param($item)
     if ($item.type -eq 'app') {
-        $proc = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $item.value } catch { $false } } |
+        $appPath = Resolve-AppPath $item.value
+        # $null means a Store app shortcut — no reliable process-match possible
+        if ($null -eq $appPath) { return $null }
+        $proc = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $appPath } catch { $false } } |
             Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
         if (-not $proc) {
-            $exeName = [System.IO.Path]::GetFileNameWithoutExtension($item.value)
+            $exeName = [System.IO.Path]::GetFileNameWithoutExtension($appPath)
             $proc = Get-Process -Name $exeName -ErrorAction SilentlyContinue |
                 Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
         }

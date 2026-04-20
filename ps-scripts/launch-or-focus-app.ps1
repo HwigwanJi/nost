@@ -1,6 +1,33 @@
 . "$PSScriptRoot\_Win32Types.ps1"
 
 $target = $env:QL_PATH
+
+# Resolve Windows shortcut (.lnk) → real target so process-matching and
+# WindowsApps detection work regardless of whether the user stored the
+# shortcut path or the underlying executable path.
+#
+# Special case: Start-menu shortcuts for Store/MSIX apps point to
+#   TargetPath = explorer.exe
+#   Arguments  = shell:AppsFolder\<AUMID>
+# For these we extract the AUMID directly and launch it, bypassing the normal
+# process-match flow (explorer.exe would focus a file-explorer window instead).
+if ($target -match '\.lnk$') {
+    try {
+        $wsh = New-Object -ComObject WScript.Shell
+        $lnk = $wsh.CreateShortcut($target)
+        if ($lnk.TargetPath -match 'explorer\.exe$' -and
+            $lnk.Arguments  -match 'shell:AppsFolder\\(.+)') {
+            # Store/MSIX app shortcut — launch via AUMID extracted from Arguments
+            $aumid = $Matches[1]
+            Start-Process explorer.exe "shell:AppsFolder\$aumid"
+            Write-Output "LAUNCHED"
+            exit
+        } elseif ($lnk.TargetPath) {
+            $target = $lnk.TargetPath
+        }
+    } catch {}
+}
+
 $exeName = [System.IO.Path]::GetFileNameWithoutExtension($target)
 
 # 1. Try to find already-running process by full path

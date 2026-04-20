@@ -536,6 +536,14 @@ function createWindow() {
 
 const _PS_FOCUS_APP = `
 $t = $env:QL_PATH
+if ($t -match '\\.lnk$') {
+  try {
+    $wsh = New-Object -ComObject WScript.Shell; $lnk = $wsh.CreateShortcut($t)
+    if ($lnk.TargetPath -match 'explorer\\.exe$' -and $lnk.Arguments -match 'shell:AppsFolder\\\\(.+)') {
+      Start-Process explorer.exe "shell:AppsFolder\\$($Matches[1])"; exit
+    } elseif ($lnk.TargetPath) { $t = $lnk.TargetPath }
+  } catch {}
+}
 $exeName = [System.IO.Path]::GetFileNameWithoutExtension($t)
 $p = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $t } catch { $false } } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if (-not $p) { $p = Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }

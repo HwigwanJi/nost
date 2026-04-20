@@ -1626,7 +1626,7 @@ export default function App() {
                 style={{
                   width: '100%',
                   background: 'var(--surface)',
-                  border: `1px solid ${isSlashMode ? 'var(--accent, #6366f1)' : 'var(--border-rgba)'}`,
+                  border: `1px solid ${isSlashMode ? 'var(--accent)' : 'var(--border-rgba)'}`,
                   borderRadius: isSlashMode && slashSuggestions.length > 0 ? '6px 6px 0 0' : '6px',
                   padding: '5px 10px 5px 28px',
                   color: 'var(--text-color)',
@@ -1648,7 +1648,7 @@ export default function App() {
                     left: 0,
                     right: 0,
                     background: 'var(--bg-rgba)',
-                    border: '1px solid var(--accent, #6366f1)',
+                    border: '1px solid var(--accent)',
                     borderTop: 'none',
                     borderRadius: '0 0 8px 8px',
                     boxShadow: '0 8px 24px rgba(0,0,0,0.18)',

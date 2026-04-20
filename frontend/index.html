@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>nost</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <!-- Fonts loaded locally via npm packages (no CDN requests) -->
     <style>
       html, body { margin: 0; padding: 0; background: transparent !important; overflow: hidden; }
@@ -39,8 +40,6 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 18px;
-        color: rgba(99, 102, 241, 0.9);
         -webkit-app-region: no-drag;
       }
 
@@ -90,7 +89,11 @@
   <body>
     <!-- Loading screen: visible before React loads, draggable -->
     <div id="ql-loading">
-      <div class="ql-loading-logo">⚡</div>
+      <div class="ql-loading-logo">
+        <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(99, 102, 241, 0.9)"/>
+        </svg>
+      </div>
       <div class="ql-progress-wrap">
         <div id="ql-loading-bar"></div>
       </div>
