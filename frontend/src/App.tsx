@@ -353,8 +353,17 @@ function applySpaceDrop(
     r.leftSpace.id === targetId || r.rightSpace?.id === targetId
   );
   if (targetRowIdx === -1) {
-    // Target was the dragged itself (shouldn't happen — caller guards), or the
-    // target was removed in stripping. Fall through to a plain array reorder.
+    // Target was the dragged itself (shouldn't happen — caller guards), or
+    // the target id is stale / doesn't exist in the stripped model.
+    //
+    // CRITICAL: the dragged space has already been stripped from its row
+    // (step 1). Without re-inserting it we'd silently delete the space —
+    // this was the "drop into gray zone = space disappears" bug.
+    //
+    // Safe default: append the dragged as a new solo row at the end. The
+    // user's intent couldn't be resolved, but no data is lost and the
+    // visual reordering is predictable (same as dropping at the bottom).
+    stripped.push({ leftSpace: cleanDragged, leftRatio: 1 });
     return flattenRows(stripped);
   }
 
@@ -1778,16 +1787,37 @@ export default function App() {
               const activeId = e.active.id as string;
               if (!data.spaces.some(s => s.id === activeId)) return;
 
-              // Use dnd-kit's resolved `over` as the target — elementFromPoint
-              // is unreliable during drag because the DragOverlay ghost sits at
-              // the cursor and intercepts the hit test. `over.id` may be either
-              // the SortableSpace id (space.id) or the file-drop droppable id
-              // (`drop-space-<id>`); strip the prefix to always land on a real
-              // space id.
+              // Resolve target via dnd-kit's `over` first. `over.id` may be
+              // either the SortableSpace id (space.id) or the file-drop
+              // droppable id (`drop-space-<id>`); strip the prefix to always
+              // land on a real space id.
               const overIdRaw = e.over?.id ? String(e.over.id) : null;
-              const overId = overIdRaw?.startsWith('drop-space-')
+              let overId: string | null = overIdRaw?.startsWith('drop-space-')
                 ? overIdRaw.slice('drop-space-'.length)
                 : overIdRaw;
+
+              // Compute cursor-relative rect early — we may also need it for
+              // the fallback below.
+              const start = e.activatorEvent as PointerEvent | MouseEvent | undefined;
+              if (!start) return;
+              const cx0 = (start.clientX ?? 0) + e.delta.x;
+              const cy0 = (start.clientY ?? 0) + e.delta.y;
+
+              // Fallback: when closestCorners loses the `over` at the extreme
+              // right edge of a narrow pair-half, iterate the visible space
+              // rects and pick whichever one contains the cursor. This plugs
+              // the "drop on right edge doesn't stick" bug without changing
+              // the global collisionDetection.
+              if (!overId) {
+                const els = document.querySelectorAll<HTMLElement>('[data-space-id]');
+                for (const el of Array.from(els)) {
+                  const r = el.getBoundingClientRect();
+                  if (cx0 >= r.left && cx0 <= r.right && cy0 >= r.top && cy0 <= r.bottom) {
+                    overId = el.dataset.spaceId ?? null;
+                    break;
+                  }
+                }
+              }
 
               if (!overId || overId === activeId) {
                 setDragOverEdge(prev => prev === null ? prev : null);
@@ -1803,14 +1833,21 @@ export default function App() {
               }
 
               // Compute cursor X relative to the target space for left/center/right classification.
-              const start = e.activatorEvent as PointerEvent | MouseEvent | undefined;
-              if (!start) return;
-              const cx = (start.clientX ?? 0) + e.delta.x;
+              // (cx0 was already resolved above for the null-over fallback.)
               const rect = spaceEl.getBoundingClientRect();
-              const rx = cx - rect.left;
+              const rx = cx0 - rect.left;
               const w = rect.width;
+
+              // Edge zone sizing: 35% of the target width OR 80px, whichever
+              // is larger. Ratio-only (the previous 25% / 75%) made the right
+              // zone too small on narrow spaces (e.g. right half of a pair)
+              // so users couldn't reliably hit it; the 80px floor guarantees
+              // a comfortable target on any space width.
+              const edgeZone = Math.max(80, w * 0.35);
               const edge: 'left' | 'right' | 'center' =
-                rx < w * 0.25 ? 'left' : rx > w * 0.75 ? 'right' : 'center';
+                rx < edgeZone ? 'left'
+                : rx > w - edgeZone ? 'right'
+                : 'center';
 
               // A left/right drop is blocked when the target's row is already a
               // pair AND the dragged space isn't its current partner. Center
