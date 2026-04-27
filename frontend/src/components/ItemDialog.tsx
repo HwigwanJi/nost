@@ -7,6 +7,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { electronAPI } from '../electronBridge';
+import { useBusyMark } from '../lib/userBusy';
+import { useFaviconAutoFetch, fetchFaviconDataUrl, ensureHttpUrl } from '../hooks/useFavicon';
 
 interface ItemDialogProps {
   open: boolean;
@@ -69,42 +71,8 @@ const MAT_ICONS = [
   'favorite','radio_button_checked','emoji_emotions','face',
 ];
 
-function ensureHttpUrl(raw: string): string | null {
-  const v = raw.trim();
-  if (!v) return null;
-  if (/^https?:\/\//i.test(v)) return v;
-  if (/^[\w.-]+\.[a-z]{2,}/i.test(v)) return `https://${v}`;
-  return null;
-}
-
-function faviconCandidates(inputUrl: string): string[] {
-  try {
-    const u = new URL(inputUrl);
-    const domain = u.hostname;
-    const origin = u.origin;
-    return [
-      `${origin}/apple-touch-icon.png`,
-      `${origin}/apple-touch-icon-precomposed.png`,
-      `https://www.google.com/s2/favicons?domain=${domain}&sz=256`,
-      `${origin}/favicon.ico`,
-      `https://icons.duckduckgo.com/ip3/${domain}.ico`,
-    ];
-  } catch {
-    return [];
-  }
-}
-
-function tryLoadImage(url: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve(true);
-    img.onerror = () => resolve(false);
-    img.referrerPolicy = 'no-referrer';
-    img.src = url;
-  });
-}
-
 export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1, allowedTypes, onSave }: ItemDialogProps) {
+  useBusyMark('modal:item-edit', open);
   const isEdit = !!(editItem && 'id' in editItem && editItem.id);
   type ItemForm = {
     title: string;
@@ -153,45 +121,38 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     setForm(prev => ({ ...prev, ...patch }));
   }, []);
 
-  /* ── Auto-fetch favicon for URL / browser items ─────────── */
+  /* ── Auto-fetch favicon for URL / browser items ──────────────────
+   * Two effects: (1) reset to default when the input no longer warrants
+   * an auto-resolved favicon; (2) hand off the actual fetch to the
+   * shared hook, which goes through main process (CSP-bypass + 1×1
+   * placeholder rejection — see hooks/useFavicon.ts). */
   useEffect(() => {
     if (manualIconRef.current) return;
-    if (form.type !== 'url' && form.type !== 'browser') {
-      if (autoFavicon) {
-        setAutoFavicon(false);
-        setForm(prev => ({ ...prev, iconType: 'material', icon: 'star' }));
-      }
-      return;
+    if (!autoFavicon) return;
+    const isUrlType = form.type === 'url' || form.type === 'browser';
+    const hasUrl = !!ensureHttpUrl(form.value);
+    if (!isUrlType || !hasUrl) {
+      setAutoFavicon(false);
+      setForm(prev => ({ ...prev, iconType: 'material', icon: 'star' }));
     }
-    const normalized = ensureHttpUrl(form.value);
-    if (!normalized) {
-      if (autoFavicon) {
-        setAutoFavicon(false);
-        setForm(prev => ({ ...prev, iconType: 'material', icon: 'star' }));
-      }
-      return;
+  }, [form.type, form.value, autoFavicon]);
+
+  const handleFaviconResolved = useCallback((dataUrl: string | null) => {
+    if (manualIconRef.current) return;
+    if (dataUrl) {
+      setForm(prev => ({ ...prev, iconType: 'image', icon: dataUrl }));
+      setAutoFavicon(true);
+    } else {
+      setForm(prev => ({ ...prev, iconType: 'material', icon: 'public' }));
+      setAutoFavicon(false);
     }
+  }, []);
 
-    let cancelled = false;
-    (async () => {
-      const candidates = faviconCandidates(normalized);
-      for (const candidate of candidates) {
-        const ok = await tryLoadImage(candidate);
-        if (cancelled) return;
-        if (ok) {
-          setForm(prev => ({ ...prev, iconType: 'image', icon: candidate }));
-          setAutoFavicon(true);
-          return;
-        }
-      }
-      if (!cancelled) {
-        setAutoFavicon(false);
-        setForm(prev => ({ ...prev, iconType: 'material', icon: 'public' }));
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [autoFavicon, form.type, form.value]);
+  useFaviconAutoFetch({
+    url: form.value,
+    enabled: !manualIconRef.current && (form.type === 'url' || form.type === 'browser'),
+    onResolved: handleFaviconResolved,
+  });
 
   useEffect(() => {
     if (manualIconRef.current) return;
@@ -216,18 +177,11 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
   }, [f]);
 
   const fetchFavicon = useCallback(async () => {
-    const normalized = ensureHttpUrl(form.value);
-    if (!normalized) return;
-    const candidates = faviconCandidates(normalized);
-    for (const candidate of candidates) {
-      const ok = await tryLoadImage(candidate);
-      if (ok) {
-        manualIconRef.current = true;
-        f({ iconType: 'image', icon: candidate });
-        setAutoFavicon(false);
-        return;
-      }
-    }
+    const dataUrl = await fetchFaviconDataUrl(form.value);
+    if (!dataUrl) return;
+    manualIconRef.current = true;
+    f({ iconType: 'image', icon: dataUrl });
+    setAutoFavicon(false);
   }, [form.value, f]);
 
   const fetchFileIcon = useCallback(async () => {

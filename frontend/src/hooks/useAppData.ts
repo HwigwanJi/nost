@@ -537,6 +537,47 @@ export function useAppData() {
     });
   }, [data, save]);
 
+  /**
+   * Apply many partial item patches in a single store write. The favicon
+   * migration uses this to fold N data-URL conversions into one save —
+   * calling updateItem in a loop closes over stale `data` and makes later
+   * calls overwrite earlier ones. Patches are keyed by (spaceId, itemId)
+   * and only the listed fields are merged; everything else on the item
+   * stays as-is.
+   */
+  const patchItems = useCallback((patches: Array<{
+    spaceId: string;
+    itemId: string;
+    patch: Partial<LauncherItem>;
+  }>) => {
+    if (patches.length === 0) return;
+    const bySpace = new Map<string, Map<string, Partial<LauncherItem>>>();
+    for (const { spaceId, itemId, patch } of patches) {
+      let m = bySpace.get(spaceId);
+      if (!m) { m = new Map(); bySpace.set(spaceId, m); }
+      m.set(itemId, { ...(m.get(itemId) ?? {}), ...patch });
+    }
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => {
+          const updates = bySpace.get(s.id);
+          if (!updates) return s;
+          return {
+            ...s,
+            items: s.items.map(i => {
+              const u = updates.get(i.id);
+              return u ? { ...i, ...u } : i;
+            }),
+          };
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [setDataRaw]);
+
   // ── Batch add / delete (functional-update form — safe for loops) ──
   // Regular addItem/deleteItem close over `data`, so calling them in a synchronous
   // loop makes each call overwrite the previous one. These two operate on `prev`
@@ -905,6 +946,7 @@ export function useAppData() {
     addItem,
     addItems,
     updateItem,
+    patchItems,
     deleteItem,
     deleteItems,
     deleteUnpinnedInSpace,

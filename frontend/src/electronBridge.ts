@@ -27,11 +27,17 @@ export interface ElectronAPI {
   moveWindow: (x: number, y: number) => void;
   windowDragEnd: () => void;
   exportData: () => Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  autoBackupData: (reason?: string) => Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  openUserDataFolder: (sub?: string) => Promise<{ success: boolean; reason?: string }>;
   importData: () => Promise<{ success: boolean; data?: unknown; formatVersion?: number; reason?: string }>;
   pickAndReadText: (kind: 'bookmarks-html' | 'markdown' | 'any') => Promise<{ success: boolean; text?: string; fileName?: string; reason?: string }>;
   pickFolder: () => Promise<string | null>;
   pickExe: () => Promise<string | null>;
   getFileIcon: (filePath: string) => Promise<string | null>;
+  /** Download the first acceptable favicon candidate as a data URL.
+   *  Resolves to null if every candidate fails or returns a placeholder.
+   *  Runs in main process — bypasses renderer CSP and rejects 1×1 placeholders. */
+  downloadFavicon: (candidates: string[]) => Promise<string | null>;
   getExtensionBridgeStatus: () => Promise<{
     connected: boolean;
     tabsCount: number;
@@ -88,8 +94,11 @@ export interface ElectronAPI {
     screenY?: number,
   ) => Promise<{ success: boolean; id?: string; reason?: string }>;
   syncBadges: () => void;
-  onBadgesLaunchItem: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string; itemId: string }) => void) => void;
-  onBadgesLaunchRef: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => void;
+  // Returns an unsubscribe function — call it from useEffect cleanup so
+  // listeners don't pile up. Pre-fix this returned void, which caused one
+  // badge click to launch N times after N effect re-runs.
+  onBadgesLaunchItem: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string; itemId: string }) => void) => () => void;
+  onBadgesLaunchRef:  (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => () => void;
   onBadgesRevealSpace: (cb: (payload: { refId: string }) => void) => void;
   onBadgesUpdated: (cb: (badges: import('./types').FloatingBadge[]) => void) => void;
 }
@@ -116,11 +125,14 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   moveWindow: noop,
   windowDragEnd: noop,
   exportData: async () => ({ success: false, reason: 'dev-mode' }),
+  autoBackupData: async () => ({ success: false, reason: 'dev-mode' }),
+  openUserDataFolder: async () => ({ success: false, reason: 'dev-mode' }),
   importData: async () => ({ success: false, reason: 'dev-mode' }),
   pickAndReadText: async () => ({ success: false, reason: 'dev-mode' }),
   pickFolder: async () => null,
   pickExe: async () => null,
   getFileIcon: async () => null,
+  downloadFavicon: async () => null,
   getExtensionBridgeStatus: async () => ({ connected: false, tabsCount: 0, lastTabsUpdateAt: 0, lastExtensionConnectedAt: 0 }),
   openExtensionInstallHelper: async (_targetBrowser: 'chrome' | 'whale') => ({ success: false, reason: 'dev-mode' }),
   tileWindows: async () => ({ success: false }),
@@ -155,8 +167,9 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   onFloatingOpenSettings: noop,
   pinBadge: async () => ({ success: false, reason: 'dev-mode' }),
   syncBadges: noop,
-  onBadgesLaunchItem: noop,
-  onBadgesLaunchRef: noop,
+  // Dev-mode stubs — return a no-op unsubscribe to satisfy the new signature.
+  onBadgesLaunchItem: () => () => {},
+  onBadgesLaunchRef:  () => () => {},
   onBadgesRevealSpace: noop,
   onBadgesUpdated: noop,
 };

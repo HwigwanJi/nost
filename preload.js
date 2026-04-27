@@ -35,6 +35,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   moveWindow: (x, y) => ipcRenderer.send('window-move', x, y),
   windowDragEnd: () => ipcRenderer.send('window-drag-end'),
   exportData: () => ipcRenderer.invoke('export-data'),
+  /** Silent backup to userData/tutorial-backups/. No dialog, returns the path. */
+  autoBackupData: (reason) => ipcRenderer.invoke('auto-backup-data', reason),
+  /** Open the user-data folder (or a sub-path) in OS file explorer. */
+  openUserDataFolder: (sub) => ipcRenderer.invoke('open-userdata-folder', sub),
   importData: () => ipcRenderer.invoke('import-data'),
   /** Pick a text file and return its contents. `kind` filters the file
    *  picker: 'bookmarks-html' / 'markdown' / 'any'. */
@@ -43,6 +47,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   pickExe: () => ipcRenderer.invoke('pick-exe'),
   getFileIcon: (filePath) => ipcRenderer.invoke('get-file-icon', filePath),
+  /**
+   * Resolve a website's favicon by trying candidate URLs from the main
+   * process (bypasses renderer CSP) and returns a self-contained data URL.
+   * Saving the data URL on the item means the icon survives offline and
+   * service outages — no re-fetch on every render.
+   */
+  downloadFavicon: (candidates) => ipcRenderer.invoke('download-favicon', candidates),
   getExtensionBridgeStatus: () => ipcRenderer.invoke('get-extension-bridge-status'),
   openExtensionInstallHelper: (targetBrowser) => ipcRenderer.invoke('open-extension-install-helper', targetBrowser),
   tileWindows: (items) => ipcRenderer.invoke('tile-windows', items),
@@ -95,12 +106,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  (e.g. after an import) so the overlay rebuilds. */
   syncBadges: () => ipcRenderer.send('badges-sync'),
   /** Mini-window fired a single-item launch. Main renderer should route
-   *  the item through its full launch pipeline. */
-  onBadgesLaunchItem: (cb) =>
-    ipcRenderer.on('badges-launch-item', (_, payload) => cb(payload)),
+   *  the item through its full launch pipeline.
+   *  Returns an unsubscribe fn so the renderer can detach on effect
+   *  cleanup — without it, every effect re-run piles a new listener
+   *  and one badge click ends up firing N launches. */
+  onBadgesLaunchItem: (cb) => {
+    const handler = (_, payload) => cb(payload);
+    ipcRenderer.on('badges-launch-item', handler);
+    return () => ipcRenderer.removeListener('badges-launch-item', handler);
+  },
   /** Mini-window fired a node/deck group launch ("묶음 실행" / "순차 실행"). */
-  onBadgesLaunchRef: (cb) =>
-    ipcRenderer.on('badges-launch-ref', (_, payload) => cb(payload)),
+  onBadgesLaunchRef: (cb) => {
+    const handler = (_, payload) => cb(payload);
+    ipcRenderer.on('badges-launch-ref', handler);
+    return () => ipcRenderer.removeListener('badges-launch-ref', handler);
+  },
   /** Badge context-menu "실행" on a space ref → scroll that space into view. */
   onBadgesRevealSpace: (cb) =>
     ipcRenderer.on('badges-reveal-space', (_, payload) => cb(payload)),

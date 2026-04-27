@@ -6,6 +6,11 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { SpaceAccordion } from './components/SpaceAccordion';
 import { PresetToggle } from './components/PresetToggle';
 import { TourOverlay } from './tour/TourOverlay';
+import { TutorialBanner } from './tour/TutorialBanner';
+import { SandboxExitModal } from './tour/SandboxExitModal';
+import { buildSandboxSeed, snapshotData, mergeSandboxBack, SANDBOX_BACKUP_TAG } from './tour/sandbox';
+import { findTour } from './tour/tours';
+import type { AppData } from './types';
 import { PaywallModal, type PaywallReason } from './components/PaywallModal';
 import { useEntitlement } from './hooks/useEntitlement';
 import { EmptyState } from './components/EmptyState';
@@ -32,6 +37,8 @@ import { WelcomeModal } from './components/WelcomeModal';
 import { TileOverlay } from './components/TileOverlay';
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
+import { faviconCandidates } from './hooks/useFavicon';
+import { setBusy, whenIdle } from './lib/userBusy';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
 import { useTileOverlay } from './hooks/useTileOverlay';
 import { useLaunchPipeline } from './hooks/useLaunchPipeline';
@@ -478,6 +485,72 @@ export default function App() {
   const store = useAppData();
   const { data } = store;
 
+  // ── Favicon migration (Option B) ─────────────────────────────
+  // Older builds saved URL-typed item icons as the *remote* URL (e.g.
+  // "https://www.google.com/s2/favicons?...") because the renderer-side
+  // tryLoadImage loop ran in a CSP that only allowed Google's host. After
+  // the switch to main-process fetch + data URL caching, those legacy
+  // icons still render through the broken path. Fix them in the
+  // background, once per session: scan items, fetch fresh data URLs in
+  // parallel, then commit ALL conversions in ONE store write via
+  // patchItems — calling store.updateItem in a loop would close over
+  // stale `data` and let later writes silently overwrite earlier ones.
+  const faviconMigratedRef = useRef(false);
+  useEffect(() => {
+    if (faviconMigratedRef.current) return;
+    if (!data?.spaces?.length) return;
+    faviconMigratedRef.current = true;
+
+    type Job = { spaceId: string; itemId: string; value: string };
+    const jobs: Job[] = [];
+    for (const space of data.spaces) {
+      for (const item of space.items ?? []) {
+        if (item.iconType === 'image'
+            && typeof item.icon === 'string'
+            && /^https?:\/\//i.test(item.icon)
+            && (item.type === 'url' || item.type === 'browser')) {
+          jobs.push({ spaceId: space.id, itemId: item.id, value: item.value });
+        }
+      }
+    }
+    if (jobs.length === 0) return;
+    appLog.info(`[favicon-migrate] ${jobs.length} legacy icon(s) to convert`);
+
+    let cancelled = false;
+    const patches: Array<{ spaceId: string; itemId: string; patch: { icon: string; iconType: 'image' } }> = [];
+    let cursor = 0;
+    const MAX_CONCURRENT = 4;
+
+    const runWorker = async () => {
+      while (!cancelled && cursor < jobs.length) {
+        const job = jobs[cursor++];
+        try {
+          const dataUrl = await electronAPI.downloadFavicon(faviconCandidates(job.value));
+          if (cancelled) return;
+          if (dataUrl) {
+            patches.push({ spaceId: job.spaceId, itemId: job.itemId, patch: { icon: dataUrl, iconType: 'image' } });
+          }
+        } catch (e) {
+          appLog.warn('[favicon-migrate] job failed', { url: job.value, error: String(e) });
+        }
+      }
+    };
+
+    (async () => {
+      const workers = Array.from({ length: Math.min(MAX_CONCURRENT, jobs.length) }, () => runWorker());
+      await Promise.all(workers);
+      if (cancelled || patches.length === 0) return;
+      store.patchItems(patches);
+      appLog.info(`[favicon-migrate] committed ${patches.length}/${jobs.length} icon(s)`);
+    })();
+
+    return () => { cancelled = true; };
+    // The ref guard above ensures this body executes at most once per
+    // session. Re-running the effect when `data.spaces` changes is fine
+    // and cheap — we just bail on the ref check.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.spaces]);
+
   // ── Entitlement (Phase 5) ────────────────────────────────────
   // Single source of truth for "is this user on Pro?". Every gate in the
   // tree calls this (or reads the memoised result via props). The modal
@@ -499,9 +572,13 @@ export default function App() {
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   useEffect(() => {
     if (localStorage.getItem('nost-welcome-shown')) return;
-    // Defer a tick so the loading overlay finishes its fade-out first; the
-    // wizard would otherwise sit behind it for ~280ms.
-    const t = setTimeout(() => setWelcomeOpen(true), 600);
+    // Defer a tick so the loading overlay finishes its fade-out first.
+    // We then gate on `whenIdle` — if the user is mid-drag, mid-edit, or
+    // already has another modal up (rare on first launch but possible if
+    // the import wizard auto-opened from a CLI flag), we wait to avoid
+    // popping a second surface on top of the first.
+    const fire = () => whenIdle(() => setWelcomeOpen(true), { timeoutMs: 30_000 });
+    const t = setTimeout(fire, 600);
     return () => clearTimeout(t);
   }, []);
 
@@ -513,6 +590,34 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   // applyTemplate / applyImport are defined further down once showToast is
   // in scope.
+
+  // ── Tutorial sandbox ────────────────────────────────────────
+  // While `tutorialActive` is true the live AppData is a TEMPORARY swap
+  // — the user is poking around fake seed data so they can practice each
+  // tour interactively. The real data lives in `tutorialSnapshotRef` and
+  // also on disk at the path returned by `autoBackupData`. On exit we
+  // either restore the snapshot (default) or merge any new spaces/badges
+  // the user actually built (post-tour modal).
+  //
+  // The sandbox is intentionally NOT preset-scoped — most things the
+  // tours teach (floating badges, search, etc.) are global. A 4th
+  // hidden preset wouldn't isolate them. See sandbox.ts for the full
+  // rationale.
+  const [tutorialActive, setTutorialActive] = useState(false);
+  const [tutorialBackupPath, setTutorialBackupPath] = useState<string | undefined>();
+  const [sandboxExitOpen, setSandboxExitOpen] = useState(false);
+  const tutorialSnapshotRef = useRef<AppData | null>(null);
+  // Used by the SandboxExitModal copy ("스페이스 N개를 만드셨네요").
+  const [sandboxNewCounts, setSandboxNewCounts] = useState({ spaces: 0, badges: 0 });
+
+  // Forward declarations — defined further down once `data`, `store`, and
+  // `showToast` are in scope. We wrap them in refs so the public-facing
+  // listener for nost:start-tour can reach them without re-registering.
+  const tourBridgeRef = useRef<{
+    enterSandbox: (tourId: string) => Promise<void>;
+    exitSandbox:  (mode: 'discard' | 'merge') => Promise<void>;
+    requestExit:  () => void;
+  } | null>(null);
 
   // ── Centralised quota checks (Phase 5) ───────────────────────
   // Every mutation that touches a limited resource (card, space, node, deck,
@@ -724,6 +829,141 @@ export default function App() {
     const cardCount = payload.spaces.reduce((s, sp) => s + sp.items.length, 0);
     showToast(`${cardCount}개 카드 ${word}됨`);
   }, [data.spaces, store, showToast]);
+
+  // ── Tutorial sandbox — enter / exit handlers ──────────────────
+  //
+  // enterSandbox: snapshot the live data, drop a disk backup as belt-and-
+  // braces, swap AppData with seed content, then dispatch the actual tour
+  // start event so TourOverlay opens against the seeded data (and not the
+  // stale real data).
+  //
+  // exitSandbox: either restore the snapshot (discard) or merge any new
+  // sandbox spaces/badges into the original (merge), then write that back
+  // and reload from store. Always closes the modal and clears the active
+  // flag, even on error — leaving `tutorialActive=true` after a failed
+  // restore would strand the banner on screen.
+  const enterSandbox = useCallback(async (tourId: string) => {
+    if (tutorialActive) {
+      // Already in sandbox — just re-fire the tour without re-swapping.
+      window.dispatchEvent(new CustomEvent('nost:start-tour-now', { detail: { tourId } }));
+      return;
+    }
+    // 1) Disk backup first. If this fails we abort — the user explicitly
+    //    asked for a safety net and we don't proceed without it.
+    let backupPath: string | undefined;
+    try {
+      const res = await electronAPI.autoBackupData(SANDBOX_BACKUP_TAG);
+      if (res.success) backupPath = res.filePath;
+      else { showToast('백업 실패 — 튜토리얼을 시작하지 않습니다'); return; }
+    } catch (e) {
+      showToast(`백업 실패 (${String(e).slice(0, 60)}) — 튜토리얼을 시작하지 않습니다`);
+      return;
+    }
+
+    // 2) Snapshot in memory. JSON round-trip — see sandbox.ts.
+    tutorialSnapshotRef.current = snapshotData(data);
+    setTutorialBackupPath(backupPath);
+
+    // 3) Swap to seed and reload the renderer's view of it.
+    const seed = buildSandboxSeed(tourId, data);
+    try {
+      await electronAPI.storeSave(seed as Parameters<typeof electronAPI.storeSave>[0]);
+      await store.reloadFromStore();
+    } catch (e) {
+      // Seed swap failed — best effort restore from snapshot, abort tour.
+      try {
+        if (tutorialSnapshotRef.current) {
+          await electronAPI.storeSave(tutorialSnapshotRef.current as Parameters<typeof electronAPI.storeSave>[0]);
+          await store.reloadFromStore();
+        }
+      } catch { /* nothing more we can do */ }
+      tutorialSnapshotRef.current = null;
+      setTutorialBackupPath(undefined);
+      showToast(`튜토리얼 시작 실패 (${String(e).slice(0, 60)})`);
+      return;
+    }
+
+    setTutorialActive(true);
+    // 4) Tell TourOverlay to start. Defer one microtask so the data flush
+    //    completes a render before the spotlight queries the DOM.
+    setTimeout(() => {
+      window.dispatchEvent(new CustomEvent('nost:start-tour-now', { detail: { tourId } }));
+    }, 0);
+  }, [data, store, showToast, tutorialActive]);
+
+  const exitSandbox = useCallback(async (mode: 'discard' | 'merge') => {
+    const snap = tutorialSnapshotRef.current;
+    setSandboxExitOpen(false);
+    if (!snap) {
+      // Defensive — the modal should never open without a snapshot, but if
+      // it somehow did just clear the flag and bail.
+      setTutorialActive(false);
+      setTutorialBackupPath(undefined);
+      return;
+    }
+    const target = mode === 'merge' ? mergeSandboxBack(snap, data) : snap;
+    try {
+      await electronAPI.storeSave(target as Parameters<typeof electronAPI.storeSave>[0]);
+      await store.reloadFromStore();
+      showToast(mode === 'merge' ? '튜토리얼에서 만든 항목을 가져왔어요' : '원래 데이터로 복원했습니다');
+    } catch (e) {
+      showToast(`복원 실패 (${String(e).slice(0, 60)}). 백업 파일을 직접 import 해주세요.`);
+    } finally {
+      tutorialSnapshotRef.current = null;
+      setTutorialBackupPath(undefined);
+      setTutorialActive(false);
+      setSandboxNewCounts({ spaces: 0, badges: 0 });
+    }
+  }, [data, store, showToast]);
+
+  const requestSandboxExit = useCallback(() => {
+    // Compute new spaces / badges so the modal copy can be specific.
+    const snap = tutorialSnapshotRef.current;
+    if (!snap) {
+      // No snapshot ⇒ wasn't sandboxed, don't show modal.
+      setTutorialActive(false);
+      return;
+    }
+    const oldSpaceIds = new Set(snap.spaces.map(s => s.id));
+    const oldBadgeIds = new Set((snap.floatingBadges ?? []).map(b => b.id));
+    const newSpaces = data.spaces.filter(s => !oldSpaceIds.has(s.id)).length;
+    const newBadges = (data.floatingBadges ?? []).filter(b => !oldBadgeIds.has(b.id)).length;
+    setSandboxNewCounts({ spaces: newSpaces, badges: newBadges });
+    setSandboxExitOpen(true);
+  }, [data]);
+
+  // Mirror the latest handlers into the ref so the start-tour bridge
+  // listener (registered once with `[]` deps) can reach the live closures
+  // without forcing every dispatch caller to know about App's internals.
+  tourBridgeRef.current = {
+    enterSandbox,
+    exitSandbox,
+    requestExit: requestSandboxExit,
+  };
+
+  // Public start-tour bridge.
+  //
+  // All callers (CommandBar, EmptyState, SettingsDialog, WelcomeWizard)
+  // dispatch `nost:start-tour { tourId }`. We catch it here and decide
+  // whether to enter the sandbox first or pass through. TourOverlay
+  // listens to `nost:start-tour-now`, which we dispatch after sandbox
+  // setup completes (or immediately for non-interactive tours).
+  useEffect(() => {
+    const onRequest = (e: Event) => {
+      const detail = (e as CustomEvent).detail ?? {};
+      const tourId: string = detail.tourId ?? 'basics';
+      const tour = findTour(tourId);
+      if (tour?.interactive) {
+        tourBridgeRef.current?.enterSandbox(tourId);
+      } else {
+        // Pass-through. TourOverlay's listener handles it.
+        window.dispatchEvent(new CustomEvent('nost:start-tour-now', { detail: { tourId } }));
+      }
+    };
+    window.addEventListener('nost:start-tour', onRequest);
+    return () => window.removeEventListener('nost:start-tour', onRequest);
+  }, []);
+
   const { launchAndPosition } = useLaunchPipeline({ showToast, dismissToast });
 
   // ── Mode / Node / Deck state ──────────────────────────────
@@ -741,35 +981,68 @@ export default function App() {
   } = useNodeDeckMode({ data, store, showToast, dismissToast, showTileOverlay });
 
   // ── Floating badges (Phase 2) — late listeners ─────────────
-  // Registered here (not at the top of the component) because they close over
-  // launchAndPosition / handleNodeGroupLaunch / handleDeckLaunch, which are
-  // declared above this point. Earlier placement would hit TDZ on build.
+  //
+  // CRITICAL: register the IPC listeners EXACTLY ONCE, not on every dep
+  // change. The previous version had `[data.spaces, ...]` deps with no
+  // cleanup, so each render added a new ipcRenderer.on listener while old
+  // ones remained alive. After N data updates a single mini-window click
+  // fired N launches — the user reported "50–60 windows pop up." Worse,
+  // the click pipeline itself bumps clickCount → mutates data.spaces →
+  // triggers another effect run → adds yet another listener, so the
+  // count grows geometrically with use.
+  //
+  // Fix is two parts:
+  //   1. preload's onBadges* now returns an unsubscribe function we call
+  //      from cleanup.
+  //   2. The listener body reads the latest closure values via a ref so
+  //      we never need to re-register. `[]` deps = exactly one
+  //      registration for the lifetime of App.
+  const badgeLaunchRef = useRef({
+    spaces: data.spaces,
+    closeAfterOpen: data.settings.closeAfterOpen,
+    launchAndPosition,
+    handleNodeGroupLaunch,
+    handleDeckLaunch,
+    store,
+  });
+  badgeLaunchRef.current = {
+    spaces: data.spaces,
+    closeAfterOpen: data.settings.closeAfterOpen,
+    launchAndPosition,
+    handleNodeGroupLaunch,
+    handleDeckLaunch,
+    store,
+  };
+
   useEffect(() => {
-    electronAPI.onBadgesLaunchItem(({ refType, refId, itemId }) => {
+    const offItem = electronAPI.onBadgesLaunchItem(({ refType, refId, itemId }) => {
+      const r = badgeLaunchRef.current;
       let item: LauncherItem | undefined;
       let ownerSpaceId: string | undefined;
       if (refType === 'space') {
-        const sp = data.spaces.find(s => s.id === refId);
+        const sp = r.spaces.find(s => s.id === refId);
         item = sp?.items.find(i => i.id === itemId);
         ownerSpaceId = sp?.id;
       } else {
         // node / deck — items may live in any space; find the owner for
         // click-count bookkeeping.
-        for (const sp of data.spaces) {
+        for (const sp of r.spaces) {
           const f = sp.items.find(i => i.id === itemId);
           if (f) { item = f; ownerSpaceId = sp.id; break; }
         }
       }
       if (item && ownerSpaceId) {
-        launchAndPosition(item, data.settings.closeAfterOpen);
-        store.incrementClickCount(ownerSpaceId, itemId);
+        r.launchAndPosition(item, r.closeAfterOpen);
+        r.store.incrementClickCount(ownerSpaceId, itemId);
       }
     });
-    electronAPI.onBadgesLaunchRef(({ refType, refId }) => {
-      if (refType === 'node') handleNodeGroupLaunch(refId);
-      else if (refType === 'deck') handleDeckLaunch(refId);
+    const offRef = electronAPI.onBadgesLaunchRef(({ refType, refId }) => {
+      const r = badgeLaunchRef.current;
+      if (refType === 'node') r.handleNodeGroupLaunch(refId);
+      else if (refType === 'deck') r.handleDeckLaunch(refId);
     });
-  }, [data.spaces, data.settings.closeAfterOpen, launchAndPosition, handleNodeGroupLaunch, handleDeckLaunch, store]);
+    return () => { offItem(); offRef(); };
+  }, []);
 
 
   // ── Toast notification — FIFO queue (non-overlapping) ────
@@ -1607,6 +1880,8 @@ export default function App() {
     const isSpaceDrag = data.spaces.some(s => s.id === (event.active.id as string));
     if (isSpaceDrag) { handleSpaceDragEnd(event); setDraggingSpaceId(null); }
     else { handleItemDragEnd(event); }
+    // Always clear the busy flag — both branches are terminal for the drag.
+    setBusy('drag', false);
   }
 
   // ── Slash command detection in search bar ─────────────────
@@ -1867,6 +2142,10 @@ export default function App() {
             collisionDetection={closestCorners}
             onDragStart={e => {
               const activeId = e.active.id as string;
+              // Mark busy so auto-popups (welcome wizard, tour starts) defer
+              // until the user finishes / cancels the drag. Cleared in
+              // onDragCancel and at the end of handleAllDragEnd.
+              setBusy('drag', true);
               if (data.spaces.some(s => s.id === activeId)) setDraggingSpaceId(activeId);
               else setDraggingItemId(activeId);
             }}
@@ -1948,7 +2227,7 @@ export default function App() {
                   ? prev : { overId, edge, blocked }
               );
             }}
-            onDragCancel={() => { setDraggingItemId(null); setDraggingSpaceId(null); setDragOverEdge(null); }}
+            onDragCancel={() => { setDraggingItemId(null); setDraggingSpaceId(null); setDragOverEdge(null); setBusy('drag', false); }}
             onDragEnd={handleAllDragEnd}
           >
 
@@ -2243,6 +2522,11 @@ export default function App() {
             )}
 
             {/* ── Space ordering DnD (Phase 3: solo/pair rows) ── */}
+            {/* data-tour-id="space-list" anchors the basicsTour 'card-click'
+                step and the floatingTour spotlight. The wrapper div doesn't
+                affect layout — it's sized by its children (display: contents
+                isn't used because dnd-kit needs a real bounding rect to
+                measure when targeting). */}
               <SortableContext items={filteredSpaces.map(s => s.id)} strategy={rectSortingStrategy}>
 
                   {(() => {
@@ -2306,6 +2590,7 @@ export default function App() {
                     return (
                       <div
                         ref={gridContainerRef}
+                        data-tour-id="space-list"
                         style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
                       >
                         {rows.map(row => {
@@ -2675,7 +2960,35 @@ export default function App() {
       />
       {/* Tour overlay — self-hidden when no tour is running (early-return null).
           Mount high in the tree so its spotlight sits above dialogs/toasters. */}
-      <TourOverlay onComplete={id => store.markTourCompleted(id)} />
+      <TourOverlay
+        data={data}
+        onComplete={id => store.markTourCompleted(id)}
+        onEnd={(_id, _completed) => {
+          // Sandbox-active tours need an exit decision (keep / discard).
+          // Non-sandboxed tours just disappear normally — nothing to do.
+          if (tutorialActive) tourBridgeRef.current?.requestExit();
+        }}
+      />
+      {/* ── Tutorial sandbox UI ───────────────────────────────────
+          Banner is mounted permanently while sandbox is active so users
+          always have an obvious "exit" path. The exit modal opens when
+          the tour ends OR the user clicks 종료 on the banner. */}
+      {tutorialActive && (
+        <TutorialBanner
+          backupPath={tutorialBackupPath}
+          onOpenBackupFolder={() => electronAPI.openUserDataFolder('tutorial-backups')}
+          onExit={() => requestSandboxExit()}
+        />
+      )}
+      <SandboxExitModal
+        open={sandboxExitOpen}
+        newSpacesCount={sandboxNewCounts.spaces}
+        newBadgesCount={sandboxNewCounts.badges}
+        backupPath={tutorialBackupPath}
+        onDiscard={() => exitSandbox('discard')}
+        onMerge={() => exitSandbox('merge')}
+        onOpenBackupFolder={() => electronAPI.openUserDataFolder('tutorial-backups')}
+      />
       {/* Paywall — lives here so any component in the tree can open it via
           the handlers passed down through props. Rendered above TourOverlay
           so the upgrade CTA beats any running tour in z-order. */}

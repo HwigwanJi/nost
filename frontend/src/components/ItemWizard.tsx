@@ -10,6 +10,8 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { electronAPI } from '../electronBridge';
+import { useBusyMark } from '../lib/userBusy';
+import { fetchFaviconDataUrl } from '../hooks/useFavicon';
 import type { LauncherItem, Space } from '../types';
 import {
   detectClipboardType,
@@ -113,29 +115,6 @@ function WizardBtn({
   );
 }
 
-// ── Favicon / icon auto-fetch helpers ────────────────────────────
-
-function faviconCandidates(url: string): string[] {
-  try {
-    const u = new URL(url);
-    return [
-      `${u.origin}/favicon.ico`,
-      `https://icons.duckduckgo.com/ip3/${u.hostname}.ico`,
-      `https://www.google.com/s2/favicons?domain=${u.hostname}&sz=64`,
-    ];
-  } catch { return []; }
-}
-
-function tryLoadImage(url: string): Promise<boolean> {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => resolve(true);
-    img.onerror = () => resolve(false);
-    img.referrerPolicy = 'no-referrer';
-    img.src = url;
-  });
-}
-
 const MAT_ICONS_MINI = [
   'star','home','settings','language','public','apps','code','terminal',
   'folder_open','description','email','chat','music_note','image','calendar_today',
@@ -182,6 +161,7 @@ function TextInput({
 // ── Main Component ────────────────────────────────────────────────
 
 export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, onClose, onSave }: ItemWizardProps) {
+  useBusyMark('modal:item-wizard', open);
   const [phase, setPhase] = useState<Phase>({ kind: 'detecting' });
   const [selectedSpaceId, setSelectedSpaceId] = useState(defaultSpaceId);
   const [detailValue, setDetailValue] = useState('');
@@ -232,11 +212,14 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
 
     if (type === 'url') {
       (async () => {
-        for (const c of faviconCandidates(value)) {
-          const ok = await tryLoadImage(c);
-          if (cancelled) return;
-          if (ok) { setIconUrl(c); setIconKind('image'); return; }
-        }
+        // Main-process fetch: bypasses renderer CSP and rejects 1×1
+        // placeholders so we don't end up saving a blank icon. Returns
+        // a self-contained data URL — no follow-up network calls when
+        // the card is rendered later.
+        const dataUrl = await fetchFaviconDataUrl(value);
+        if (cancelled || !dataUrl) return;
+        setIconUrl(dataUrl);
+        setIconKind('image');
       })();
     } else if (type === 'app' || type === 'doc') {
       electronAPI.getFileIcon(value).then(ico => {

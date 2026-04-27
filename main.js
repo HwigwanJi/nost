@@ -8,7 +8,7 @@
 // ── 1. Requires & Store ──────────────────────────────────────────────
 const {
   app, BrowserWindow, globalShortcut, ipcMain, shell, clipboard,
-  Tray, Menu, nativeImage, dialog, session,
+  Tray, Menu, nativeImage, dialog, session, net,
 } = require('electron');
 const path            = require('node:path');
 const { exec, spawn } = require('child_process');
@@ -1499,6 +1499,75 @@ function registerIpcHandlers() {
     } catch { return null; }
   });
 
+  /**
+   * Fetch a website's favicon, normalize it, and return a data URL.
+   *
+   * Why main process and not the renderer:
+   *   The renderer's CSP locks img-src to 'self', data:, and Google's favicon
+   *   service. That made the existing tryLoadImage() loop in the renderer
+   *   silently fail on every other candidate (apple-touch-icon / origin
+   *   /favicon.ico / DuckDuckGo) — only the Google s2 hit ever loaded, and
+   *   when Google returned a 1x1 placeholder for unknown domains the loop
+   *   accepted it as "success" and saved a blank icon. Doing the fetch from
+   *   main bypasses CSP entirely, lets us try every candidate, and lets us
+   *   reject the 1x1 placeholder by inspecting the decoded image size.
+   *
+   * Returns: data URL string on first acceptable candidate, null if none.
+   * The data URL is what gets persisted on the LauncherItem, so once a
+   * favicon has been resolved it works offline forever (no re-fetch).
+   */
+  ipcMain.handle('download-favicon', async (_e, candidates) => {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+    for (const url of candidates) {
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) continue;
+
+      try {
+        // 6s per-candidate timeout. Net.fetch follows redirects by default.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 6000);
+        let res;
+        try {
+          res = await net.fetch(url, { signal: controller.signal, redirect: 'follow' });
+        } finally { clearTimeout(timer); }
+
+        if (!res.ok) continue;
+        const ab = await res.arrayBuffer();
+        const buf = Buffer.from(ab);
+
+        // Sanity bounds: smaller than 100B is almost certainly an HTML 404
+        // page or empty body; larger than 1MB is a misconfigured server
+        // sending a high-res asset we don't want to embed in a JSON store.
+        if (buf.length < 100 || buf.length > 1_000_000) continue;
+
+        // Decode and check actual image dimensions. Google's s2 service
+        // returns a 16x16 grey placeholder when it doesn't know the domain
+        // — that's the bug the renderer-side loop kept accepting. Anything
+        // <= 4px is definitely placeholder; reject it and try the next
+        // candidate. Note: nativeImage cannot decode SVG, so SVG favicons
+        // come back empty here — we skip those for now (they're rare for
+        // /favicon.ico anyway).
+        const img = nativeImage.createFromBuffer(buf);
+        if (img.isEmpty()) continue;
+        const { width, height } = img.getSize();
+        if (width <= 4 || height <= 4) continue;
+
+        // Downsample anything over 128px to keep the persisted data URL
+        // small. 64-128px is the sweet spot for our 36px card icons on
+        // both DPI=1 and DPI=1.5 displays.
+        const finalImg = (width > 128 || height > 128)
+          ? img.resize({ width: 128, quality: 'best' })
+          : img;
+        return finalImg.toDataURL();
+      } catch (e) {
+        // AbortError on timeout, network errors, DNS failures — all just
+        // mean "try the next candidate". Logged at debug to avoid spam.
+        log.debug('[favicon] candidate failed', url, e?.message || e);
+      }
+    }
+    return null;
+  });
+
   ipcMain.handle('check-file-exists', (_, filePath) => {
     try { return fs.existsSync(filePath); } catch { return false; }
   });
@@ -1564,6 +1633,55 @@ function registerIpcHandlers() {
         return { success: true, data: parsed, formatVersion: 0 };
       }
       return { success: false, reason: 'invalid-format' };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  /**
+   * Silent auto-backup. Used by the tutorial sandbox before it swaps the
+   * live AppData with seed content — the user reported losing their real
+   * cards once when an experimental flow wiped state, so we now write a
+   * timestamped .nost file to userData/tutorial-backups/ BEFORE the swap.
+   * No dialog, no user friction. Returns { success, filePath } so the
+   * renderer can show a toast pointing the user at the file if they want
+   * to restore manually.
+   *
+   * Reason is a short tag ("tutorial", future "schema-migration") embedded
+   * into the filename so users can tell backups apart at a glance.
+   */
+  ipcMain.handle('auto-backup-data', async (_e, reason = 'auto') => {
+    const data = store.get('appData', null);
+    if (!data) return { success: false, reason: 'no-data' };
+    try {
+      const dir = path.join(app.getPath('userData'), 'tutorial-backups');
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp    = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const safeTag  = String(reason).replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'auto';
+      const filePath = path.join(dir, `nost-${safeTag}-${stamp}.nost`);
+      const payload = {
+        format: 'nost',
+        formatVersion: 1,
+        exportedAt: new Date().toISOString(),
+        appVersion: app.getVersion(),
+        backupReason: safeTag,
+        data,
+      };
+      fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+      return { success: true, filePath };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  /**
+   * Open the user-data folder (or a subfolder) in the OS file explorer.
+   * Used by the tutorial-backup toast so users can grab the .nost file
+   * directly without spelunking through %APPDATA%.
+   */
+  ipcMain.handle('open-userdata-folder', async (_e, sub) => {
+    try {
+      const target = sub
+        ? path.join(app.getPath('userData'), String(sub))
+        : app.getPath('userData');
+      shell.openPath(target);
+      return { success: true };
     } catch (e) { return { success: false, reason: String(e) }; }
   });
 
