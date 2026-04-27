@@ -1503,33 +1503,90 @@ function registerIpcHandlers() {
     try { return fs.existsSync(filePath); } catch { return false; }
   });
 
+  /**
+   * Export the full AppData to a .nost file. JSON-encoded with a small
+   * envelope (`format: 'nost'`, `formatVersion`) so future readers can
+   * detect and migrate older shapes if we change the schema.
+   *
+   * The `.nost` extension is just for branding — internally it's UTF-8 JSON.
+   * Legacy `.json` files written by pre-v1.3 builds are still accepted on
+   * import.
+   */
   ipcMain.handle('export-data', async () => {
     const data = store.get('appData', null);
     if (!data) return { success: false, reason: 'no-data' };
     const { filePath, canceled } = await dialog.showSaveDialog(mainWindow, {
-      title: '데이터 백업',
-      defaultPath: `nost-backup-${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+      title: 'nost 백업',
+      defaultPath: `nost-${new Date().toISOString().slice(0, 10)}.nost`,
+      filters: [
+        { name: 'nost backup', extensions: ['nost'] },
+        { name: 'JSON',         extensions: ['json'] },
+      ],
     });
     if (canceled || !filePath) return { success: false, reason: 'canceled' };
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+      const payload = {
+        format: 'nost',
+        formatVersion: 1,
+        exportedAt: new Date().toISOString(),
+        appVersion: app.getVersion(),
+        data,
+      };
+      fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
       return { success: true, filePath };
     } catch (e) { return { success: false, reason: String(e) }; }
   });
 
+  /**
+   * Import a backup. Accepts both the new envelope format and legacy raw
+   * AppData (pre-v1.3 .json files). Returns the parsed AppData; the
+   * renderer is responsible for deciding whether to REPLACE or MERGE.
+   */
   ipcMain.handle('import-data', async () => {
     const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
-      title: '데이터 복원',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+      title: 'nost 백업 복원',
+      filters: [
+        { name: 'nost backup', extensions: ['nost', 'json'] },
+      ],
       properties: ['openFile'],
     });
     if (canceled || !filePaths[0]) return { success: false, reason: 'canceled' };
     try {
-      const parsed = JSON.parse(fs.readFileSync(filePaths[0], 'utf-8'));
-      if (!parsed.spaces || !parsed.settings) return { success: false, reason: 'invalid-format' };
-      store.set('appData', parsed);
-      return { success: true, data: parsed };
+      const raw = fs.readFileSync(filePaths[0], 'utf-8');
+      const parsed = JSON.parse(raw);
+      // Envelope format (v1.3+)
+      if (parsed && parsed.format === 'nost' && parsed.data) {
+        return { success: true, data: parsed.data, formatVersion: parsed.formatVersion ?? 1 };
+      }
+      // Legacy raw AppData — accept if it has either presets[] (post-1.2)
+      // or spaces[] (pre-1.2 flat shape; renderer's migrateData handles it).
+      if (parsed && (parsed.presets || parsed.spaces) && parsed.settings) {
+        return { success: true, data: parsed, formatVersion: 0 };
+      }
+      return { success: false, reason: 'invalid-format' };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  /**
+   * Pick + read a file as raw text. Used by the import wizard to ingest
+   * Chrome bookmarks HTML and Markdown without giving the renderer
+   * filesystem access. Returns { text, fileName } on success.
+   */
+  ipcMain.handle('pick-and-read-text', async (_e, kind) => {
+    const filters = kind === 'bookmarks-html'
+      ? [{ name: '브라우저 북마크 HTML', extensions: ['html', 'htm'] }]
+      : kind === 'markdown'
+      ? [{ name: '마크다운', extensions: ['md', 'markdown', 'txt'] }]
+      : [{ name: 'All', extensions: ['*'] }];
+    const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
+      title: '가져올 파일 선택',
+      filters,
+      properties: ['openFile'],
+    });
+    if (canceled || !filePaths[0]) return { success: false, reason: 'canceled' };
+    try {
+      const text = fs.readFileSync(filePaths[0], 'utf-8');
+      return { success: true, text, fileName: path.basename(filePaths[0]) };
     } catch (e) { return { success: false, reason: String(e) }; }
   });
 

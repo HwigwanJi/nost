@@ -27,7 +27,8 @@ export interface ElectronAPI {
   moveWindow: (x: number, y: number) => void;
   windowDragEnd: () => void;
   exportData: () => Promise<{ success: boolean; filePath?: string; reason?: string }>;
-  importData: () => Promise<{ success: boolean; data?: unknown; reason?: string }>;
+  importData: () => Promise<{ success: boolean; data?: unknown; formatVersion?: number; reason?: string }>;
+  pickAndReadText: (kind: 'bookmarks-html' | 'markdown' | 'any') => Promise<{ success: boolean; text?: string; fileName?: string; reason?: string }>;
   pickFolder: () => Promise<string | null>;
   pickExe: () => Promise<string | null>;
   getFileIcon: (filePath: string) => Promise<string | null>;
@@ -116,6 +117,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   windowDragEnd: noop,
   exportData: async () => ({ success: false, reason: 'dev-mode' }),
   importData: async () => ({ success: false, reason: 'dev-mode' }),
+  pickAndReadText: async () => ({ success: false, reason: 'dev-mode' }),
   pickFolder: async () => null,
   pickExe: async () => null,
   getFileIcon: async () => null,

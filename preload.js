@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowDragEnd: () => ipcRenderer.send('window-drag-end'),
   exportData: () => ipcRenderer.invoke('export-data'),
   importData: () => ipcRenderer.invoke('import-data'),
+  /** Pick a text file and return its contents. `kind` filters the file
+   *  picker: 'bookmarks-html' / 'markdown' / 'any'. */
+  pickAndReadText: (kind) => ipcRenderer.invoke('pick-and-read-text', kind),
   runCmd: (command, closeAfter) => ipcRenderer.send('run-cmd', command, closeAfter),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   pickExe: () => ipcRenderer.invoke('pick-exe'),

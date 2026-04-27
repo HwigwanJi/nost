@@ -8,6 +8,11 @@ import { PresetToggle } from './components/PresetToggle';
 import { TourOverlay } from './tour/TourOverlay';
 import { PaywallModal, type PaywallReason } from './components/PaywallModal';
 import { useEntitlement } from './hooks/useEntitlement';
+import { EmptyState } from './components/EmptyState';
+import { WelcomeWizard } from './onboarding/WelcomeWizard';
+import { FirstCardCelebration, fireFirstCardCelebration } from './onboarding/FirstCardCelebration';
+import { ImportWizard } from './onboarding/ImportWizard';
+import type { Template } from './onboarding/templates';
 import { ItemDialog } from './components/ItemDialog';
 import { ItemWizard } from './components/ItemWizard';
 import { ScanDialog } from './components/ScanDialog';
@@ -486,6 +491,29 @@ export default function App() {
   }, []);
   const closePaywall = useCallback(() => setPaywall(p => ({ ...p, open: false })), []);
 
+  // ── Onboarding (Phase 6) ─────────────────────────────────────
+  // WelcomeWizard opens automatically the first time a fresh install lands
+  // on a brand-new (default-seeded) preset, AND can be re-opened from the
+  // EmptyState's "템플릿으로 시작" CTA at any time. Storage key is in
+  // localStorage so we don't depend on the migrated AppData shape.
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  useEffect(() => {
+    if (localStorage.getItem('nost-welcome-shown')) return;
+    // Defer a tick so the loading overlay finishes its fade-out first; the
+    // wizard would otherwise sit behind it for ~280ms.
+    const t = setTimeout(() => setWelcomeOpen(true), 600);
+    return () => clearTimeout(t);
+  }, []);
+
+  const closeWelcome = useCallback(() => {
+    setWelcomeOpen(false);
+    localStorage.setItem('nost-welcome-shown', '1');
+  }, []);
+  // Import wizard — opened from Settings or the slash command /import.
+  const [importOpen, setImportOpen] = useState(false);
+  // applyTemplate / applyImport are defined further down once showToast is
+  // in scope.
+
   // ── Centralised quota checks (Phase 5) ───────────────────────
   // Every mutation that touches a limited resource (card, space, node, deck,
   // floating badge, preset switch, container toggle) funnels its pre-check
@@ -645,6 +673,57 @@ export default function App() {
 
   const { tileOverlayGroup, tileOverlayLeaving, showTileOverlay, dismissTileOverlay } = useTileOverlay();
   const { toasts, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
+
+  // ── Onboarding — applyTemplate (post-toast) ─────────────────
+  // Declared here (not at the top of the component) because it depends on
+  // showToast which comes from useToastQueue above. It's the only thing in
+  // the onboarding cluster that needs the toast system; everything else
+  // (state, closeWelcome) lived in the earlier block.
+  const applyTemplate = useCallback((template: Template, alsoStartTour: boolean) => {
+    const newSpaces = template.build();
+    // reorderSpaces is the safest public API for a wholesale replacement —
+    // it goes through the save() shim, so the active preset's spaces are
+    // swapped atomically and persisted.
+    store.reorderSpaces(newSpaces);
+    setWelcomeOpen(false);
+    localStorage.setItem('nost-welcome-shown', '1');
+    if (alsoStartTour) {
+      // Defer one tick so the wizard's exit animation finishes before the
+      // tour spotlight starts hunting for its target.
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('nost:start-tour', { detail: { tourId: 'presets' } }));
+      }, 300);
+    }
+    showToast(`${template.label} 시작 키트를 적용했어요`);
+  }, [store, showToast]);
+
+  /**
+   * Apply an import payload from the ImportWizard. Two shapes:
+   *   - kind='spaces' + strategy='replace'  → reorderSpaces with the import
+   *   - kind='spaces' + strategy='merge'    → reorderSpaces with [...current, ...import]
+   *   - kind='full-restore'                  → wholesale AppData replacement via reload
+   */
+  const applyImport = useCallback((payload:
+    | { kind: 'spaces'; spaces: import('./types').Space[]; strategy: 'merge' | 'replace' }
+    | { kind: 'full-restore'; data: unknown }
+  ) => {
+    if (payload.kind === 'full-restore') {
+      // .nost full restore — write the raw blob via electronAPI.storeSave
+      // and then make the renderer pull it back in.
+      electronAPI.storeSave(payload.data as Parameters<typeof electronAPI.storeSave>[0]).then(() => {
+        store.reloadFromStore();
+        showToast('백업 복원 완료');
+      });
+      return;
+    }
+    const next = payload.strategy === 'replace'
+      ? payload.spaces
+      : [...data.spaces, ...payload.spaces];
+    store.reorderSpaces(next);
+    const word = payload.strategy === 'replace' ? '대체' : '병합';
+    const cardCount = payload.spaces.reduce((s, sp) => s + sp.items.length, 0);
+    showToast(`${cardCount}개 카드 ${word}됨`);
+  }, [data.spaces, store, showToast]);
   const { launchAndPosition } = useLaunchPipeline({ showToast, dismissToast });
 
   // ── Mode / Node / Deck state ──────────────────────────────
@@ -938,6 +1017,10 @@ export default function App() {
       const newId = generateId();
       store.addItem(spaceId, item as Omit<LauncherItem, 'id'>, newId);
       markItemsAsNew([newId]);
+      // First-card celebration: fired here so it covers manual adds, ghost
+      // accepts, batch drops, and any other path that lands here. The
+      // component itself dedupes via localStorage.
+      fireFirstCardCelebration();
     }
   }, [store, data.spaces, markItemsAsNew, quotaChecks]);
 
@@ -1374,6 +1457,11 @@ export default function App() {
       // The tutorial runtime reads this ref and starts the matching tour.
       // If no id given, opens the tour picker.
       window.dispatchEvent(new CustomEvent('nost:start-tour', { detail: { tourId: cmd.tourId ?? null } }));
+      return;
+    }
+
+    if (cmd.kind === 'open-import') {
+      setImportOpen(true);
       return;
     }
 
@@ -2138,22 +2226,20 @@ export default function App() {
 
             {/* Empty states */}
             {filteredSpaces.length === 0 && query && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 20px', gap: 10 }}>
-                <Icon name="search_off" size={36} color="var(--text-dim)" />
-                <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>'{query}' 결과 없음</p>
-              </div>
+              <EmptyState
+                kind="no-results"
+                query={query}
+                onAddBlank={() => { /* unused on this branch */ }}
+                onOpenTemplates={() => { /* unused on this branch */ }}
+              />
             )}
             {filteredSpaces.length === 0 && !query && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '60px 20px', gap: 12 }}>
-                <Icon name="space_dashboard" size={44} color="var(--text-dim)" style={{ opacity: 0.5 }} />
-                <p style={{ color: 'var(--text-dim)', fontSize: 12 }}>스페이스를 추가하고 아이템을 등록해보세요!</p>
-                <button
-                  onClick={() => { if (quotaChecks.space()) store.addSpace(); }}
-                  style={{ marginTop: 4, padding: '7px 18px', background: '#6366f1', border: 'none', borderRadius: 8, color: '#fff', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
-                >
-                  + 새 스페이스
-                </button>
-              </div>
+              <EmptyState
+                kind="no-spaces"
+                presetLabel={store.presets.find(p => p.id === store.activePresetId)?.label}
+                onAddBlank={() => { if (quotaChecks.space()) store.addSpace(); }}
+                onOpenTemplates={() => setWelcomeOpen(true)}
+              />
             )}
 
             {/* ── Space ordering DnD (Phase 3: solo/pair rows) ── */}
@@ -2571,6 +2657,22 @@ export default function App() {
           onOpenExtensionSettings={() => openSettingsTab('extension')}
         />
       )}
+      {/* First-card celebration — fires once per device when the first card
+          is added. Self-hides; mounting it here costs nothing when idle. */}
+      <FirstCardCelebration />
+      {/* Welcome wizard — auto-opens on first run, also reachable from the
+          EmptyState's 템플릿으로 시작 button. */}
+      <WelcomeWizard
+        open={welcomeOpen}
+        onApply={applyTemplate}
+        onClose={closeWelcome}
+      />
+      {/* Import wizard — opened via slash command (/import) or Settings. */}
+      <ImportWizard
+        open={importOpen}
+        onApply={applyImport}
+        onClose={() => setImportOpen(false)}
+      />
       {/* Tour overlay — self-hidden when no tour is running (early-return null).
           Mount high in the tree so its spotlight sits above dialogs/toasters. */}
       <TourOverlay onComplete={id => store.markTourCompleted(id)} />
