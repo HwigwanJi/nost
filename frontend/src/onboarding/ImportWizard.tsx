@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { electronAPI } from '../electronBridge';
 import { parseBookmarksHtml, parseMarkdownLinks, type ParseResult } from './importParsers';
+import { useBusyMark } from '../lib/userBusy';
 import type { Space } from '../types';
 
 /**
@@ -53,6 +54,8 @@ export function ImportWizard({ open, onApply, onClose }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [error, setError] = useState<string>('');
   const [loading, setLoading] = useState(false);
+
+  useBusyMark('modal:import', open);
 
   if (!open) return null;
 

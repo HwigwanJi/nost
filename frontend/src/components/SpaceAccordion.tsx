@@ -454,6 +454,7 @@ export function SpaceAccordion({
                 }}
               >
                 <button
+                  data-tour-id="add-card-button"
                   onClick={onQuickAdd}
                   className="flex-1 flex flex-col items-center justify-center gap-1 transition-colors text-[11px] cursor-pointer"
                   style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)' }}

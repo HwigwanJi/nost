@@ -9,6 +9,8 @@ import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { ExtensionInstallWizard } from './ExtensionInstallWizard';
 import { DEFAULT_DOCUMENT_EXTENSIONS } from '../lib/documentExtensions';
+import { useBusyMark } from '../lib/userBusy';
+import { TOURS } from '../tour/tours';
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'dev-mode' | 'error';
 type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'data';
@@ -119,6 +121,7 @@ function GhostBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttribut
 // ── Main component ───────────────────────────────────────────────────
 
 export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab }: SettingsDialogProps) {
+  useBusyMark('modal:settings', open);
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
   const [form, setForm] = useState<AppSettings>({ ...settings });
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
@@ -410,6 +413,54 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     <input type="color" value={form.accentColor || '#6366f1'}
                       onChange={e => f('accentColor', e.target.value)} title="직접 선택"
                       style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--border-rgba)', cursor: 'pointer', padding: 0, background: 'none' }} />
+                  </div>
+                </Section>
+
+                {/* ── Tutorials replay ──
+                   Re-run any of the spotlight tours from the start. We close
+                   the dialog first and defer the dispatch by a tick so the
+                   modal's busy mark clears before TourOverlay's listener
+                   evaluates `whenIdle` — otherwise the tour would queue
+                   itself behind our own settings dialog. */}
+                <Section>
+                  <SectionLabel icon="school" text="튜토리얼 다시 보기" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
+                    각 기능별 안내를 다시 볼 수 있어요.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {TOURS.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          onClose();
+                          // small defer so the dialog finishes unmounting and
+                          // releases its busy mark before the tour starts.
+                          setTimeout(() => {
+                            window.dispatchEvent(
+                              new CustomEvent('nost:start-tour', { detail: { tourId: t.id } }),
+                            );
+                          }, 250);
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          padding: '9px 12px', borderRadius: 8,
+                          background: 'var(--bg-rgba)',
+                          border: '1px solid var(--border-rgba)',
+                          color: 'var(--text-color)', fontSize: 12, fontWeight: 600,
+                          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent)'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-rgba)'; }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Icon name="play_circle" size={14} color="var(--accent)" />
+                          {t.title}
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                          {t.steps.length}단계
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </Section>
               </>}

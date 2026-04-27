@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { TEMPLATES, type Template } from './templates';
+import { useBusyMark } from '../lib/userBusy';
 
 /**
  * WelcomeWizard — first-run onboarding modal that asks "what do you do?"
@@ -37,6 +38,11 @@ type Step = 'pick' | 'confirm';
 export function WelcomeWizard({ open, onApply, onClose }: Props) {
   const [step, setStep] = useState<Step>('pick');
   const [chosen, setChosen] = useState<Template | null>(null);
+
+  // Mark the user as occupied while the wizard is up — auto-popups (tour
+  // start, future paywall warnings) gate themselves on `isUserBusy()` and
+  // wait until we close.
+  useBusyMark('modal:welcome', open);
 
   if (!open) return null;
 

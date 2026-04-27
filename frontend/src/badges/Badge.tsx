@@ -98,12 +98,13 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     started: boolean;
   } | null>(null);
 
-  // Run the landing animation for 260 ms after mount, then remove the class.
-  // Shorter + gentler than the original 420ms / 1.18× peak — the bouncier
-  // version created a "badge shrank after drag" illusion because scale(1)
-  // felt noticeably smaller than the freshly-landed scale(1.08) peak.
+  // Run the landing animation for 220 ms after mount, then remove the class.
+  // The keyframe rises monotonically (0.78 → 1.0) without any overshoot —
+  // a previous version peaked at 1.04 / 1.08, which made the post-landing
+  // resting state look like the badge had *shrunk* after the user touched
+  // it. Eliminating the >1 peak removes the illusion entirely.
   useEffect(() => {
-    const t = setTimeout(() => setLanding(false), 260);
+    const t = setTimeout(() => setLanding(false), 220);
     return () => clearTimeout(t);
   }, []);
 
@@ -219,16 +220,23 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     // ignore-mouse toggle via closest('[data-badge]').
     pointerEvents: 'auto',
     cursor: dragging ? 'grabbing' : 'grab',
+    // Resting / interaction transforms. Note: hover scale (1.04) is now
+    // ≤ landing peak (also 1.0) so once the landing animation finishes
+    // there is no perceived size jump. Drag scale stays slightly larger
+    // (1.05) so the user gets visual confirmation while moving.
     transform:
       pressed   ? 'scale(0.92)' :
       dragging  ? 'scale(1.05)' :
       landing   ? 'scale(1)'    :
-      hover     ? 'scale(1.06)' : 'scale(1)',
+      hover     ? 'scale(1.04)' : 'scale(1)',
     transition: dragging
       ? 'none'
-      : 'transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 180ms ease',
+      // Spring easing removed (was overshooting on tiny scale deltas and
+      // visually competing with the landing keyframe). Pure ease-out is
+      // boring but reads as solid.
+      : 'transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease',
     willChange: 'transform',
-    animation: landing ? 'nost-badge-land 260ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
+    animation: landing ? 'nost-badge-land 220ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
   };
 
   // ── Icon resolution ──────────────────────────────────────
@@ -248,9 +256,13 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     borderRadius: '50%',
     background: `linear-gradient(145deg, ${hexToRgba(color, 0.92)}, ${hexToRgba(color, 0.68)})`,
     border: `1.5px solid ${hexToRgba(color, hover ? 0.95 : 0.7)}`,
+    // Shadow tuned ~30% lighter than the original 0.32 / 0.42 — the badge
+    // sits over arbitrary desktop content and the heavy shadow read as a
+    // black halo in many app contexts. The hover variant keeps a subtle
+    // colored ring so the bubble still feels lifted on focus.
     boxShadow: hover
-      ? `0 8px 22px rgba(0,0,0,0.42) , 0 0 0 3px ${hexToRgba(color, 0.22)}`
-      : '0 3px 12px rgba(0,0,0,0.32)',
+      ? `0 8px 22px rgba(0,0,0,0.30) , 0 0 0 3px ${hexToRgba(color, 0.18)}`
+      : '0 3px 12px rgba(0,0,0,0.22)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -281,9 +293,11 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
       {/* Keyframes for one-shot landing animation. Kept co-located so the
           overlay has no external CSS dependency. */}
       <style>{`
+        /* Monotonic rise — no overshoot. The previous keyframe peaked at
+           scale(1.04) at 70%, then fell to 1.0, which felt like the badge
+           was shrinking once the user interacted with it. */
         @keyframes nost-badge-land {
-          0%   { transform: scale(0.55) translateY(-8px); opacity: 0; }
-          70%  { transform: scale(1.04) translateY(0);    opacity: 1; }
+          0%   { transform: scale(0.78) translateY(-6px); opacity: 0; }
           100% { transform: scale(1)    translateY(0);    opacity: 1; }
         }
       `}</style>

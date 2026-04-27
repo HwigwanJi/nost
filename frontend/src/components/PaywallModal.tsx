@@ -1,6 +1,7 @@
 import { useEffect, type CSSProperties } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { Entitlement } from '../hooks/useEntitlement';
+import { useBusyMark } from '../lib/userBusy';
 
 /**
  * PaywallModal — opens whenever a Pro-only gate is triggered. Single
@@ -45,6 +46,7 @@ const HEADLINE: Record<PaywallReason, { icon: string; title: string; body: strin
 };
 
 export function PaywallModal({ open, reason, entitlement, onClose, onStartTrial }: Props) {
+  useBusyMark('modal:paywall', open);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
