@@ -4,7 +4,7 @@
     "description": "Extension display name"
   },
   "extDescription": {
-    "message": "Bridges browser tabs with the nost desktop launcher over local loopback. No data collected, no external network.",
+    "message": "Bridge browser tabs to the nost desktop launcher over local loopback. Search, focus, and tile tabs from your launcher. No external network.",
     "description": "Store listing description"
   },
   "actionTitle": {
