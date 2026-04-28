@@ -96,11 +96,24 @@ function resolveTier(license: License | undefined, now: number): {
   return { tier: 'free', reason: 'never-signed-in' };
 }
 
+/**
+ * BETA OVERRIDE — flip every user to Pro until billing infrastructure
+ * is in place. The license/entitlement plumbing stays intact (so code
+ * paths that gate features keep working as designed) but the resolved
+ * tier is forced regardless of what the license record actually says.
+ *
+ * Remove this flag once Toss + Supabase backend lands and we want
+ * paying-vs-free to differentiate again. Search for BETA_FORCE_PRO.
+ */
+const BETA_FORCE_PRO = true;
+
 export function useEntitlement(data: AppData): Entitlement {
   return useMemo(() => {
     const license = data.settings.license;
     const now = Date.now();
-    const { tier, reason } = resolveTier(license, now);
+    const resolved = resolveTier(license, now);
+    const tier   = BETA_FORCE_PRO ? 'pro' : resolved.tier;
+    const reason = BETA_FORCE_PRO ? '' : resolved.reason;
     const isPro = tier === 'pro';
     const limits = isPro ? PRO_LIMITS : FREE_LIMITS;
 
