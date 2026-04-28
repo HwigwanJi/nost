@@ -1,40 +1,44 @@
-# Jump a Windows file dialog (Save-As / Open) to the requested folder.
+# Paste a folder path into the active Windows file dialog.
 #
-# OLD APPROACH (broken for Korean / Unicode paths):
-#   SendKeys("^l")           -> focus address bar
-#   SendKeys($env:QL_PATH)   -> type the path character-by-character
-#   SendKeys("{ENTER}")
+# History:
+#   v1: SendKeys($path) — broken, multi-byte Korean got mangled by IME stack.
+#   v2: SendKeys("^v") with clipboard — Korean fixed BUT WScript.Shell.SendKeys
+#       has a long-known .NET bug: it desyncs the NumLock toggle state on most
+#       systems. After a paste the user's keyboard reports NumLock as on/off
+#       inconsistent with the LED, the numpad starts emitting arrow keys, etc.
+#       (Microsoft docs literally say "For some strange reason, SendKeys turns
+#       the NumLock key off.")
+#   v3 (this version): direct keybd_event calls, NO SendKeys involvement at
+#       all. The OS-level keyboard state stays untouched, so NumLock /
+#       CapsLock / ScrollLock all keep whatever state the user had.
 #
-#   `SendKeys` simulates raw keystrokes, which on Korean Windows go through
-#   the IME composition stack — multi-byte characters get mangled, special
-#   characters (~, +, ^, %, () etc.) are interpreted as SendKeys metacommands,
-#   and the dialog's filename field ends up with garbage like "52_X" or just
-#   a few latin letters.
-#
-# NEW APPROACH (this script):
-#   1. Save the user's current clipboard (text only — we don't try to round-
-#      trip image / file-list clipboard payloads, those edge cases are rare
-#      enough that "you lose your clipboard for a second" is acceptable).
-#   2. Put the target path on the clipboard. The clipboard is native UTF-16,
-#      so Korean / emoji / any Unicode survives intact.
-#   3. Send Ctrl+L (focus address bar — works on Windows 10/11 file dialogs
-#      AND Explorer windows; same shortcut as browsers).
-#   4. Send Ctrl+A then Ctrl+V (clear whatever was there, then paste).
-#   5. Send Enter (commit — dialog navigates to the folder).
-#   6. After ~350 ms (long enough for the paste to be consumed) restore the
-#      user's previous clipboard so they don't lose what they had copied.
-#
-# Tradeoff: Ctrl+L may not focus the address bar in *every* dialog (some
-# legacy / restricted apps lack one). In that case the paste lands in
-# whatever field has focus. The Windows file-name combobox accepts a full
-# path + Enter and navigates to it, so the fallback usually still works —
-# the user just sees the path appear in the file name field instead of the
-# address bar.
+# Sequence:
+#   1. (optionally) bring the target dialog HWND to the foreground —
+#      defensive, in case the user clicked the nost popup or another app
+#      between opening the dialog and clicking a folder chip.
+#   2. Save the user's text clipboard.
+#   3. Put the target path on the clipboard (UTF-16 native — Korean safe).
+#   4. Send Ctrl+L → Ctrl+A → Ctrl+V → Enter via keybd_event.
+#   5. After ~350 ms restore the prior clipboard.
+
+. "$PSScriptRoot\_Win32Types.ps1"
 
 Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
 
 $path = $env:QL_PATH
 if (-not $path) { exit 1 }
+
+# ── Foreground the target dialog (best-effort) ───────────────────────
+$hwndArg = $env:QL_DIALOG_HWND
+if ($hwndArg) {
+    try {
+        $h = [int64]$hwndArg
+        if ($h -ne 0) {
+            [NostWin32]::SetForegroundWindow([IntPtr]$h) | Out-Null
+            Start-Sleep -Milliseconds 60
+        }
+    } catch { }
+}
 
 # ── Save existing clipboard ──────────────────────────────────────────
 $prevClip = $null
@@ -48,34 +52,47 @@ try {
 try {
     [System.Windows.Forms.Clipboard]::SetText($path)
 } catch {
-    # Clipboard busy (rare — another app has it locked). Bail; the user
-    # will see no nav happen and can click again.
     exit 2
 }
 
-$shell = New-Object -ComObject WScript.Shell
-Start-Sleep -Milliseconds 60
+# ── Direct key events ────────────────────────────────────────────────
+# Virtual-Key codes (https://learn.microsoft.com/windows/win32/inputdev/virtual-key-codes)
+$VK_CONTROL = [byte]0x11
+$VK_L       = [byte]0x4C
+$VK_A       = [byte]0x41
+$VK_V       = [byte]0x56
+$VK_RETURN  = [byte]0x0D
+$KEYUP      = [uint32]2
 
-# Focus the address bar.
-$shell.SendKeys("^l")
+function Send-Combo {
+    param([byte]$mod, [byte]$key)
+    [NostWin32]::keybd_event($mod, 0, 0,        [UIntPtr]::Zero); Start-Sleep -Milliseconds 8
+    [NostWin32]::keybd_event($key, 0, 0,        [UIntPtr]::Zero); Start-Sleep -Milliseconds 8
+    [NostWin32]::keybd_event($key, 0, $KEYUP,   [UIntPtr]::Zero); Start-Sleep -Milliseconds 8
+    [NostWin32]::keybd_event($mod, 0, $KEYUP,   [UIntPtr]::Zero)
+}
+function Send-Single {
+    param([byte]$key)
+    [NostWin32]::keybd_event($key, 0, 0,        [UIntPtr]::Zero); Start-Sleep -Milliseconds 8
+    [NostWin32]::keybd_event($key, 0, $KEYUP,   [UIntPtr]::Zero)
+}
+
+# Ctrl+L (focus address bar in Win10/11 file dialogs and Explorer).
+Send-Combo $VK_CONTROL $VK_L
 Start-Sleep -Milliseconds 90
 
-# Select whatever's there (defensive — most dialogs auto-select on focus).
-$shell.SendKeys("^a")
+# Ctrl+A (clear whatever was there — defensive; most dialogs auto-select on focus).
+Send-Combo $VK_CONTROL $VK_A
 Start-Sleep -Milliseconds 30
 
-# Paste — clipboard delivers Unicode intact.
-$shell.SendKeys("^v")
+# Ctrl+V (paste path — Unicode safe via clipboard).
+Send-Combo $VK_CONTROL $VK_V
 Start-Sleep -Milliseconds 60
 
-# Commit.
-$shell.SendKeys("{ENTER}")
+# Enter (commit navigation).
+Send-Single $VK_RETURN
 
 # ── Restore prior clipboard ──────────────────────────────────────────
-# Wait long enough for the dialog to actually consume the paste before we
-# clobber the clipboard. 350 ms is empirically safe across Win10/11 file
-# dialogs; below ~250 ms a slow dialog occasionally races us and ends up
-# pasting the restored value instead of our path.
 Start-Sleep -Milliseconds 350
 if ($null -ne $prevClip) {
     try { [System.Windows.Forms.Clipboard]::SetText($prevClip) } catch { }

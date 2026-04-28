@@ -812,12 +812,22 @@ const DIALOG_POPUP_OFFSET = 6;      // gap between popup bottom and dialog top
 const DIALOG_POLL_MS      = 600;    // detection poll cadence
 
 function buildDialogPopupState() {
-  // Renderer wants spaces with folder cards + a system pseudo-space. We
-  // pull from the active preset's mirror (data.spaces) — same shape the
-  // main UI sees.
+  // We send ALL presets so the popup can offer in-popup preset switching
+  // ("프리셋 1·2·3") without mutating the global active preset. Each preset
+  // is reduced to just the spaces+folder-cards the popup needs to render.
   const data = store.get('appData') || {};
-  const spaces = Array.isArray(data.spaces) ? data.spaces : [];
+  const presets = Array.isArray(data.presets) ? data.presets : [];
   const home = process.env.USERPROFILE || '';
+
+  const slimSpace = (s) => ({
+    id: s.id,
+    name: s.name || '이름 없음',
+    icon: s.icon,
+    color: s.color,
+    folders: (s.items || [])
+      .filter(i => i.type === 'folder' && i.value)
+      .map(i => ({ id: i.id, title: i.title || i.value, path: i.value })),
+  });
 
   return {
     systemFolders: home ? [
@@ -825,14 +835,11 @@ function buildDialogPopupState() {
       { id: '__sys-desktop',   title: '바탕화면',  path: `${home}\\Desktop` },
       { id: '__sys-documents', title: '문서',      path: `${home}\\Documents` },
     ] : [],
-    spaces: spaces.map(s => ({
-      id: s.id,
-      name: s.name || '이름 없음',
-      icon: s.icon,
-      color: s.color,
-      folders: (s.items || [])
-        .filter(i => i.type === 'folder' && i.value)
-        .map(i => ({ id: i.id, title: i.title || i.value, path: i.value })),
+    activePresetId: data.activePresetId,
+    presets: presets.map(p => ({
+      id: p.id,
+      label: p.label || `프리셋 ${p.id}`,
+      spaces: (p.spaces || []).map(slimSpace),
     })),
   };
 }
@@ -2431,8 +2438,16 @@ function registerIpcHandlers() {
    *  "Current thread must be set to single thread apartment (STA) mode"
    *  exception and nothing pastes. */
   ipcMain.on('jump-to-dialog-folder', (_, folderPath) => {
+    // Hand the dialog HWND through too — the PS script SetForegroundWindows
+    // it before the keystroke sequence, so a user who clicked the popup (or
+    // another app) since opening the dialog still gets the paste delivered
+    // to the right place instead of whatever happens to be foreground.
     exec(`powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "${ps('jump-to-dialog-folder.ps1')}"`, {
-      env: { ...process.env, QL_PATH: folderPath },
+      env: {
+        ...process.env,
+        QL_PATH: folderPath,
+        QL_DIALOG_HWND: String(dialogTrackedHwnd || 0),
+      },
     });
   });
 

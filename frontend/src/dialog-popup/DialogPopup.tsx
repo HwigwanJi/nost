@@ -1,17 +1,24 @@
 /**
  * Save-As dialog companion popup.
  *
- * Two-level nav:
- *   Level 1 — chips for each space that contains at least one folder card,
- *             plus a leading "시스템" pseudo-space (다운로드/바탕화면/문서).
- *   Level 2 — chips for the folder cards inside the selected space.
+ * Three-level nav surface in one strip:
+ *   - Preset switch (1·2·3) on the right — change which preset's spaces
+ *     are visible. Doesn't mutate the global active preset; this is a
+ *     popup-local view filter so the user can browse "their other
+ *     workspace" mid-save without disrupting their main app context.
+ *   - Level 1 — chips for each space that contains at least one folder
+ *     card, plus a leading "시스템" pseudo-space (다운로드/바탕화면/문서).
+ *   - Level 2 — chips for the folder cards inside the selected space.
  *
  * Click a folder chip → main runs jump-to-dialog-folder.ps1 (clipboard
- * paste, Unicode-safe), the popup closes itself.
+ * paste, Unicode-safe, NumLock-safe via direct keybd_event). The popup
+ * stays open and returns to Level 1 so the user can chain saves to
+ * different folders without reopening the dialog popup.
  *
- * The popup window itself is created/destroyed/positioned by main.js based
- * on dialog detection polling — this component just renders the data it's
- * fed via the `dialogPopup` IPC bridge.
+ * The popup window itself is created/destroyed/positioned by main.js
+ * based on dialog detection polling — the user closing the file dialog
+ * makes the popup auto-vanish; the ✕ button only hides for the current
+ * dialog session.
  */
 import { useCallback, useEffect, useState } from 'react';
 
@@ -29,10 +36,16 @@ interface SpaceSummary {
   folders: FolderRef[];
 }
 
-export interface DialogPopupState {
+interface PresetSummary {
+  id: '1' | '2' | '3';
+  label: string;
   spaces: SpaceSummary[];
-  /** Pseudo-space "system" rendered first in Level 1. */
+}
+
+export interface DialogPopupState {
   systemFolders: FolderRef[];
+  presets: PresetSummary[];
+  activePresetId?: '1' | '2' | '3';
   dialogTitle?: string;
 }
 
@@ -44,7 +57,7 @@ interface Api {
 }
 const api = (window as unknown as { dialogPopup: Api }).dialogPopup;
 
-// Keep classNames out — we run without Tailwind. Inline styles only.
+// Inline-style palette (no Tailwind in this entry).
 const C = {
   bg:        'rgba(20, 20, 26, 0.96)',
   bgLight:   'rgba(255, 255, 255, 0.96)',
@@ -55,7 +68,6 @@ const C = {
   muted:     'rgba(255, 255, 255, 0.5)',
   mutedL:    'rgba(0, 0, 0, 0.5)',
   accent:    '#6366f1',
-  accentDim: 'rgba(99, 102, 241, 0.18)',
 };
 
 function isLight(): boolean {
@@ -64,18 +76,26 @@ function isLight(): boolean {
 
 export function DialogPopup() {
   const [state, setState] = useState<DialogPopupState | null>(null);
-  // Level: null = Level 1 (space chips), or a space.id for Level 2.
+  // Which preset's spaces are currently shown. Defaults to whatever main says
+  // is "active"; user can flip to another preset via the 1·2·3 buttons.
+  const [viewPresetId, setViewPresetId] = useState<'1' | '2' | '3' | null>(null);
+  // null → Level 1 (space chips); otherwise Level 2 for the picked space.id
+  // (or '__system__' for the pseudo-space).
   const [drillSpaceId, setDrillSpaceId] = useState<string | null>(null);
   const [light, setLight] = useState(isLight());
 
   useEffect(() => {
-    const off = api.onState(s => setState(s));
+    const off = api.onState(s => {
+      setState(s);
+      // Initialise viewPresetId on the FIRST state push only — afterwards
+      // we keep whatever the user chose, so subsequent state refreshes
+      // (e.g. data updates) don't yank them back to the active preset.
+      setViewPresetId(prev => prev ?? s.activePresetId ?? '1');
+    });
     api.requestState();
     return off;
   }, []);
 
-  // Track OS theme — main can resize the popup but we don't know if the
-  // OS theme flips while it's open, so listen for the change.
   useEffect(() => {
     const m = window.matchMedia('(prefers-color-scheme: light)');
     const fn = () => setLight(m.matches);
@@ -83,7 +103,7 @@ export function DialogPopup() {
     return () => m.removeEventListener('change', fn);
   }, []);
 
-  // ESC: Level 2 → Level 1; Level 1 → dismiss.
+  // ESC: drill → root, root → dismiss.
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -97,20 +117,27 @@ export function DialogPopup() {
 
   const onClickFolder = useCallback((path: string) => {
     api.jumpTo(path);
-    // Close immediately — main will also auto-destroy when the dialog goes
-    // away, but a snappy close on click feels like commitment.
-    api.dismiss();
+    // Return to Level 1 instead of closing — the user said dismissing
+    // after one click was wasteful when they want to save multiple files
+    // to different folders in succession. The popup will close on its own
+    // when main detects the file dialog has gone away.
+    setDrillSpaceId(null);
   }, []);
 
   if (!state) return null;
 
+  const viewPreset = state.presets.find(p => p.id === viewPresetId)
+    ?? state.presets.find(p => p.id === state.activePresetId)
+    ?? state.presets[0];
+  const visibleSpaces = viewPreset?.spaces ?? [];
+
   const drillSpace = drillSpaceId
     ? (drillSpaceId === '__system__'
-        ? { id: '__system__', name: '시스템', icon: 'desktop_windows', color: undefined, folders: state.systemFolders }
-        : state.spaces.find(s => s.id === drillSpaceId))
+        ? { id: '__system__', name: '시스템', icon: 'desktop_windows', color: undefined as string | undefined, folders: state.systemFolders }
+        : visibleSpaces.find(s => s.id === drillSpaceId))
     : null;
 
-  // Apply theme.
+  // Theme.
   const bg     = light ? C.bgLight : C.bg;
   const border = light ? C.borderL : C.border;
   const text   = light ? C.textL   : C.text;
@@ -125,7 +152,7 @@ export function DialogPopup() {
         display: 'flex',
         alignItems: 'center',
         gap: 6,
-        padding: '0 10px',
+        padding: '0 8px',
         background: bg,
         border: `1px solid ${border}`,
         borderRadius: 10,
@@ -181,7 +208,7 @@ export function DialogPopup() {
                   onClick={() => setDrillSpaceId('__system__')}
                 />
               )}
-              {state.spaces.filter(s => s.folders.length > 0).map(s => (
+              {visibleSpaces.filter(s => s.folders.length > 0).map(s => (
                 <Chip
                   key={s.id}
                   label={`${s.name} ${s.folders.length}`}
@@ -191,14 +218,58 @@ export function DialogPopup() {
                   onClick={() => setDrillSpaceId(s.id)}
                 />
               ))}
+              {visibleSpaces.filter(s => s.folders.length > 0).length === 0 && state.systemFolders.length === 0 && (
+                <span style={{ fontSize: 10, color: muted, padding: '0 8px' }}>
+                  이 프리셋엔 등록된 폴더 카드가 없습니다.
+                </span>
+              )}
             </>
         }
       </div>
 
-      {/* Close */}
+      {/* Preset switcher 1·2·3 — always visible, no Tab key needed.
+          Showing all three even when the user has only used one is OK —
+          the segmented control is small enough to be ambient noise. */}
+      {state.presets.length > 1 && (
+        <>
+          <div style={{ width: 1, alignSelf: 'stretch', background: border, margin: '0 2px' }} />
+          <div style={{ display: 'flex', gap: 1, padding: 1, background: border, borderRadius: 6, flexShrink: 0 }}>
+            {state.presets.map(p => {
+              const isActive = p.id === viewPresetId;
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => {
+                    setViewPresetId(p.id);
+                    setDrillSpaceId(null);  // reset to L1 when switching preset
+                  }}
+                  title={p.label}
+                  style={{
+                    width: 22, height: 22,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    background: isActive ? bg : 'transparent',
+                    border: 'none',
+                    borderRadius: 5,
+                    color: isActive ? text : muted,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    fontFamily: 'inherit',
+                    cursor: 'pointer',
+                    transition: 'background 120ms ease',
+                  }}
+                >
+                  {p.id}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Close (this dialog only — popup reattaches to the next dialog) */}
       <button
         onClick={() => api.dismiss()}
-        title="닫기"
+        title="이 다이얼로그에서 닫기"
         style={{
           ...chipStyle(border, text, muted, true),
           padding: '0 6px',
@@ -255,11 +326,7 @@ function Chip({ label, icon, onClick, tint, muted, text, border }: {
         e.currentTarget.style.background = 'transparent';
         e.currentTarget.style.borderColor = border;
       }}
-      style={{
-        ...chipStyle(border, text, muted, false),
-        // Subtle accent dot ahead of tinted spaces — gives quick visual key
-        // when many chips are visible.
-      }}
+      style={chipStyle(border, text, muted, false)}
     >
       <span className="ms-rounded" style={{ fontSize: 13, color: tint || C.accent, opacity: 0.9 }}>{icon}</span>
       <span>{label}</span>
