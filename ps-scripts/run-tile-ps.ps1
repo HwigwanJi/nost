@@ -1,17 +1,20 @@
 # ── Keep PS DPI-UNAWARE (do NOT call SetProcessDpiAwarenessContext) ───
 #
-# This is deliberate. Electron is always DPI-aware and reports coordinates
-# in its own DIP space (primary monitor's scale acts as the virtual ruler).
-# A DPI-unaware PS process sees the same virtualized DIP space, so the
-# coordinates Electron passes via QL_SCREEN_* land correctly when we hand
-# them to MoveWindow.
+# This is deliberate. Electron is always DPI-aware and reports DIP coords;
+# PS runs DPI-unaware and uses Windows' virtualized "physical-distance"
+# coords for MoveWindow. The two coord systems disagree on non-primary
+# monitor positions in cross-DPI setups (e.g. primary 125% + secondary
+# 100%): Electron says secondary starts at DIP x=1536, PS sees it at
+# unaware x=1920, with an empty 384-px gap on PS's side.
 #
-# If we switch PS to per-monitor-aware, PS starts using each monitor's
-# native physical/DIP space. A secondary monitor that Electron calls
-# "x=1536" (because primary is 1536 DIP wide at 125%) is called "x=1920"
-# by a per-monitor PS (because primary is 1920 physical wide). That
-# mismatch sends every window to the wrong place — typically leaving an
-# empty right strip on the target monitor.
+# We resolve this by NOT using Electron's DIP coords for placement —
+# Get-NativeWorkArea (in _Position.ps1) queries PS's own enumeration via
+# QL_MONITOR (index) + QL_MONITOR_PRIMARY (sanity check). The work area
+# we get back is already in the unaware coord space MoveWindow expects.
+#
+# If we switched PS to per-monitor-aware, the math would shift again —
+# you'd need to undo the virtualization back to per-monitor physical
+# pixels. Staying unaware is simpler.
 #
 # See the DpiProbe block below for read-only inspection used by diagnostics.
 Add-Type -TypeDefinition @"

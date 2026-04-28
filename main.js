@@ -121,29 +121,34 @@ function getMonitorWorkArea(monitorIndex) {
 }
 
 /**
- * ONE place that prepares the QL_SCREEN_* env block for EVERY PS window
- * placement call. Electron's monitor enumeration is the single source of
- * truth; PS's own System.Windows.Forms.Screen order can differ and has
- * caused "monitor 1 vs 2" flip-flopping across the card / node / deck /
- * snap paths.
+ * ONE place that prepares the env block for EVERY PS window placement call.
  *
- * ── Coordinate system conversion ──────────────────────────────────
- * Electron reports in its own DIP space where:
- *   - Each display has its native DIP size (bounds.width/height at its scale)
- *   - Positions accumulate in a unified space based on PRIMARY's scale
+ * ── Coordinate system reality (2026-04 update) ──────────────────────
+ * The earlier comment claimed Electron DIP and DPI-unaware PS shared a
+ * coord system. They DON'T, in cross-DPI multi-monitor setups:
  *
- * PS (per-monitor aware, default on Windows 10+) uses PHYSICAL pixels for
- * MoveWindow. Passing Electron DIPs directly puts windows on the wrong
- * physical monitor whenever primary ≠ secondary DPI. Example:
- *   Electron: secondary starts at DIP x=1536 (primary is 1536 DIP wide)
- *   PS phys : secondary starts at px 1920  (primary is 1920 physical wide)
- *   1536 ≠ 1920 → window lands on primary's right edge, not secondary.
+ *   Setup: primary 1920×1080 @ 125%, secondary 1920×1080 @ 100%, side-by-side
  *
- * Translation rule (verified against this user's setup):
- *   phys_x = dip_x * primary_scale    (positions use primary scale)
- *   phys_y = dip_y * primary_scale
- *   phys_w = dip_w * display_scale    (sizes use each display's own scale)
- *   phys_h = dip_h * display_scale
+ *   Electron DIP space (contiguous):
+ *     mon#1 = (0..1536, 0..864)          ← 1920/1.25 = 1536
+ *     mon#2 = (1536..3456, 0..1080)
+ *
+ *   DPI-unaware PS space (gap on secondary because Windows lays out the
+ *   virtual canvas using PHYSICAL distances from primary's right edge):
+ *     mon#1 = (0..1536, 0..864)
+ *     gap   = (1536..1920) ← no monitor here
+ *     mon#2 = (1920..3840, 0..1080)
+ *
+ *   So Electron's mon#2 DIP X=1536 lands in the GAP for PS, not on mon#2.
+ *
+ * Old fix (passing QL_SCREEN_X = electron DIP) accidentally worked when
+ * primary scale = 100% (no gap) or only the primary was targeted. It
+ * silently broke every cross-DPI secondary tile.
+ *
+ * New rule: PS queries its OWN enumeration for work-area coords (those
+ * are already in the unaware coord space). We just tell PS WHICH monitor
+ * via QL_MONITOR (index) + QL_MONITOR_PRIMARY (flag) for sanity check.
+ * QL_SCREEN_* still emitted for diagnostic / legacy fallback.
  */
 function monitorEnvFor(monitorIndex) {
   const screen   = getScreen();
@@ -155,19 +160,8 @@ function monitorEnvFor(monitorIndex) {
     : primary;
   const wa = disp.workArea;
 
-  // IMPORTANT — pass raw Electron DIP values, NOT physical pixels.
-  //
-  // PS runs DPI-unaware, which means Windows already virtualizes its
-  // coordinate system to primary's DIP space. When we call MoveWindow with
-  // value X, Windows multiplies by primary.scaleFactor to get physical.
-  // If we ALSO multiply in this function, we double-scale:
-  //   Electron DIP 1536 → (we ×1.25) → PS 1920 → (Windows ×1.25) → physical 2400
-  // and the window lands ~500 px past the monitor's right edge.
-  //
-  // Electron's DIP numbers happen to match exactly what the DPI-unaware PS
-  // process sees — both coordinate systems are "primary-scale-virtualized
-  // DIP". Hand the values off unchanged and Windows does the right thing
-  // for every monitor regardless of its DPI.
+  // QL_SCREEN_* are now DIP-space DIAGNOSTIC values. PS no longer treats
+  // them as authoritative for placement — see _Position.ps1 Get-NativeWorkArea.
   const physX = wa.x;
   const physY = wa.y;
   const physW = wa.width;
@@ -202,11 +196,22 @@ function monitorEnvFor(monitorIndex) {
   });
 
   return {
+    // Diagnostic only — DIP coords. PS doesn't use these for placement.
     QL_SCREEN_X: String(physX),
     QL_SCREEN_Y: String(physY),
     QL_SCREEN_W: String(physW),
     QL_SCREEN_H: String(physH),
-    QL_MONITOR:  String(monitorIndex ?? 0),
+    // The actual selectors. PS picks the screen by index, then sanity-checks
+    // that PS's enumeration agrees with Electron about whether it's primary.
+    // If they disagree (rare — happens with rearranged displays), PS falls
+    // back to searching by primary flag.
+    QL_MONITOR:           String(monitorIndex ?? 0),
+    QL_MONITOR_PRIMARY:   disp.id === primary.id ? 'True' : 'False',
+    QL_MONITOR_DIP_X:     String(wa.x),
+    QL_MONITOR_DIP_Y:     String(wa.y),
+    QL_MONITOR_DIP_W:     String(wa.width),
+    QL_MONITOR_DIP_H:     String(wa.height),
+    QL_MONITOR_SCALE:     String(disp.scaleFactor),
     // 0 = unsafe to overshoot (different-DPI neighbour). 8 = safe.
     QL_BORDER_LEFT:   touchesMismatched('left')   ? '0' : '8',
     QL_BORDER_RIGHT:  touchesMismatched('right')  ? '0' : '8',
@@ -2508,6 +2513,55 @@ function registerIpcHandlers() {
       browser:        target,
       browserExePath: result.exePath,
     };
+  });
+
+  // Chrome Web Store 직링크. 2026-04 승인된 nost-bridge 페이지로 보내서
+  // 사용자는 "Chrome에 추가" 한 번이면 끝 — 개발자 모드 / 폴더 로드
+  // 안내가 더이상 기본 경로가 아니다. Whale도 Chrome Web Store 호환이라
+  // 같은 URL에서 설치 가능.
+  const NOST_BRIDGE_EXTENSION_ID = 'fjehpjoninofepdoiakibjaokakihilo';
+
+  ipcMain.handle('open-extension-store', async () => {
+    const STORE_URL = `https://chromewebstore.google.com/detail/nost-bridge/${NOST_BRIDGE_EXTENSION_ID}`;
+    try {
+      await shell.openExternal(STORE_URL);
+      return { success: true, url: STORE_URL };
+    } catch (err) {
+      return { success: false, reason: 'open-failed', error: String(err && err.message || err) };
+    }
+  });
+
+  // Chrome ExternalExtensions 메커니즘. HKCU\Software\Google\Chrome\Extensions
+  // 아래 확장 ID 키를 만들고 update_url을 박아두면, Chrome이 다음 실행
+  // 시점에 "이 확장이 추가되었습니다" 알림을 띄우고 사용자가 한 번만
+  // "활성화"를 눌러주면 끝. 스토어 페이지에서 "Chrome에 추가" → 권한
+  // 다이얼로그 → 확인의 2-클릭 흐름이 1-클릭으로 줄어든다.
+  //
+  // 실패해도 치명적이지 않다 — 호출 측은 이걸 silent best-effort로
+  // 쏘고 항상 스토어 URL을 폴백으로 같이 연다.
+  ipcMain.handle('register-extension-external', async () => {
+    if (process.platform !== 'win32') {
+      return { success: false, reason: 'not-windows' };
+    }
+
+    const KEY = `HKCU\\Software\\Google\\Chrome\\Extensions\\${NOST_BRIDGE_EXTENSION_ID}`;
+    const UPDATE_URL = 'https://clients2.google.com/service/update2/crx';
+    const { execFile } = require('child_process');
+
+    return await new Promise(resolve => {
+      execFile(
+        'reg.exe',
+        ['add', KEY, '/v', 'update_url', '/t', 'REG_SZ', '/d', UPDATE_URL, '/f'],
+        { windowsHide: true },
+        (err) => {
+          if (err) {
+            resolve({ success: false, reason: 'reg-failed', error: String(err.message || err) });
+          } else {
+            resolve({ success: true });
+          }
+        }
+      );
+    });
   });
 
   // ── 12k. Media widget — write side ──────────────────────────────────

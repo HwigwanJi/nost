@@ -55,6 +55,16 @@ export interface ElectronAPI {
     browserExePath?: string;
     reason?: string;
   }>;
+  /** Open the Chrome Web Store page for the nost-bridge extension in
+   *  the user's default browser. Recommended path post-2026-04 store
+   *  approval — replaces the dev-mode "load unpacked" flow as the
+   *  primary install method. */
+  openExtensionStore: () => Promise<{ success: boolean; url?: string; reason?: string; error?: string }>;
+  /** Best-effort: register the extension as an "external extension" via
+   *  HKCU registry so Chrome shows a one-click "활성화" notification
+   *  on next launch. Failure is silent — caller should always also
+   *  open the store URL as a guaranteed fallback. */
+  registerExtensionExternal: () => Promise<{ success: boolean; reason?: string; error?: string }>;
   tileWindows: (items: { type: string; value: string; title: string }[]) => Promise<{ success: boolean; debug?: string; error?: string }>;
   maximizeWindow: (args: { item: { type: string; value: string; title: string }; monitor?: number }) => Promise<{ success: boolean }>;
   resizeActiveWindow: (pct: number) => Promise<{ success: boolean }>;
@@ -146,6 +156,8 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   downloadFavicon: async () => null,
   getExtensionBridgeStatus: async () => ({ connected: false, tabsCount: 0, lastTabsUpdateAt: 0, lastExtensionConnectedAt: 0 }),
   openExtensionInstallHelper: async (_targetBrowser: 'chrome' | 'whale') => ({ success: false, reason: 'dev-mode' }),
+  openExtensionStore: async () => ({ success: false, reason: 'dev-mode' }),
+  registerExtensionExternal: async () => ({ success: false, reason: 'dev-mode' }),
   tileWindows: async () => ({ success: false }),
   maximizeWindow: async () => ({ success: false }),
   resizeActiveWindow: async () => ({ success: false }),

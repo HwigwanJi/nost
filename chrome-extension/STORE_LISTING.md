@@ -328,15 +328,26 @@ nost desktop app: https://github.com/HwigwanJi/nost
 
 ---
 
-## 10. 데스크톱 앱과의 연계 — 후속 권장사항
+## 10. 데스크톱 앱과의 연계 — 완료 (2026-04)
 
-배포 성공 후 nost 데스크톱 앱 측에서:
+배포 승인 후 (스토어 ID: `fjehpjoninofepdoiakibjaokakihilo`) nost 데스크톱 앱에 다음 작업 완료:
 
-- [ ] [ExtensionInstallWizard.tsx](../frontend/src/components/ExtensionInstallWizard.tsx)에 "Chrome 웹 스토어 설치" 버튼 추가 — zip 다운로드 안내 대신 스토어 직링크
-- [ ] 설정 → 확장 탭에 스토어 페이지 링크 노출
-- [ ] 스토어 ID(승인 후 발급되는 32자 ID)를 [main.js](../main.js)의 `openExtensionInstallHelper`에 추가해서 `https://chrome.google.com/webstore/detail/{ID}` 자동 열기
+- [x] [ExtensionInstallWizard.tsx](../frontend/src/components/ExtensionInstallWizard.tsx)에 **"Chrome 웹 스토어에서 설치"** 버튼을 메인 액션으로 추가. 기존 개발자 모드 (Load unpacked) 안내는 "수동 설치 (개발자용)" 디스클로저로 강등.
+- [x] 설정 → 확장 탭에서 위저드를 임베드해서 사용. (위저드 자체가 스토어 진입점이라 별도 링크 불필요)
+- [x] [main.js](../main.js)에 새 IPC `open-extension-store` 추가 — `shell.openExternal('https://chromewebstore.google.com/detail/nost-bridge/fjehpjoninofepdoiakibjaokakihilo')` 호출.
+- [x] `preload.js` / `electronBridge.ts`에 `openExtensionStore()` 노출.
 
-스토어 ID는 첫 게시 후 대시보드 URL에 나타남: `https://chrome.google.com/webstore/devconsole/{32자}`
+설치 흐름 (사용자 관점):
+1. 설정 → 확장 → **"확장 설치하기"** 클릭
+2. 위저드 첫 화면에서 **"Chrome 웹 스토어에서 설치"** 클릭
+3. 동시에 두 가지가 일어남:
+   - 백그라운드: HKCU 레지스트리에 ExternalExtensions 항목 작성 → Chrome이 다음 실행 시 1-클릭 활성화 알림
+   - 포그라운드: 기본 브라우저에서 스토어 페이지 열림 → "Chrome에 추가" 클릭으로도 설치 가능
+4. 위저드의 **"연결 확인"** 클릭 → 성공 메시지
+
+테스트는 정식 스토어에 게시된 확장으로 진행. ID 변경 시 `main.js`의
+`NOST_BRIDGE_EXTENSION_ID` 상수만 갈아끼우면 됨 (`open-extension-store`,
+`register-extension-external` 두 핸들러가 동일 상수 참조).
 
 ---
 

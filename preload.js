@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   downloadFavicon: (candidates) => ipcRenderer.invoke('download-favicon', candidates),
   getExtensionBridgeStatus: () => ipcRenderer.invoke('get-extension-bridge-status'),
   openExtensionInstallHelper: (targetBrowser) => ipcRenderer.invoke('open-extension-install-helper', targetBrowser),
+  openExtensionStore: () => ipcRenderer.invoke('open-extension-store'),
+  registerExtensionExternal: () => ipcRenderer.invoke('register-extension-external'),
   tileWindows: (items) => ipcRenderer.invoke('tile-windows', items),
   maximizeWindow: (item) => ipcRenderer.invoke('maximize-window', item),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),

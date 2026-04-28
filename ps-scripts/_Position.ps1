@@ -4,19 +4,61 @@
 function Get-NativeWorkArea {
     param([int]$MonitorIndex = 0)
 
-    # PREFER Electron-provided env vars when present.
+    # 2026-04 update — coordinate-system mismatch fix.
     #
-    # Electron enumerates monitors in its own order, which matches what the
-    # user sees in nost settings. PS's System.Windows.Forms.Screen enumerates
-    # independently — and on setups with mixed DPI or rearranged displays,
-    # the two orders can DIFFER. If PS looks up monitor N via its own list,
-    # "monitor 2" in the UI can land on a completely different physical
-    # monitor than the user expects.
+    # Old behaviour: trust QL_SCREEN_* env vars from Electron unconditionally.
+    # That worked for primary monitor (and for mono-DPI setups) but broke for
+    # secondary monitors in cross-DPI setups, because Electron's DIP coords
+    # and a DPI-unaware PS process see DIFFERENT positions for non-primary
+    # screens (Windows lays out the unaware virtual canvas using physical
+    # distances from primary's right edge, leaving a "gap" on secondaries).
     #
-    # Using Electron's coordinates is therefore the canonical source of
-    # truth. QL_SCREEN_W is always emitted by run-tile-ps / tile-windows
-    # handlers in main.js.
+    # New behaviour: PS queries its OWN enumeration for the work area
+    # (System.Windows.Forms.Screen, which lives in the same unaware coord
+    # space MoveWindow uses). We use QL_MONITOR as the index and verify
+    # primary flag against QL_MONITOR_PRIMARY — if PS's order differs from
+    # Electron's (the original concern that motivated the old fix), fall
+    # back to searching by primary flag.
+
+    try {
+        [void][System.Windows.Forms.Screen]
+    } catch {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+    }
+    $screens = [System.Windows.Forms.Screen]::AllScreens
+
+    # Prefer the explicit monitor index from Electron when provided.
+    $useIndex = $MonitorIndex
+    if ($MonitorIndex -lt 1 -and $env:QL_MONITOR) { $useIndex = [int]$env:QL_MONITOR }
+
+    if ($useIndex -ge 1 -and $useIndex -le $screens.Count) {
+        $s = $screens[$useIndex - 1]
+
+        # Sanity check: does PS's mon#K agree with Electron's mon#K on
+        # primary status? If not, PS's enumeration drifted relative to
+        # Electron's — search by primary flag instead.
+        if ($env:QL_MONITOR_PRIMARY) {
+            $expectedPrimary = [string]$env:QL_MONITOR_PRIMARY -ieq 'True'
+            if ($s.Primary -ne $expectedPrimary) {
+                Write-Output "[diag] WARN: PS mon#$useIndex primary=$($s.Primary) but Electron expected primary=$expectedPrimary. Resolving by primary flag..."
+                $candidates = @($screens | Where-Object { $_.Primary -eq $expectedPrimary })
+                if ($candidates.Count -gt 0) {
+                    $s = $candidates[0]
+                    Write-Output "[diag] resolved by primary flag: $($s.DeviceName) bounds=($($s.Bounds.X),$($s.Bounds.Y),$($s.Bounds.Width)x$($s.Bounds.Height))"
+                }
+            }
+        }
+
+        Write-Output "[diag] picked PS-enum mon#$useIndex name=$($s.DeviceName) primary=$($s.Primary) work=($($s.WorkingArea.X),$($s.WorkingArea.Y),$($s.WorkingArea.Width)x$($s.WorkingArea.Height))"
+        if ($env:QL_MONITOR_DIP_X) {
+            Write-Output "[diag]   electron-dip-hint=($($env:QL_MONITOR_DIP_X),$($env:QL_MONITOR_DIP_Y),$($env:QL_MONITOR_DIP_W)x$($env:QL_MONITOR_DIP_H)) scale=$($env:QL_MONITOR_SCALE)"
+        }
+        return @{ X = $s.WorkingArea.X; Y = $s.WorkingArea.Y; W = $s.WorkingArea.Width; H = $s.WorkingArea.Height }
+    }
+
+    # Legacy fallback for callers that didn't pass QL_MONITOR.
     if ($env:QL_SCREEN_W -and $env:QL_SCREEN_H) {
+        Write-Output "[diag] no QL_MONITOR — falling back to QL_SCREEN_* (DIP, may misplace on cross-DPI secondaries)"
         return @{
             X = [int]$env:QL_SCREEN_X
             Y = [int]$env:QL_SCREEN_Y
@@ -25,20 +67,7 @@ function Get-NativeWorkArea {
         }
     }
 
-    # Fallback: PS's own enumeration (legacy callers that don't set QL_SCREEN_*).
-    try {
-        [void][System.Windows.Forms.Screen]
-    } catch {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-    }
-    $screens = [System.Windows.Forms.Screen]::AllScreens
-
-    if ($MonitorIndex -ge 1 -and $MonitorIndex -le $screens.Count) {
-        $s = $screens[$MonitorIndex - 1]
-        return @{ X = $s.WorkingArea.X; Y = $s.WorkingArea.Y; W = $s.WorkingArea.Width; H = $s.WorkingArea.Height }
-    }
-
-    # Last resort: primary
+    # Last resort: primary screen
     $p = [System.Windows.Forms.Screen]::PrimaryScreen
     return @{ X = $p.WorkingArea.X; Y = $p.WorkingArea.Y; W = $p.WorkingArea.Width; H = $p.WorkingArea.Height }
 }

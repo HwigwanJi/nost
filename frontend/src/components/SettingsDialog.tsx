@@ -696,7 +696,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                 </Section>
 
                 <Section>
-                  <SectionLabel icon="extension" text="브라우저 확장 설치 도우미" />
+                  <SectionLabel icon="extension" text="브라우저 확장 설치" />
                   {showExtWizard ? (
                     <div style={{ marginTop: 4 }}>
                       <ExtensionInstallWizard onSuccess={() => { setTimeout(() => setShowExtWizard(false), 1800); checkExtStatus(); }} />
@@ -710,11 +710,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   ) : (
                     <>
                       <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
-                        Chrome / Whale에서 탭 스캔과 타일 분할을 사용하려면 확장 프로그램이 필요합니다.
+                        Chrome 웹 스토어에서 한 번에 설치할 수 있습니다. 탭 스캔과 타일 분할이 활성화됩니다.
                       </p>
                       <AccentBtn onClick={() => setShowExtWizard(true)}>
                         <Icon name="extension" size={15} />
-                        단계별 설치 도우미 열기
+                        확장 설치하기
                       </AccentBtn>
                     </>
                   )}
