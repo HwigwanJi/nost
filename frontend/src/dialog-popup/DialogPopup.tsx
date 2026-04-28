@@ -222,8 +222,28 @@ export function DialogPopup() {
                   onClick={() => setDrillSpaceId(s.id)}
                 />
               ))}
-              {visibleSpaces.filter(s => s.folders.length > 0).length === 0 && state.systemFolders.length === 0 && (
-                <span style={{ fontSize: 10, color: muted, padding: '0 8px' }}>
+              {/* Per-preset empty hint — surfaces clearly when a preset has
+                  no folder cards. Without this the only chip the user sees
+                  after switching to an empty preset is "시스템 3", which
+                  reads as "nothing happened" because preset 1 also showed
+                  it. The dashed border + faded styling differentiates this
+                  from a real chip so it doesn't read as a clickable target. */}
+              {visibleSpaces.filter(s => s.folders.length > 0).length === 0 && (
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: muted,
+                    padding: '0 12px',
+                    whiteSpace: 'nowrap',
+                    border: `1px dashed ${border}`,
+                    borderRadius: 7,
+                    height: 26,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    fontStyle: 'italic',
+                    flexShrink: 0,
+                  }}
+                >
                   이 프리셋엔 등록된 폴더 카드가 없습니다.
                 </span>
               )}

@@ -808,7 +808,9 @@ function refreshFloatingVisuals() {
 // dismiss IPC.
 
 const DIALOG_POPUP_HEIGHT          = 50;   // window height when collapsed (DIP)
-const DIALOG_POPUP_HEIGHT_EXPANDED = 180;  // when preset dropdown is open
+const DIALOG_POPUP_HEIGHT_EXPANDED = 220;  // when preset dropdown is open
+                                            // (3 items × ~30 px + padding + headroom — leave a margin
+                                            //  so the menu's top isn't clipped at the window edge)
 const DIALOG_POPUP_OFFSET          = 6;    // gap between popup bottom and dialog top
 const DIALOG_POLL_MS               = 600;  // detection poll cadence
 
