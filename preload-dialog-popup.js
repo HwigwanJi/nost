@@ -33,8 +33,12 @@ contextBridge.exposeInMainWorld('dialogPopup', {
   /** User pressed ✕ — hide popup until the next dialog appears. */
   dismiss: () => ipcRenderer.send('dialog-popup-dismiss'),
 
-  /** Tell main to grow the popup window upward (so the preset dropdown
-   *  has room to open without being clipped at the window edge) or
-   *  collapse it back to the default thin strip. */
-  setExpanded: (expanded) => ipcRenderer.send('dialog-popup-set-expanded', !!expanded),
+  /** Renderer toggles mouse capture as the pointer enters/leaves the
+   *  interactive areas (chip strip, open dropdown menu). When `false`,
+   *  the popup is click-through and the dialog underneath receives
+   *  clicks; when `true`, the popup captures clicks normally. The
+   *  popup window is sized larger than the visible chip strip to give
+   *  the dropdown room to open without dynamic resize, so we need
+   *  click-through on the transparent extra area. */
+  setCapture: (capture) => ipcRenderer.send('dialog-popup-set-capture', !!capture),
 });

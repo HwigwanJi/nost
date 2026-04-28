@@ -54,10 +54,12 @@ interface Api {
   requestState: () => void;
   jumpTo:       (folderPath: string) => void;
   dismiss:      () => void;
-  /** Tell main to grow / shrink the popup window vertically so the
-   *  preset dropdown menu has room above the chip strip without being
-   *  clipped at the window edge. */
-  setExpanded:  (expanded: boolean) => void;
+  /** Toggle mouse capture as the pointer enters/leaves interactive
+   *  regions. The popup window is taller than the visible chip strip
+   *  (so the dropdown menu has room to open without dynamic resize) —
+   *  the transparent extra area must be click-through, hence this
+   *  toggle. */
+  setCapture:   (capture: boolean) => void;
 }
 const api = (window as unknown as { dialogPopup: Api }).dialogPopup;
 
@@ -107,6 +109,27 @@ export function DialogPopup() {
     return () => m.removeEventListener('change', fn);
   }, []);
 
+  // Mouse-capture toggling. The popup window is sized larger than the
+  // visible chip strip (so the dropdown menu has room to open without
+  // a dynamic-resize roundtrip that proved flaky), and the empty space
+  // is rendered transparent + setIgnoreMouseEvents(true, forward) by
+  // main. Here we flip back to capture-on whenever the cursor enters
+  // an interactive region (chip strip OR open dropdown menu) so the
+  // user's clicks reach our handlers.
+  useEffect(() => {
+    let captured = false;
+    const onMove = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      const want = !!target?.closest('[data-popup-interactive]');
+      if (want !== captured) {
+        captured = want;
+        api.setCapture(want);
+      }
+    };
+    document.addEventListener('pointermove', onMove);
+    return () => document.removeEventListener('pointermove', onMove);
+  }, []);
+
   // ESC: drill → root, root → dismiss.
   useEffect(() => {
     const fn = (e: KeyboardEvent) => {
@@ -149,6 +172,7 @@ export function DialogPopup() {
 
   return (
     <div
+      data-popup-interactive
       style={{
         margin: '0 8px',
         flex: 1,
@@ -163,7 +187,10 @@ export function DialogPopup() {
         boxShadow: '0 4px 18px rgba(0, 0, 0, 0.18)',
         backdropFilter: 'blur(20px) saturate(160%)',
         color: text,
-        overflow: 'hidden',
+        // Critical: allow the dropdown menu to escape this strip
+        // vertically. Default `overflow: hidden` clipped the menu inside
+        // the strip's own bounds.
+        overflow: 'visible',
       }}
     >
       {/* Left section: brand + back/title */}
@@ -373,10 +400,10 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
   const [open, setOpen] = useState(false);
   const current = presets.find(p => p.id === viewId) ?? presets[0];
 
-  // Tell main to grow / shrink the window so the menu has room.
-  useEffect(() => {
-    api.setExpanded(open);
-  }, [open]);
+  // (Previously called api.setExpanded here to dynamically resize the
+  // popup window. That mechanism is gone — the popup window is now
+  // permanently sized to fit the menu, with click-through on the
+  // transparent below-strip area.)
 
   // Outside-click + ESC dismissal.
   useEffect(() => {

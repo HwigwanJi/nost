@@ -807,14 +807,18 @@ function refreshFloatingVisuals() {
 // its own visibility — it only handles "user clicked ✕" via dialog-popup-
 // dismiss IPC.
 
-const DIALOG_POPUP_HEIGHT          = 50;   // window height when collapsed (DIP)
-const DIALOG_POPUP_HEIGHT_EXPANDED = 220;  // when preset dropdown is open
-                                            // (3 items × ~30 px + padding + headroom — leave a margin
-                                            //  so the menu's top isn't clipped at the window edge)
-const DIALOG_POPUP_OFFSET          = 6;    // gap between popup bottom and dialog top
-const DIALOG_POLL_MS               = 600;  // detection poll cadence
+// The popup BrowserWindow is ALWAYS this tall. The visible chip strip
+// only occupies the top DIALOG_POPUP_STRIP_HEIGHT pixels — the rest is
+// transparent + click-through so the dropdown menu has room to open
+// without dynamic resize. Dynamic setBounds-based expansion was flaky
+// (some DPI configs and screen-edge clamps left the window at the
+// original 50 px even after a setBounds call), and a fixed-size window
+// with click-through is the same pattern badges use successfully.
+const DIALOG_POPUP_HEIGHT       = 220;  // total BrowserWindow height
+const DIALOG_POPUP_STRIP_HEIGHT = 50;   // visible chip-strip portion
+const DIALOG_POPUP_OFFSET       = 6;    // gap between strip bottom and dialog top
+const DIALOG_POLL_MS            = 600;  // detection poll cadence
 
-let dialogPopupExpanded = false;
 let dialogLastRect = null;
 
 function buildDialogPopupState() {
@@ -866,22 +870,15 @@ function destroyDialogPopupWindow() {
 function positionDialogPopup(rect) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
   dialogLastRect = rect;
-  // Sit centred above the dialog. Width clamped to a sensible band
-  // regardless of dialog width — too-narrow dialogs (e.g. small Open
-  // dialogs) would crush the chip row otherwise.
   const width  = Math.max(420, Math.min(rect.width, 900));
   const x      = Math.round(rect.x + (rect.width - width) / 2);
-  // The popup's TOP edge is always anchored at (dialog.y - 50 - 6).
-  // When the preset dropdown opens, the height grows DOWNWARD instead
-  // of upward — the chip strip (anchored to popup-root's top edge)
-  // stays at the same screen Y, and the new empty space below is where
-  // the dropdown menu opens. The taller popup will visibly overlap the
-  // dialog's title bar while the menu is open; that's intentional and
-  // preferable to the menu being clipped at the popup edge.
-  const y      = Math.round(rect.y - DIALOG_POPUP_HEIGHT - DIALOG_POPUP_OFFSET);
-  const height = dialogPopupExpanded ? DIALOG_POPUP_HEIGHT_EXPANDED : DIALOG_POPUP_HEIGHT;
+  // Anchor the chip-strip's bottom edge to (dialog.y - 6). The window
+  // extends below that by (DIALOG_POPUP_HEIGHT - DIALOG_POPUP_STRIP_HEIGHT)
+  // pixels of transparent click-through space — that's where the dropdown
+  // menu opens.
+  const y = Math.round(rect.y - DIALOG_POPUP_STRIP_HEIGHT - DIALOG_POPUP_OFFSET);
   try {
-    dialogPopupWin.setBounds({ x, y, width, height });
+    dialogPopupWin.setBounds({ x, y, width, height: DIALOG_POPUP_HEIGHT });
   } catch (_) { /* dialog moved off-screen mid-set; ignore */ }
 }
 
@@ -911,7 +908,12 @@ function createDialogPopupWindow(rect, dialogTitle) {
   });
   dialogPopupWin.setAlwaysOnTop(true, 'screen-saver');
   dialogPopupWin.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
-  dialogPopupWin.setIgnoreMouseEvents(false);
+  // Click-through by default. The renderer flips this off (capture on)
+  // when the pointer moves over the chip strip or open dropdown menu,
+  // and back on when the pointer leaves — same pattern badges overlay
+  // uses. Without this the bottom 170 px (transparent area where the
+  // menu opens) would still capture clicks meant for the dialog.
+  dialogPopupWin.setIgnoreMouseEvents(true, { forward: true });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
   if (rendererUrl) {
@@ -2472,11 +2474,17 @@ function registerIpcHandlers() {
     dialogDismissedHwnd = dialogTrackedHwnd;
     destroyDialogPopupWindow();
   });
-  ipcMain.on('dialog-popup-set-expanded', (_, expanded) => {
-    dialogPopupExpanded = !!expanded;
-    // Re-apply position with the new height anchored to the last known
-    // dialog rect — keeps the popup glued to the dialog top edge.
-    if (dialogLastRect) positionDialogPopup(dialogLastRect);
+  /** Renderer signals "pointer is over the chip strip / open menu — let
+   *  clicks reach me" or "pointer is in transparent area — make me
+   *  click-through so the dialog gets the click". Same protocol the
+   *  badges overlay uses for its forward-mouse-events click-through. */
+  ipcMain.on('dialog-popup-set-capture', (_, capture) => {
+    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+    if (capture) {
+      dialogPopupWin.setIgnoreMouseEvents(false);
+    } else {
+      dialogPopupWin.setIgnoreMouseEvents(true, { forward: true });
+    }
   });
 
   // Start the dialog detection poll. Runs for the app lifetime — cheap
