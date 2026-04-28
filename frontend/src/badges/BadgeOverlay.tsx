@@ -53,6 +53,16 @@ export function BadgeOverlay() {
     overlaySize:   { width: 0, height: 0 },
   });
   const [hydrated, setHydrated] = useState(false);
+  // Track which refs have been mounted at least once during this overlay
+  // session. The landing "boing" animation is reserved for genuinely fresh
+  // pins; preset switches (Tab) used to remount every badge and replay the
+  // boing on all of them at once — visually it looked like every badge "flew
+  // away and landed again" on every Tab. Now we suppress the animation on
+  // re-appearances. Keyed by `refType:refId` because main generates a fresh
+  // `id` per pin, so a space pinned in two presets has different ids but the
+  // same refType:refId — and the user's perception is "this is the same badge
+  // I had". */
+  const seenRefsRef = useRef<Set<string>>(new Set());
   /** ID of the badge whose mini-window is currently expanded, or null. */
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Tracks the current capture flag so we only send IPC on transitions.
@@ -129,17 +139,28 @@ export function BadgeOverlay() {
       {/* Render badges only after the first authoritative state has
           arrived — avoids a transient frame with default origin/size
           where badges would land at the wrong screen coords and then
-          jump when the real state replaced them. */}
-      {hydrated && state.badges.map(b => (
-        <Badge
-          key={b.id}
-          data={b}
-          originX={state.overlayOrigin.x}
-          originY={state.overlayOrigin.y}
-          api={api}
-          onClick={() => handleBadgeClick(b.id)}
-        />
-      ))}
+          jump when the real state replaced them.
+
+          React key uses refType:refId rather than badge.id so that
+          switching presets (which gives the badge a fresh id) keeps the
+          same component mounted — left/top updates without unmount, no
+          remount-and-boing. */}
+      {hydrated && state.badges.map(b => {
+        const refKey = `${b.refType}:${b.refId}`;
+        const isFreshMount = !seenRefsRef.current.has(refKey);
+        if (isFreshMount) seenRefsRef.current.add(refKey);
+        return (
+          <Badge
+            key={refKey}
+            data={b}
+            originX={state.overlayOrigin.x}
+            originY={state.overlayOrigin.y}
+            api={api}
+            onClick={() => handleBadgeClick(b.id)}
+            skipLanding={!isFreshMount}
+          />
+        );
+      })}
 
       {expandedBadge && (
         <MiniWindow

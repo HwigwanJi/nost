@@ -49,6 +49,11 @@ interface Props {
   /** Called on a bare left-click (no drag). Parent decides what "activate"
    *  means — currently it toggles the mini-window popover. */
   onClick: () => void;
+  /** True when this component instance is RE-rendered after a preset switch
+   *  rather than freshly created (newly pinned). Suppresses the landing
+   *  "boing" so Tab-cycling presets doesn't make every badge animate at
+   *  once. Defaults to false (= run the landing animation as before). */
+  skipLanding?: boolean;
 }
 
 // Circular bubble — icon-only, no dangling text label. The click expands a
@@ -73,7 +78,7 @@ const TYPE_GLYPH: Record<BadgeData['refType'], string> = {
   deck:  '■',
 };
 
-export function Badge({ data, originX, originY, api, onClick }: Props) {
+export function Badge({ data, originX, originY, api, onClick, skipLanding = false }: Props) {
   // Local position during drag — flips the element from server-authoritative
   // to local-authoritative while the user is moving it, then commits via
   // api.reposition on release.
@@ -81,7 +86,10 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
   const [hover, setHover]       = useState(false);
   const [pressed, setPressed]   = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [landing, setLanding]   = useState(true); // one-shot "boing" on mount
+  // Don't run the "boing" landing animation when this is just a preset-switch
+  // re-appearance — only the very first mount of a given refType:refId pair
+  // (= a genuinely new pin) triggers it.
+  const [landing, setLanding]   = useState(!skipLanding);
 
   // Drag bookkeeping.
   //
@@ -234,7 +242,11 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
       // Spring easing removed (was overshooting on tiny scale deltas and
       // visually competing with the landing keyframe). Pure ease-out is
       // boring but reads as solid.
-      : 'transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease',
+      // left/top is also transitioned so a preset switch that moves the
+      // badge to a different stored coord glides smoothly instead of
+      // snapping (key is now refType:refId so the component persists
+      // across preset switches — see BadgeOverlay).
+      : 'transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, left 280ms cubic-bezier(0.22, 1, 0.36, 1), top 280ms cubic-bezier(0.22, 1, 0.36, 1)',
     willChange: 'transform',
     animation: landing ? 'nost-badge-land 220ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
   };
