@@ -34,6 +34,7 @@ export interface Entitlement {
     nodes: number;
     decks: number;
     floatingBadges: number;
+    widgets: number;
     presets: number;
     containerEnabled: boolean;
   };
@@ -46,6 +47,7 @@ export interface Entitlement {
   canAddNode:          (currentCount: number) => boolean;
   canAddDeck:          (currentCount: number) => boolean;
   canAddFloatingBadge: (currentCount: number) => boolean;
+  canAddWidget:        (currentCount: number) => boolean;
   canUsePreset:        (presetId: '1' | '2' | '3') => boolean;
   canUseContainer:     () => boolean;
 }
@@ -56,6 +58,7 @@ const PRO_LIMITS = {
   nodes: Infinity,
   decks: Infinity,
   floatingBadges: Infinity,
+  widgets: Infinity,
   presets: 3,
   containerEnabled: true,
 } as const;
@@ -122,6 +125,7 @@ export function useEntitlement(data: AppData): Entitlement {
       canAddNode:          (n) => n < limits.nodes,
       canAddDeck:          (n) => n < limits.decks,
       canAddFloatingBadge: (n) => n < limits.floatingBadges,
+      canAddWidget:        (n) => n < limits.widgets,
       // Preset 1 is always free; 2/3 need pro tier.
       canUsePreset: (id) => id === '1' ? true : isPro,
       canUseContainer: () => limits.containerEnabled,

@@ -43,6 +43,9 @@ interface SpaceAccordionProps {
   onQuickAdd: () => void;
   onAddItem: () => void;
   onScanItem: () => void;
+  /** Add a widget card (media, future kinds). Optional — caller may
+   *  omit when widgets aren't relevant for that space context. */
+  onAddWidget?: () => void;
   onToggleCollapse: () => void;
   onFloatOut?: () => void;
   isFloating?: boolean;
@@ -96,6 +99,7 @@ export function SpaceAccordion({
   onQuickAdd,
   onAddItem,
   onScanItem,
+  onAddWidget,
   onToggleCollapse,
   onFloatOut,
   isFloating = false,
@@ -481,6 +485,12 @@ export function SpaceAccordion({
                     <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
                     <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
                     <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
+                    {onAddWidget && (
+                      <DropdownMenuItem onClick={onAddWidget}>
+                        <Icon name="widgets" size={13} style={{ marginRight: 6, color: 'var(--accent)' }} />
+                        위젯
+                      </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>

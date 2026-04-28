@@ -23,6 +23,7 @@ export type PaywallReason =
   | 'preset-lock'
   | 'container-lock'
   | 'floating-badge-limit'
+  | 'widget-limit'
   | 'generic';
 
 interface Props {
@@ -42,6 +43,7 @@ const HEADLINE: Record<PaywallReason, { icon: string; title: string; body: strin
   'preset-lock':          { icon: 'view_carousel',     title: '프리셋 2 / 3은 Pro 전용',        body: '업무·개인·프로젝트를 완전히 분리해서 쓰려면 Pro.' },
   'container-lock':       { icon: 'view_module',       title: '컨테이너 기능은 Pro 전용',       body: '슬롯 기반 카드 레이아웃은 Pro 플랜에서만 사용 가능합니다.' },
   'floating-badge-limit': { icon: 'radio_button_checked', title: '플로팅 뱃지 1개 제한',         body: '여러 스페이스·노드·덱을 동시에 띄우려면 Pro.' },
+  'widget-limit':         { icon: 'widgets',           title: '위젯 카드 1개 제한',             body: '여러 위젯(미디어 컨트롤·시계·…)을 동시에 두려면 Pro.' },
   'generic':              { icon: 'auto_awesome',      title: 'nost Pro로 업그레이드',          body: '모든 기능 · 모든 제한 해제 · 연 5,900원.' },
 };
 

@@ -38,7 +38,7 @@ import { TileOverlay } from './components/TileOverlay';
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
 import { faviconCandidates } from './hooks/useFavicon';
-import { setBusy, whenIdle } from './lib/userBusy';
+import { setBusy, whenIdle, isUserBusy } from './lib/userBusy';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
 import { useTileOverlay } from './hooks/useTileOverlay';
 import { useLaunchPipeline } from './hooks/useLaunchPipeline';
@@ -656,6 +656,15 @@ export default function App() {
         openPaywall('floating-badge-limit');
         return false;
       },
+      widget: () => {
+        // Count widget cards across ALL spaces of the active preset.
+        const widgetTotal = (data.spaces ?? []).reduce(
+          (n, s) => n + (s.items ?? []).filter(it => it.type === 'widget').length, 0,
+        );
+        if (entitlement.canAddWidget(widgetTotal)) return true;
+        openPaywall('widget-limit');
+        return false;
+      },
       preset: (id: '1' | '2' | '3') => {
         if (entitlement.canUsePreset(id)) return true;
         openPaywall('preset-lock');
@@ -1212,6 +1221,46 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog, activeMode, tileOverlayGroup, nodeEditMode, nodeBuilding, deckBuilding, cmdOpen]);
 
+  // ── Tab key cycles through available presets ─────────────
+  //
+  // Press Tab anywhere (outside of inputs / modals) to advance to the
+  // next preset the user has access to. Pro-locked presets are skipped
+  // silently rather than triggering a paywall every time the user taps
+  // Tab — discovery happens via the explicit preset toggle click,
+  // which DOES open the paywall with full context. We also bail when
+  // any modal/dialog is busy so Tab still works as expected for form
+  // navigation inside dialogs.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      // Modifier-tabs are reserved for the browser / OS (Ctrl+Tab, Alt+Tab,
+      // Shift+Tab traversal). We only claim plain Tab.
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      // Don't hijack while the user is typing or interacting with a control.
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (t?.isContentEditable) return;
+      // Skip while any modal / drag / tour is busy — preserves form-Tab
+      // behaviour inside ItemDialog, SettingsDialog, etc.
+      if (isUserBusy()) return;
+      // Skip while CommandBar is open (its own focus management).
+      if (cmdOpen) return;
+
+      // Build the cycle from accessible presets only. Free tier ⇒ ['1'],
+      // so cycling is a no-op for that user and we don't even
+      // preventDefault (lets focus traversal still work). Pro ⇒ all three.
+      const order: Array<'1' | '2' | '3'> = ['1', '2', '3'];
+      const accessible = order.filter(id => entitlement.canUsePreset(id));
+      if (accessible.length <= 1) return;
+      e.preventDefault();
+      const idx = accessible.indexOf(store.activePresetId as '1' | '2' | '3');
+      const next = accessible[(idx + 1) % accessible.length];
+      store.setActivePreset(next);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [cmdOpen, entitlement, store]);
 
   // ── Dialog helpers ────────────────────────────────────────
   const openEditItem = useCallback((item: LauncherItem, spaceId: string) => {
@@ -1237,6 +1286,41 @@ export default function App() {
     setEditSpaceId(spaceId ?? data.spaces[0]?.id ?? '');
     setDialog('wizard');
   }, [data.spaces]);
+
+  /**
+   * Add a media-control widget to the given space. v1 has only one
+   * widget kind so we skip the picker entirely and create the card
+   * straight from the menu — if more kinds land later, this becomes
+   * a sub-menu / mini-dialog.
+   *
+   * Gates:
+   *   - quotaChecks.widget() — free tier is capped at 1 across the
+   *     active preset (separate counter from regular cards)
+   *   - quotaChecks.card() — widgets still occupy a slot in the
+   *     20-card free total, so we double-gate. If either fails, the
+   *     paywall opens with the more specific reason (widget-limit
+   *     wins because it triggers first).
+   */
+  const handleAddWidget = useCallback((spaceId: string) => {
+    if (!quotaChecks.widget()) return;
+    if (!quotaChecks.card()) return;
+    store.addItem(spaceId, {
+      type: 'widget',
+      title: '미디어',
+      value: '',                          // not used for widgets
+      iconType: 'material',
+      icon: 'widgets',
+      color: '#a855f7',
+      clickCount: 0,
+      pinned: false,
+      widget: { kind: 'media-control' },
+    });
+    showToast('미디어 위젯을 추가했어요');
+    // Mark "just-added" so the card gets the brief highlight pulse.
+    // (justAddedItemIds is managed by useAppData internally — addItem
+    //  flags the new item id automatically; nothing more to do here.)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quotaChecks, store]);
 
   const handleClipboardAdd = useCallback(() => {
     if (!clipSuggestion) return;
@@ -2563,6 +2647,7 @@ export default function App() {
                             onQuickAdd={() => openQuickAdd(space.id)}
                             onAddItem={() => openManualWizard(space.id)}
                             onScanItem={() => openScan(space.id)}
+                            onAddWidget={() => handleAddWidget(space.id)}
                             defaultOpen={!(data.collapsedSpaceIds ?? []).includes(space.id)}
                             onSetMonitor={(itemId, monitor) => handleSetMonitor(space.id, itemId, monitor)}
                             onConvertToContainer={itemId => { if (quotaChecks.container()) handleConvertToContainer(space.id, itemId); }}

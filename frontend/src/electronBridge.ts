@@ -101,6 +101,33 @@ export interface ElectronAPI {
   onBadgesLaunchRef:  (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => () => void;
   onBadgesRevealSpace: (cb: (payload: { refId: string }) => void) => void;
   onBadgesUpdated: (cb: (badges: import('./types').FloatingBadge[]) => void) => void;
+  // ── Media widget ─────────────────────────────────────────────────
+  getMediaState: () => Promise<MediaState>;
+  /** Returns an unsubscribe function — see onBadgesLaunchItem note. */
+  onMediaState: (cb: (state: MediaState) => void) => () => void;
+  mediaCommand: (action: 'play-pause' | 'next' | 'prev' | 'stop') => void;
+}
+
+/**
+ * Snapshot pushed by the main process every time SMTC reports a change.
+ * `supported: false` means the host can't read SMTC at all (non-Windows
+ * or pre-Win10 1809) — widgets render a friendly fallback instead of
+ * trying to fake a state. `session: null` means SMTC is supported but
+ * nothing is currently publishing media — also a valid idle state.
+ */
+export interface MediaState {
+  supported: boolean;
+  session?: {
+    sourceAppId: string;
+    title: string;
+    artist: string;
+    album: string;
+    isPlaying: boolean;
+    position: number;     // ms
+    duration: number;     // ms
+    lastUpdated: number;  // epoch ms — for renderer-side position extrapolation
+    thumb: string | null; // data URL or null when art unavailable
+  } | null;
 }
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
@@ -172,4 +199,9 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   onBadgesLaunchRef:  () => () => {},
   onBadgesRevealSpace: noop,
   onBadgesUpdated: noop,
+  // Dev-mode media stubs: report unsupported so widgets render their
+  // fallback instead of waiting forever for a session.
+  getMediaState: async () => ({ supported: false, session: null }),
+  onMediaState: () => () => {},
+  mediaCommand: noop,
 };

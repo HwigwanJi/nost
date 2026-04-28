@@ -2428,6 +2428,33 @@ function registerIpcHandlers() {
       browserExePath: result.exePath,
     };
   });
+
+  // ── 12k. Media widget — SMTC bridge ─────────────────────────────────
+  //
+  // The renderer's media-widget cards subscribe to play/pause/track
+  // changes happening anywhere on the system (YouTube tab, Spotify,
+  // foobar, …) and command the OS via virtual media keys. All of the
+  // platform-specific risk lives in media-controller.js which gracefully
+  // degrades on non-Windows / pre-1809 / missing user32.
+  //
+  // Push protocol: every state transition fires `media-state` to the
+  // main window. The renderer can also pull on-demand via the handle
+  // — useful for first paint before any event has arrived.
+  const media = require('./media-controller');
+  media.init();
+  media.onState((state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try { mainWindow.webContents.send('media-state', state); } catch (_) {}
+    }
+  });
+
+  ipcMain.handle('media-get-state', () => media.getState());
+
+  ipcMain.on('media-command', (_e, action) => {
+    // action: 'play-pause' | 'next' | 'prev' | 'stop'
+    if (typeof action !== 'string') return;
+    media.command(action);
+  });
 }
 
 // ── 13. App Lifecycle ─────────────────────────────────────────────────
@@ -2588,4 +2615,9 @@ app.on('will-quit', () => {
   // linger as a zombie tray item.
   endFloatingDrag(/* persist */ false);
   if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
+
+  // Drop SMTC subscriptions — without this the native binding can hold
+  // its event source alive past process exit, occasionally producing
+  // an "object accessed after destroy" log on shutdown.
+  try { require('./media-controller').destroy(); } catch (_) {}
 });

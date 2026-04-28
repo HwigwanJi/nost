@@ -38,6 +38,9 @@ const TYPE_META: Record<LauncherItem['type'], { icon: string; label: string; col
   cmd:     { icon: 'terminal',     label: '명령어',  color: '#64748b' },
   window:  { icon: 'window',       label: '창',      color: '#10b981' },
   browser: { icon: 'tab',          label: '탭',      color: '#06b6d4' },
+  // Widgets aren't drop-creatable (added via "+ 위젯" UI), but the
+  // record needs all union members. Color follows the accent family.
+  widget:  { icon: 'widgets',      label: '위젯',    color: '#a855f7' },
 };
 
 // Types shown in the per-item dropdown (leaves out window/browser which are not droppable)

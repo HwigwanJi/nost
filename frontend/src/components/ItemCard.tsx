@@ -14,6 +14,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { MediaWidget } from '../widgets/MediaWidget';
 
 interface ItemCardProps {
   item: LauncherItem;
@@ -170,6 +171,33 @@ export function ItemCard({
   // ── dnd-kit ─────────────────────────────────────────────────
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
+
+  // ── Widget short-circuit ─────────────────────────────────────
+  // Widget items render their own UI surface — they don't launch, don't
+  // open ItemDialog on click, don't participate in node/deck mode. We
+  // forward the dnd handle so widgets are still draggable/sortable
+  // alongside regular cards.
+  if (item.type === 'widget' && item.widget) {
+    if (item.widget.kind === 'media-control') {
+      return (
+        <MediaWidget
+          item={item}
+          dragHandle={{ setNodeRef, style, attributes, listeners, isDragging }}
+          onContextMenu={(e) => {
+            // Reuse the same context menu the rest of ItemCard surfaces
+            // (rename / color / delete) by deferring to onEdit's owner —
+            // for v1 we provide a minimal menu via the standard onEdit
+            // path: right-click opens the edit dialog. Future kinds can
+            // route through here too.
+            e.preventDefault();
+            onEdit(item);
+          }}
+        />
+      );
+    }
+    // Unknown widget kind → fall through to normal rendering as a
+    // safety net (renders as a plain card with the title).
+  }
 
   // Outside-click is handled by a transparent overlay rendered in the portal — no document listeners needed.
 

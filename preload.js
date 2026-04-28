@@ -128,4 +128,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  update UI (e.g. hide the "float" button for already-pinned items). */
   onBadgesUpdated: (cb) =>
     ipcRenderer.on('badges-updated', (_, badges) => cb(badges)),
+
+  // ── Media widget — SMTC bridge ───────────────────────────────────
+  /** Pull the current media state on demand (e.g. on widget mount). */
+  getMediaState: () => ipcRenderer.invoke('media-get-state'),
+  /** Subscribe to push updates. Returns an unsubscribe fn — match the
+   *  badge-launch pattern so React effect cleanup actually frees the
+   *  listener (otherwise re-renders accumulate one per ten seconds and
+   *  every state push fires every accumulated listener). */
+  onMediaState: (cb) => {
+    const handler = (_, state) => cb(state);
+    ipcRenderer.on('media-state', handler);
+    return () => ipcRenderer.removeListener('media-state', handler);
+  },
+  /** Fire a media key. action: 'play-pause' | 'next' | 'prev' | 'stop'. */
+  mediaCommand: (action) => ipcRenderer.send('media-command', action),
 });

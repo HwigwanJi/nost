@@ -5,10 +5,47 @@ export interface ContainerSlots {
   right?: string;
 }
 
+/**
+ * Widget descriptor — embedded in a LauncherItem when type === 'widget'.
+ *
+ * Why a separate field rather than encoding everything in `value`:
+ * widgets have multiple structured config fields (kind, options) and
+ * future widget kinds will diverge in shape. Treating `widget` as a
+ * tagged-union sub-document keeps each kind's options strongly typed.
+ *
+ * Why widget-as-LauncherItem rather than a parallel `widgets[]` array:
+ * widgets share the grid, drag-reorder, pair-layout, color/rename,
+ * and persistence story with normal cards. Replicating that
+ * infrastructure for a separate array is half the codebase. The cost
+ * is gating: every place that LAUNCHES an item needs to skip widgets
+ * (they don't launch — they self-render). Search through item.type
+ * === 'widget' for those gates.
+ */
+export type WidgetKind = 'media-control';
+// extensible later: 'clock' | 'weather' | 'task-counter' | …
+
+export interface MediaControlWidgetOptions {
+  /** Reserved for future targeted-session pinning. v1 always uses
+   *  Windows' "current" media session. */
+  preferredAppId?: string;
+}
+
+export interface WidgetData {
+  kind: WidgetKind;
+  /** Per-kind options — discriminated union. v1 only has media. */
+  options?: MediaControlWidgetOptions;
+}
+
 export interface LauncherItem {
   id: string;
   title: string;
-  type: 'url' | 'folder' | 'app' | 'window' | 'browser' | 'text' | 'cmd';
+  type: 'url' | 'folder' | 'app' | 'window' | 'browser' | 'text' | 'cmd' | 'widget';
+  /**
+   * For type !== 'widget': the launchable payload (URL, file path, cmd line, …).
+   * For type === 'widget': not used — widgets render from `widget.kind` instead.
+   * Kept as an empty string for back-compat with any code that reads it
+   * unconditionally; widget-aware code paths should branch on `type`.
+   */
   value: string;
   icon?: string; // material symbol name or data URL
   iconType?: 'material' | 'image';
@@ -22,6 +59,11 @@ export interface LauncherItem {
   // Container
   isContainer?: boolean;
   slots?: ContainerSlots;
+  // Widget — populated only when type === 'widget'. Consumers must
+  // treat the absence of this field as "regular launchable item" even
+  // for type === 'widget' (defensive; the migration writes it but a
+  // future bug shouldn't crash the renderer).
+  widget?: WidgetData;
 }
 
 export interface Space {
@@ -134,6 +176,8 @@ export const FREE_LIMITS = {
   decks: 1,
   /** Max floating badges (any type). */
   floatingBadges: 1,
+  /** Max widget cards (media, future kinds). */
+  widgets: 1,
   /** Presets 2 and 3 are Pro-only; preset 1 is always free. */
   presets: 1,
   /** Container feature (slot-based cards) is Pro-only. */
