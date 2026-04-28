@@ -35,6 +35,7 @@ import { ToastOverlay } from './components/ToastOverlay';
 import { ClipboardSuggestion } from './components/ClipboardSuggestion';
 import { WelcomeModal } from './components/WelcomeModal';
 import { TileOverlay } from './components/TileOverlay';
+import { ContainerBloom, hitTestBloomZone, type Dir as BloomDir } from './components/ContainerBloom';
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
 import { faviconCandidates } from './hooks/useFavicon';
@@ -751,6 +752,33 @@ export default function App() {
   // indicator and the drop becomes a no-op on release. Center drops are always
   // allowed because they create a new solo row below the target's pair.
   const [dragOverEdge, setDragOverEdge] = useState<{ overId: string; edge: 'left' | 'right' | 'center'; blocked?: boolean } | null>(null);
+
+  // ── Container bloom state (drag-into-slot UX) ─────────────────
+  // While the user drags a card and dwells over a container for
+  // ~250ms, the container "blooms" — 4 directional drop zones fan out
+  // around it. Drop on a zone = assign that slot. Drop anywhere else
+  // = collapse bloom and continue normal drag flow.
+  type BloomState = {
+    containerSpaceId: string;
+    containerId:     string;
+    containerRect:   DOMRect;
+    accent?:         string;
+    hotDir:          BloomDir | null;
+  };
+  const [bloomState, setBloomState] = useState<BloomState | null>(null);
+  // Pending dwell timer + the candidate it's watching, so we can cancel
+  // when the user moves off the candidate before the bloom fires.
+  const bloomCandidateRef = useRef<{ containerId: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const clearBloomCandidate = useCallback(() => {
+    if (bloomCandidateRef.current) {
+      clearTimeout(bloomCandidateRef.current.timer);
+      bloomCandidateRef.current = null;
+    }
+  }, []);
+  const closeBloom = useCallback(() => {
+    clearBloomCandidate();
+    setBloomState(null);
+  }, [clearBloomCandidate]);
   // ── File-Explorer drag state ────────────────────────────────
   // fileDragOver:          any file drag in progress over the app
   // fileDragTargetSpaceId: which SpaceAccordion the cursor is hovering (null = no target → first space fallback)
@@ -1893,6 +1921,29 @@ export default function App() {
   function handleItemDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     setDraggingItemId(null);
+
+    // ── Bloom drop has highest precedence ────────────────────
+    // If a bloom is open with a hot direction selected, route the
+    // drop to slot assignment regardless of what dnd-kit thinks
+    // `over` is. Bloom zones live OUTSIDE the container's rect so
+    // dnd-kit's collisionDetection doesn't cover them.
+    if (bloomState?.hotDir) {
+      const dir = bloomState.hotDir;
+      const containerSpaceId = bloomState.containerSpaceId;
+      const containerId = bloomState.containerId;
+      const sourceItemId = active.id as string;
+      closeBloom();
+      // Don't slot a container into itself.
+      if (sourceItemId === containerId) return;
+      store.assignSlotFromItem({ containerSpaceId, containerId, dir, sourceItemId });
+      const dirKo = dir === 'up' ? '위' : dir === 'down' ? '아래' : dir === 'left' ? '왼쪽' : '오른쪽';
+      showToast(`${dirKo} 슬롯에 추가됨`);
+      return;
+    }
+    // Bloom open but released outside any zone → collapse, then
+    // continue with the normal drag-end logic below (sortable, etc.).
+    closeBloom();
+
     if (!over) return;
 
     const activeId = active.id as string;
@@ -2234,9 +2285,94 @@ export default function App() {
               else setDraggingItemId(activeId);
             }}
             onDragMove={e => {
-              // Only track edge zones while dragging a SPACE (not an item card).
               const activeId = e.active.id as string;
-              if (!data.spaces.some(s => s.id === activeId)) return;
+              const isSpaceDrag = data.spaces.some(s => s.id === activeId);
+
+              // ── Item drag → bloom controller ────────────────────
+              // Runs only when dragging an item (not a space). Track
+              // pointer position vs container rects + bloom zones to
+              // open / update / collapse the bloom overlay.
+              if (!isSpaceDrag) {
+                const start = e.activatorEvent as PointerEvent | MouseEvent | undefined;
+                if (!start) return;
+                const px = (start.clientX ?? 0) + e.delta.x;
+                const py = (start.clientY ?? 0) + e.delta.y;
+
+                // If bloom is currently open, hit-test its zones first
+                // and check whether the pointer is still in the bloom's
+                // expanded area (container + 80px halo). If yes, just
+                // update the hot direction; if no, collapse.
+                if (bloomState) {
+                  const r = bloomState.containerRect;
+                  const inHalo =
+                    px >= r.left   - 80 && px <= r.right  + 80 &&
+                    py >= r.top    - 80 && py <= r.bottom + 80;
+                  if (inHalo) {
+                    const zone = hitTestBloomZone(r, { x: px, y: py });
+                    if (zone !== bloomState.hotDir) {
+                      setBloomState(s => s ? { ...s, hotDir: zone } : s);
+                    }
+                    return;
+                  }
+                  // Pointer wandered off — collapse bloom and let the
+                  // rest of the move handler re-evaluate (could land
+                  // on another container).
+                  closeBloom();
+                }
+
+                // Bloom not active — find a container under the pointer.
+                // We use dnd-kit's `over` first as a fast path (it
+                // already does collisionDetection); fall back to nothing
+                // (we don't manually iterate — rare miss is acceptable
+                // and avoids an O(N) hit-test on every move).
+                const overId = e.over?.id ? String(e.over.id) : null;
+                if (!overId || overId === activeId) {
+                  clearBloomCandidate();
+                  return;
+                }
+
+                // Locate the container item and verify it's actually a
+                // container (not a regular card with the same id space).
+                let foundSpaceId: string | null = null;
+                let foundContainer: import('./types').LauncherItem | null = null;
+                for (const sp of data.spaces) {
+                  const it = sp.items.find(i => i.id === overId);
+                  if (it) {
+                    if (it.isContainer) { foundSpaceId = sp.id; foundContainer = it; }
+                    break;
+                  }
+                }
+                if (!foundContainer || !foundSpaceId || foundContainer.id === activeId) {
+                  clearBloomCandidate();
+                  return;
+                }
+
+                // Same candidate as before — let the dwell timer keep
+                // running. New candidate — restart the timer.
+                if (bloomCandidateRef.current?.containerId !== foundContainer.id) {
+                  clearBloomCandidate();
+                  const cId = foundContainer.id;
+                  const sId = foundSpaceId;
+                  const accent = foundContainer.color;
+                  bloomCandidateRef.current = {
+                    containerId: cId,
+                    timer: setTimeout(() => {
+                      const el = document.querySelector(`[data-card-id="${cId}"]`);
+                      if (!el) return;
+                      setBloomState({
+                        containerSpaceId: sId,
+                        containerId: cId,
+                        containerRect: el.getBoundingClientRect(),
+                        accent,
+                        hotDir: null,
+                      });
+                      bloomCandidateRef.current = null;
+                    }, 250),
+                  };
+                }
+                return;
+              }
+              // (else falls through to the existing space-drag edge logic.)
 
               // Resolve target via dnd-kit's `over` first. `over.id` may be
               // either the SortableSpace id (space.id) or the file-drop
@@ -2311,7 +2447,7 @@ export default function App() {
                   ? prev : { overId, edge, blocked }
               );
             }}
-            onDragCancel={() => { setDraggingItemId(null); setDraggingSpaceId(null); setDragOverEdge(null); setBusy('drag', false); }}
+            onDragCancel={() => { setDraggingItemId(null); setDraggingSpaceId(null); setDragOverEdge(null); closeBloom(); setBusy('drag', false); }}
             onDragEnd={handleAllDragEnd}
           >
 
@@ -3077,6 +3213,29 @@ export default function App() {
       {/* Paywall — lives here so any component in the tree can open it via
           the handlers passed down through props. Rendered above TourOverlay
           so the upgrade CTA beats any running tour in z-order. */}
+      {/* Container drag-bloom — only mounted while a bloom is active.
+          Component is portal-based so it renders above the rest of the
+          app regardless of where it sits in this tree. */}
+      {bloomState && (() => {
+        const cont = data.spaces
+          .find(s => s.id === bloomState.containerSpaceId)
+          ?.items.find(i => i.id === bloomState.containerId);
+        const allItems = data.spaces.flatMap(s => s.items);
+        const filled = {
+          up:    cont?.slots?.up    ? allItems.find(i => i.id === cont.slots!.up)    : undefined,
+          down:  cont?.slots?.down  ? allItems.find(i => i.id === cont.slots!.down)  : undefined,
+          left:  cont?.slots?.left  ? allItems.find(i => i.id === cont.slots!.left)  : undefined,
+          right: cont?.slots?.right ? allItems.find(i => i.id === cont.slots!.right) : undefined,
+        };
+        return (
+          <ContainerBloom
+            containerRect={bloomState.containerRect}
+            filledSlots={filled}
+            hotDir={bloomState.hotDir}
+            accent={bloomState.accent}
+          />
+        );
+      })()}
       <PaywallModal
         open={paywall.open}
         reason={paywall.reason}

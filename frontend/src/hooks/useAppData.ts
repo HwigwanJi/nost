@@ -845,6 +845,82 @@ export function useAppData() {
     save({ ...data, spaces: nextSpaces });
   }, [data, save]);
 
+  /**
+   * Atomic "drag-into-slot" assignment used by the Bloom UX.
+   *
+   *  - Source item: marked `hiddenInSpace: true` so it disappears from
+   *    its source space's grid (it now lives "inside" the container).
+   *  - Container's slots[dir] = sourceItemId. Other directions kept,
+   *    *unless* the same source was already in another direction —
+   *    that slot is cleared (a single item never lives in two slots).
+   *  - Whatever was previously in `dir` (if anything, and if it's not
+   *    still in another slot of this container) is *restored*: we flip
+   *    its `hiddenInSpace` back to `false` so the user gets that item
+   *    back in their space grid instead of orphaning it. This is
+   *    intentionally different from the modal's "save slots" flow,
+   *    which keeps replaced items hidden — drag interactions are
+   *    incremental, so the principle of least surprise wins.
+   *
+   * Single `save()` call — atomic — because doing this as three chained
+   * store mutations races against stale closures (same lesson as
+   * saveContainerSlots).
+   */
+  const assignSlotFromItem = useCallback((opts: {
+    containerSpaceId: string;
+    containerId: string;
+    dir: 'up' | 'down' | 'left' | 'right';
+    sourceItemId: string;
+  }) => {
+    const { containerSpaceId, containerId, dir, sourceItemId } = opts;
+    let nextSpaces = data.spaces;
+
+    const container = nextSpaces.find(s => s.id === containerSpaceId)
+                                ?.items.find(i => i.id === containerId);
+    if (!container?.isContainer) return;
+    const oldSlots = container.slots ?? {};
+    const oldSlotItemId = oldSlots[dir];
+    if (oldSlotItemId === sourceItemId) return; // no-op
+
+    // Compose new slots: copy others, drop source from any other slot,
+    // then write source into `dir`.
+    const newSlots: ContainerSlots = {};
+    for (const k of ['up', 'down', 'left', 'right'] as const) {
+      const cur = oldSlots[k];
+      if (cur && cur !== sourceItemId && k !== dir) newSlots[k] = cur;
+    }
+    newSlots[dir] = sourceItemId;
+
+    // Items that need their hiddenInSpace flipped to false (restored
+    // to their original space). Only the previous occupant of `dir`
+    // qualifies, and only if it's not still referenced by some other
+    // slot in this container (which can happen if the source item
+    // came from another slot of the same container).
+    const toRestore = new Set<string>();
+    if (oldSlotItemId && oldSlotItemId !== sourceItemId &&
+        !Object.values(newSlots).includes(oldSlotItemId)) {
+      toRestore.add(oldSlotItemId);
+    }
+
+    // Apply hidden-flag changes everywhere they need to apply.
+    nextSpaces = nextSpaces.map(s => ({
+      ...s,
+      items: s.items.map(i =>
+        i.id === sourceItemId ? { ...i, hiddenInSpace: true }
+        : toRestore.has(i.id) ? { ...i, hiddenInSpace: false }
+        : i,
+      ),
+    }));
+
+    // Update the container's slots field.
+    nextSpaces = nextSpaces.map(s =>
+      s.id === containerSpaceId
+        ? { ...s, items: s.items.map(i => i.id === containerId ? { ...i, slots: newSlots } : i) }
+        : s,
+    );
+
+    save({ ...data, spaces: nextSpaces });
+  }, [data, save]);
+
   // ── Dismissed suggestions (F5: cooldown structure) ────────
   // Each dismiss records its timestamp and increments the count; useGhostCards
   // checks if the cooldown window has elapsed before re-showing the suggestion.
@@ -968,6 +1044,7 @@ export function useAppData() {
     updateDeck,
     deleteDeck,
     saveContainerSlots,
+    assignSlotFromItem,
     setFloatingBadgesLocal,
     dismissSuggestion,
     // ── Preset + tour (Phase 4) ────────────────────────────────

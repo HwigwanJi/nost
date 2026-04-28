@@ -15,6 +15,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { MediaWidget } from '../widgets/MediaWidget';
+import { ContainerSlotGhosts } from './ContainerSlotGhosts';
+import { isUserBusy } from '../lib/userBusy';
 
 interface ItemCardProps {
   item: LauncherItem;
@@ -119,6 +121,10 @@ export function ItemCard({
   const holdExecutedRef = useRef(false);
   const wasHoldRef = useRef(false);
   const isHoldActiveRef = useRef(false);
+  // Set true between right-button drag-start and the upcoming contextmenu
+  // event so the menu doesn't pop in the middle of a drag. See
+  // handlePointerDown below for lifecycle.
+  const suppressContextMenuRef = useRef(false);
   const monitorBadgeClickedRef = useRef(false);
   const globalMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
   const globalUpRef = useRef<((e: PointerEvent) => void) | null>(null);
@@ -453,7 +459,35 @@ export function ItemCard({
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button === 2) {
+      // Right-click intent disambiguation:
+      //   - If the user *moves* more than 8px before releasing, treat it
+      //     as a sortable drag and suppress the upcoming contextmenu so
+      //     Radix's menu doesn't pop on top of the dragged card.
+      //   - If they release without movement, let contextmenu fire and
+      //     Radix opens the menu as before.
+      // Why a flag-based approach instead of just preventDefault on
+      // contextmenu always: we want the menu in the no-movement case.
+      // The native contextmenu event fires AFTER button-up on Windows,
+      // so we have time to flip the flag during the press.
       e.stopPropagation();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragged = false;
+      const onMove = (ev: PointerEvent) => {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) dragged = true;
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        if (dragged) {
+          suppressContextMenuRef.current = true;
+          // Clear after the contextmenu event has had a chance to consume
+          // the flag (browser fires it within a frame of pointerup).
+          setTimeout(() => { suppressContextMenuRef.current = false; }, 120);
+        }
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
       if (listeners?.onPointerDown) (listeners.onPointerDown as unknown as (e: React.PointerEvent) => void)(e);
       return;
     }
@@ -516,6 +550,7 @@ export function ItemCard({
     <div
       ref={(el) => { setNodeRef(el); (cardRef as React.MutableRefObject<HTMLDivElement | null>).current = el; }}
       data-card
+      data-card-id={item.id}
       style={{
         ...style,
         background: isNodeAnchor ? 'var(--accent-dim)' : 'var(--surface)',
@@ -540,7 +575,21 @@ export function ItemCard({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
-      onContextMenu={e => e.preventDefault()}
+      onContextMenu={e => {
+        if (suppressContextMenuRef.current) {
+          // Drag was initiated — eat the contextmenu so Radix doesn't
+          // open the menu over the dragged card. Don't reset here; the
+          // setTimeout in handlePointerDown clears it on its own
+          // schedule (avoids missing a duplicate fire on weird DPIs).
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        // Suppress only the BROWSER default menu — Radix ContextMenu's
+        // own listener still fires off this event (we don't stopPropagation),
+        // so right-click without movement still opens our menu.
+        e.preventDefault();
+      }}
       className={`
         group relative flex flex-col items-center justify-center gap-1.5
         rounded-xl p-3 min-h-[82px] cursor-pointer select-none
@@ -565,6 +614,24 @@ export function ItemCard({
       {/* ── Container badge (top-right) ──────────────────────────── */}
       {item.isContainer && (
         <Icon name="grid_view" size={10} color="var(--accent)" style={{ position:'absolute', top:5, right:5, opacity:0.7 }} />
+      )}
+
+      {/* ── Empty-slot ghost rectangles ──────────────────────────────
+           Show on container hover (after the 350ms hint dwell, same as
+           regular cards' direction arrows) so users discover that the
+           container has 4 slot positions. Click on a ghost = open the
+           slot picker pre-targeted to that direction. Suppressed during
+           drag (the ContainerBloom overlay takes over for that case)
+           and during hold popup or non-normal app modes. */}
+      {item.isContainer && hintVisible && !holdOpen && !isInactive && !isDragging
+        && activeMode === 'normal' && !isUserBusy() && cardRef.current
+        && filledSlots.length < 4 && (
+        <ContainerSlotGhosts
+          anchor={cardRef.current}
+          emptyDirs={(['up','down','left','right'] as SlotDir[]).filter(d => !slotItems?.[d])}
+          accent={item.color}
+          onClickGhost={(dir) => onEditSlots?.(dir)}
+        />
       )}
 
       {/* ── Container slot dots (4 edges) ────────────────────────── */}
