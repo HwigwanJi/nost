@@ -958,12 +958,16 @@ async function tickDialogPoll() {
     return;
   }
 
-  // Skip dialogs without obvious file-save/open intent. The #32770 class is
-  // shared by Properties / Print / etc. dialogs we don't want to attach to.
-  // Heuristic: title contains 저장, Save, 열기, Open. (Trivially extensible.)
+  // The #32770 class is shared by file dialogs AND non-file dialogs
+  // (Properties / Print / Font / Color etc.) — blacklist the latter
+  // rather than whitelist file ones, because file-dialog titles vary
+  // wildly across apps and locales (Save As, Open, Browse for Folder,
+  // Choose File, Upload, 폴더 선택, 첨부할 파일, 업로드할 파일,
+  // 가져오기, 내보내기, 파일 선택, etc.). A whitelist kept missing
+  // common dialogs the user actually wanted the popup for.
   const t = (detected.title || '');
-  const looksLikeFileDialog = /저장|열기|Save|Open|찾아보기|Browse/i.test(t);
-  if (!looksLikeFileDialog) {
+  const looksLikeNonFileDialog = /속성|Properties|인쇄|Print|글꼴|Font|색|Color|페이지 설정|Page Setup|보안 경고|Security|확인|Confirm/i.test(t);
+  if (looksLikeNonFileDialog) {
     if (dialogPopupWin && !dialogPopupWin.isDestroyed()) destroyDialogPopupWindow();
     dialogTrackedHwnd = 0;
     return;
