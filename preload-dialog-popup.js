@@ -32,4 +32,9 @@ contextBridge.exposeInMainWorld('dialogPopup', {
 
   /** User pressed ✕ — hide popup until the next dialog appears. */
   dismiss: () => ipcRenderer.send('dialog-popup-dismiss'),
+
+  /** Tell main to grow the popup window upward (so the preset dropdown
+   *  has room to open without being clipped at the window edge) or
+   *  collapse it back to the default thin strip. */
+  setExpanded: (expanded) => ipcRenderer.send('dialog-popup-set-expanded', !!expanded),
 });

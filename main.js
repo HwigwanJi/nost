@@ -807,9 +807,13 @@ function refreshFloatingVisuals() {
 // its own visibility — it only handles "user clicked ✕" via dialog-popup-
 // dismiss IPC.
 
-const DIALOG_POPUP_HEIGHT = 50;     // window height (DIP)
-const DIALOG_POPUP_OFFSET = 6;      // gap between popup bottom and dialog top
-const DIALOG_POLL_MS      = 600;    // detection poll cadence
+const DIALOG_POPUP_HEIGHT          = 50;   // window height when collapsed (DIP)
+const DIALOG_POPUP_HEIGHT_EXPANDED = 180;  // when preset dropdown is open
+const DIALOG_POPUP_OFFSET          = 6;    // gap between popup bottom and dialog top
+const DIALOG_POLL_MS               = 600;  // detection poll cadence
+
+let dialogPopupExpanded = false;
+let dialogLastRect = null;
 
 function buildDialogPopupState() {
   // We send ALL presets so the popup can offer in-popup preset switching
@@ -859,15 +863,20 @@ function destroyDialogPopupWindow() {
 
 function positionDialogPopup(rect) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
-  // Sit centred above the dialog. We trust the dialog's reported width
-  // (typical Save-As dialogs are 700–900 px wide) and match it. If the
-  // popup width would push outside the work area we let setBounds clamp;
-  // the "snap to screen edge" Windows does in that case is acceptable.
+  dialogLastRect = rect;
+  // Sit centred above the dialog. Width clamped to a sensible band
+  // regardless of dialog width — too-narrow dialogs (e.g. small Open
+  // dialogs) would crush the chip row otherwise.
   const width  = Math.max(420, Math.min(rect.width, 900));
   const x      = Math.round(rect.x + (rect.width - width) / 2);
-  const y      = Math.round(rect.y - DIALOG_POPUP_HEIGHT - DIALOG_POPUP_OFFSET);
+  // When the preset dropdown is open we grow the window UP so the menu
+  // has room above the chip strip. The chip strip itself stays centred
+  // within the (taller) window — visually it'll shift up by half the
+  // growth, opening a vertical gap below it where the dropdown lives.
+  const height = dialogPopupExpanded ? DIALOG_POPUP_HEIGHT_EXPANDED : DIALOG_POPUP_HEIGHT;
+  const y      = Math.round(rect.y - height - DIALOG_POPUP_OFFSET);
   try {
-    dialogPopupWin.setBounds({ x, y, width, height: DIALOG_POPUP_HEIGHT });
+    dialogPopupWin.setBounds({ x, y, width, height });
   } catch (_) { /* dialog moved off-screen mid-set; ignore */ }
 }
 
@@ -2457,6 +2466,12 @@ function registerIpcHandlers() {
     // Mark THIS dialog as dismissed so the poll doesn't reattach.
     dialogDismissedHwnd = dialogTrackedHwnd;
     destroyDialogPopupWindow();
+  });
+  ipcMain.on('dialog-popup-set-expanded', (_, expanded) => {
+    dialogPopupExpanded = !!expanded;
+    // Re-apply position with the new height anchored to the last known
+    // dialog rect — keeps the popup glued to the dialog top edge.
+    if (dialogLastRect) positionDialogPopup(dialogLastRect);
   });
 
   // Start the dialog detection poll. Runs for the app lifetime — cheap

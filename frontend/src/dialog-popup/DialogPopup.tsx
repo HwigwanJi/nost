@@ -54,6 +54,10 @@ interface Api {
   requestState: () => void;
   jumpTo:       (folderPath: string) => void;
   dismiss:      () => void;
+  /** Tell main to grow / shrink the popup window vertically so the
+   *  preset dropdown menu has room above the chip strip without being
+   *  clipped at the window edge. */
+  setExpanded:  (expanded: boolean) => void;
 }
 const api = (window as unknown as { dialogPopup: Api }).dialogPopup;
 
@@ -227,42 +231,30 @@ export function DialogPopup() {
         }
       </div>
 
-      {/* Preset switcher 1·2·3 — always visible, no Tab key needed.
-          Showing all three even when the user has only used one is OK —
-          the segmented control is small enough to be ambient noise. */}
+      {/* Preset switcher — small dropdown showing the active preset's
+          label. Clicking opens a menu of all presets so the user can flip
+          to "another workspace's folders" without leaving the popup.
+          Replaces the earlier segmented 1·2·3 control: a label is more
+          informative than a digit when the user has named their presets,
+          and a dropdown takes less horizontal space when more than two
+          presets are configured. */}
       {state.presets.length > 1 && (
         <>
           <div style={{ width: 1, alignSelf: 'stretch', background: border, margin: '0 2px' }} />
-          <div style={{ display: 'flex', gap: 1, padding: 1, background: border, borderRadius: 6, flexShrink: 0 }}>
-            {state.presets.map(p => {
-              const isActive = p.id === viewPresetId;
-              return (
-                <button
-                  key={p.id}
-                  onClick={() => {
-                    setViewPresetId(p.id);
-                    setDrillSpaceId(null);  // reset to L1 when switching preset
-                  }}
-                  title={p.label}
-                  style={{
-                    width: 22, height: 22,
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    background: isActive ? bg : 'transparent',
-                    border: 'none',
-                    borderRadius: 5,
-                    color: isActive ? text : muted,
-                    fontSize: 10,
-                    fontWeight: 700,
-                    fontFamily: 'inherit',
-                    cursor: 'pointer',
-                    transition: 'background 120ms ease',
-                  }}
-                >
-                  {p.id}
-                </button>
-              );
-            })}
-          </div>
+          <PresetDropdown
+            presets={state.presets}
+            activeId={state.activePresetId}
+            viewId={viewPresetId}
+            light={light}
+            text={text}
+            muted={muted}
+            border={border}
+            bg={bg}
+            onPick={(id) => {
+              setViewPresetId(id);
+              setDrillSpaceId(null);
+            }}
+          />
         </>
       )}
 
@@ -331,6 +323,137 @@ function Chip({ label, icon, onClick, tint, muted, text, border }: {
       <span className="ms-rounded" style={{ fontSize: 13, color: tint || C.accent, opacity: 0.9 }}>{icon}</span>
       <span>{label}</span>
     </button>
+  );
+}
+
+/**
+ * Self-contained preset dropdown.
+ *
+ * Layout dance: the popup window is normally a 50-px-tall strip directly
+ * above the file dialog. When the menu opens, it would normally clip at
+ * the popup window's edge. To avoid that we ask main to GROW the window
+ * upward (180 px tall) while the menu is open. The chip strip is
+ * anchored to the bottom of the window (CSS `align-items: flex-end` on
+ * #popup-root), so it stays at the same screen Y throughout — the new
+ * empty space appears ABOVE it, which is exactly where this menu opens
+ * (positioned via `bottom: 100%` on the trigger).
+ */
+function PresetDropdown({ presets, activeId, viewId, light, text, muted, border, bg, onPick }: {
+  presets: PresetSummary[];
+  activeId?: '1' | '2' | '3';
+  viewId: '1' | '2' | '3' | null;
+  light: boolean;
+  text: string;
+  muted: string;
+  border: string;
+  bg: string;
+  onPick: (id: '1' | '2' | '3') => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = presets.find(p => p.id === viewId) ?? presets[0];
+
+  // Tell main to grow / shrink the window so the menu has room.
+  useEffect(() => {
+    api.setExpanded(open);
+  }, [open]);
+
+  // Outside-click + ESC dismissal.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest('[data-preset-dropdown]')) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown',  onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown',  onKey);
+    };
+  }, [open]);
+
+  return (
+    <div data-preset-dropdown style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="프리셋 전환"
+        style={{
+          ...chipStyle(border, text, muted, false),
+          minWidth: 64,
+          background: open ? (light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)') : 'transparent',
+        }}
+      >
+        <span style={{ fontSize: 10, fontWeight: 600, color: muted }}>P{current?.id ?? '?'}</span>
+        <span style={{ fontSize: 11 }}>{truncateMiddle(current?.label ?? '프리셋', 10)}</span>
+        <span className="ms-rounded" style={{ fontSize: 13, color: muted, marginLeft: 'auto' }}>
+          {open ? 'expand_less' : 'expand_more'}
+        </span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            // Open UP from the trigger: the popup window grew upward to
+            // make room, so the menu lives in the new empty area above
+            // the chip strip. `bottom: 100%` anchors it to just above
+            // the trigger button.
+            bottom: 'calc(100% + 6px)',
+            right: 0,
+            minWidth: 160,
+            padding: 4,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            background: bg,
+            border: `1px solid ${border}`,
+            borderRadius: 8,
+            boxShadow: '0 -6px 20px rgba(0, 0, 0, 0.32)',
+            backdropFilter: 'blur(20px) saturate(160%)',
+            zIndex: 10,
+          }}
+        >
+          {presets.map(p => {
+            const isPicked = p.id === viewId;
+            const isGlobalActive = p.id === activeId;
+            return (
+              <button
+                key={p.id}
+                onClick={() => { onPick(p.id); setOpen(false); }}
+                onMouseEnter={e => { e.currentTarget.style.background = light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.07)'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = isPicked ? (light ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)') : 'transparent'; }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '7px 10px',
+                  background: isPicked ? (light ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)') : 'transparent',
+                  border: 'none',
+                  borderRadius: 5,
+                  color: text,
+                  fontSize: 11,
+                  fontFamily: 'inherit',
+                  fontWeight: isPicked ? 700 : 500,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  transition: 'background 120ms ease',
+                }}
+              >
+                <span style={{ fontSize: 9, fontWeight: 700, color: muted, fontFamily: 'monospace' }}>P{p.id}</span>
+                <span style={{ flex: 1 }}>{p.label}</span>
+                {isGlobalActive && (
+                  <span title="현재 활성 프리셋" style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />
+                )}
+                {isPicked && (
+                  <span className="ms-rounded" style={{ fontSize: 13 }}>check</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
