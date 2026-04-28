@@ -941,11 +941,24 @@ function createBadgeOverlay() {
     x: bounds.x, y: bounds.y,
     width: bounds.width, height: bounds.height,
     frame: false, transparent: true, resizable: false,
+    // Some Windows configurations briefly composite a solid window
+    // background before the transparent layer engages, especially on
+    // first creation. Setting backgroundColor to a fully-transparent
+    // value (00 alpha) forces the compositor to skip that solid pass,
+    // avoiding the "huge translucent rectangle flashes for a frame"
+    // perception users hit as "BIG initially, then snaps to small".
+    backgroundColor: '#00000000',
     alwaysOnTop: true, skipTaskbar: true,
     hasShadow: false,
     focusable: false,   // never steal focus — badges are gestural only
     minimizable: false, maximizable: false, fullscreenable: false,
     show: false,
+    // Force layout / paint even while hidden so the renderer's
+    // useEffect runs and we can request state BEFORE we make the
+    // window visible. Otherwise some Electron builds defer all
+    // renderer work until the window is shown — and we end up
+    // showing it for one frame of "loading" before content appears.
+    paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload-badges.js'),
       contextIsolation: true,
@@ -969,10 +982,31 @@ function createBadgeOverlay() {
     badgeOverlay.loadFile(path.join(__dirname, 'frontend', 'dist', 'badges.html'));
   }
 
+  // Show timing — `ready-to-show` fires once content is painted at
+  // least off-screen. We push state BUT defer the `showInactive()`
+  // until the renderer requests state (which happens inside its
+  // mount effect). That way the visible frame already contains the
+  // hydrated badge layout — no flash of empty overlay or default
+  // placement.
+  let firstShown = false;
+  const revealOnce = () => {
+    if (firstShown) return;
+    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+    firstShown = true;
+    badgeOverlay.showInactive();
+  };
   badgeOverlay.once('ready-to-show', () => {
-    badgeOverlay.showInactive();  // show without stealing focus
     pushBadgeState();
+    // Fallback: if the renderer's request never arrives within
+    // 800 ms (older Electron builds, slow disk on cold start),
+    // reveal anyway so the user isn't left wondering.
+    setTimeout(revealOnce, 800);
   });
+  // The renderer's mount effect calls badges.requestState(); main's
+  // `badges-request-state` handler calls pushBadgeState() AND we
+  // also reveal here. By the time the user sees the window, the
+  // first state has already been applied to the React tree.
+  ipcMain.once('badges-request-state', revealOnce);
 
   badgeOverlay.on('closed', () => { badgeOverlay = null; });
 
@@ -1736,6 +1770,40 @@ function registerIpcHandlers() {
       if (!hasExt || /[/\\]$/.test(text)) return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
     }
 
+    // Hex colour code — match `#abc`, `#abcdef`, `#AABBCC`, also bare
+    // `abcdef` if surrounded by nothing else (people often copy from
+    // dev tools without the `#`). Normalise to canonical `#RRGGBB`
+    // uppercase so the renderer doesn't have to repeat the work.
+    {
+      const hexMatch = /^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.exec(text);
+      if (hexMatch) {
+        const raw = hexMatch[1];
+        const full = raw.length === 3
+          ? raw.split('').map(c => c + c).join('')
+          : raw;
+        const norm = '#' + full.toUpperCase();
+        return { type: 'hex', value: norm, label: norm };
+      }
+    }
+
+    // Plain text fallback — anything that doesn't match the typed
+    // formats above. We cap the suggested length at 200 chars (the
+    // launcher card title is 1-2 lines tops; longer copy is almost
+    // certainly a paragraph the user didn't intend to launcher-ify)
+    // and also reject very-short single-token clips that are likely
+    // accidental selections (less than 2 chars). No newlines either —
+    // multi-line copies are usually code/email bodies.
+    {
+      if (text.length >= 2 && text.length <= 200 && !text.includes('\n')) {
+        // Suggest as text-copy card. The label shows a preview; the
+        // card type 'text' makes click-to-launch copy the full value
+        // back to the clipboard, which is the existing nost text
+        // card behaviour.
+        const label = text.length > 32 ? text.slice(0, 32) + '…' : text;
+        return { type: 'text', value: text, label };
+      }
+    }
+
     return { type: 'none' };
   });
 
@@ -2351,6 +2419,19 @@ function registerIpcHandlers() {
     ));
   });
 
+  /**
+   * Overlay's React tree finished mounting — re-push state so it
+   * gets seen even if our `ready-to-show` push fired before the
+   * React `useEffect` registered its listener. (Bug we hit: first
+   * promote-to-badge didn't render because of that race; second
+   * promote re-pushed and both became visible at once.)
+   *
+   * Cheap to handle multiple times if the renderer over-asks.
+   */
+  ipcMain.on('badges-request-state', () => {
+    pushBadgeState();
+  });
+
   /** Overlay flips its click-through mode as the pointer enters/leaves badges. */
   ipcMain.on('badges-set-capture', (_e, capture) => {
     if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
@@ -2429,31 +2510,45 @@ function registerIpcHandlers() {
     };
   });
 
-  // ── 12k. Media widget — SMTC bridge ─────────────────────────────────
+  // ── 12k. Media widget — write side ──────────────────────────────────
   //
-  // The renderer's media-widget cards subscribe to play/pause/track
-  // changes happening anywhere on the system (YouTube tab, Spotify,
-  // foobar, …) and command the OS via virtual media keys. All of the
-  // platform-specific risk lives in media-controller.js which gracefully
-  // degrades on non-Windows / pre-1809 / missing user32.
-  //
-  // Push protocol: every state transition fires `media-state` to the
-  // main window. The renderer can also pull on-demand via the handle
-  // — useful for first paint before any event has arrived.
+  // The widget is a control surface: media keys go out (play/pause,
+  // next, prev, vol +/-, mute) and that's it. The read side
+  // (NowPlaying via SMTC) was dropped after a freeze regression —
+  // see media-controller.js for the longer note. We keep the module
+  // loaded so init() binds koffi to user32.dll once, then commands
+  // route through `media.command(action)` synchronously.
   const media = require('./media-controller');
   media.init();
-  media.onState((state) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      try { mainWindow.webContents.send('media-state', state); } catch (_) {}
-    }
-  });
-
-  ipcMain.handle('media-get-state', () => media.getState());
 
   ipcMain.on('media-command', (_e, action) => {
-    // action: 'play-pause' | 'next' | 'prev' | 'stop'
     if (typeof action !== 'string') return;
     media.command(action);
+  });
+
+  /**
+   * "Click the media widget" → focus whatever browser tab is
+   * currently making sound. We use the nost-bridge extension's
+   * tab list (already pushed to global.chromeTabs on every tab
+   * event in the browser). Tabs marked `audible: true` and not
+   * `muted: true` are candidates; first match wins.
+   *
+   * Returns the focused tab descriptor when we were able to dispatch
+   * a focus action, or null otherwise (no audible tab found, or
+   * the extension isn't connected so SSE has nowhere to land).
+   *
+   * Limitation: only covers Chromium-based browsers with the
+   * extension installed. Native media apps (Spotify desktop, etc.)
+   * aren't visible to us — that path needs SMTC / WASAPI which we
+   * deliberately punted on after the freeze regression.
+   */
+  ipcMain.handle('media-focus-source', () => {
+    const tabs = global.chromeTabs || [];
+    const audible = tabs.find(t => t.audible && !t.muted);
+    if (!audible) return null;
+    if (!sseConnection) return null; // extension not connected
+    sendSse({ action: 'focus', tabId: audible.id, windowId: audible.windowId });
+    return { tabId: audible.id, title: audible.title, url: audible.url };
   });
 }
 

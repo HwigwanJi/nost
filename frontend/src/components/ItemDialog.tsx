@@ -289,7 +289,13 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
 
   /* ── Save ─────────────────────────────────────────────────── */
   function handleSave() {
-    if (!form.title.trim() || !form.value.trim()) return;
+    // Widgets carry no `value` (they don't launch a target), so the
+    // standard "title + value required" check would block save. We
+    // gate on title only for widgets; colour-swatches additionally
+    // need a valid hex.
+    if (!form.title.trim()) return;
+    if (!isWidgetMode && !form.value.trim()) return;
+
     const base = {
       title: form.title,
       type: form.type,
@@ -300,8 +306,30 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
       monitor: form.monitor,
       ...(editItem?.exePath ? { exePath: editItem.exePath } : {}),
     };
-    if (isEdit) onSave(form.spaceId, { ...editItem, ...base } as LauncherItem);
-    else onSave(form.spaceId, base as Omit<LauncherItem, 'id'>);
+
+    // Preserve / update the widget sub-document. For colour-swatch we
+    // pull the local hex/name state into options; for any other
+    // widget kind we just spread editItem.widget through unchanged.
+    let widget: LauncherItem['widget'] | undefined;
+    if (isWidgetMode && editItem?.widget) {
+      if (editItem.widget.kind === 'color-swatch') {
+        widget = {
+          kind: 'color-swatch',
+          options: {
+            hex: swatchHex.toUpperCase(),
+            ...(swatchName.trim() ? { name: swatchName.trim() } : {}),
+          },
+        };
+      } else {
+        widget = editItem.widget;
+      }
+    }
+
+    if (isEdit) {
+      onSave(form.spaceId, { ...editItem, ...base, ...(widget ? { widget } : {}) } as LauncherItem);
+    } else {
+      onSave(form.spaceId, { ...base, ...(widget ? { widget } : {}) } as Omit<LauncherItem, 'id'>);
+    }
     onClose();
   }
 
@@ -315,6 +343,24 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
 
   const selectedSpace = spaces.find(s => s.id === form.spaceId);
   const selectedType = TYPE_OPTIONS.find(o => o.value === form.type);
+  // Widget cards have an entirely different shape — no value/URL/path,
+  // no type to choose, no icon picker (the widget renders its own
+  // inner UI). We hide those sections in widget mode and keep only
+  // title + space (and color via the existing color section, if any).
+  const isWidgetMode = form.type === 'widget';
+  // Specific widget-kind fields. Only populated when editing a
+  // colour-swatch widget — `editItem.widget.options` is read once at
+  // mount and the user's edits live in local state until save.
+  const isColorSwatch = isWidgetMode && editItem?.widget?.kind === 'color-swatch';
+  const initialColorOpts = (editItem?.widget?.kind === 'color-swatch')
+    ? editItem.widget.options
+    : null;
+  const [swatchHex, setSwatchHex] = useState(
+    (initialColorOpts?.hex || '#6366F1').toUpperCase()
+  );
+  const [swatchName, setSwatchName] = useState(
+    initialColorOpts?.name ?? ''
+  );
   // When context narrows the choices to one, the dropdown is meaningless — we
   // still render it (disabled) so users know the type, but they can't change it.
   const typeOptions = useMemo(
@@ -382,36 +428,44 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
             />
           </div>
 
-          {/* ② Type + Space */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>유형</Label>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  disabled={typeLocked}
-                  style={{ ...dropBtnStyle, opacity: typeLocked ? 0.75 : 1, cursor: typeLocked ? 'default' : 'pointer' }}
-                  title={typeLocked ? '감지된 유형으로 자동 설정됨' : undefined}
-                >
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {selectedType && <Icon name={selectedType.icon} size={14} color="var(--text-muted)" />}
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {selectedType?.label ?? '선택'}
+          {/* ② Type + Space — widget mode hides the Type dropdown
+                 (its kind is fixed at creation; can't be changed to
+                 a URL etc.) and gives Space the full row. */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: isWidgetMode ? '1fr' : '1fr 1fr',
+            gap: 8,
+          }}>
+            {!isWidgetMode && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>유형</Label>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    disabled={typeLocked}
+                    style={{ ...dropBtnStyle, opacity: typeLocked ? 0.75 : 1, cursor: typeLocked ? 'default' : 'pointer' }}
+                    title={typeLocked ? '감지된 유형으로 자동 설정됨' : undefined}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {selectedType && <Icon name={selectedType.icon} size={14} color="var(--text-muted)" />}
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {selectedType?.label ?? '선택'}
+                      </span>
                     </span>
-                  </span>
-                  {!typeLocked && <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent style={{ minWidth: 160 }}>
-                  {typeOptions.map(o => (
-                    <DropdownMenuItem key={o.value} onClick={() => f({ type: o.value })}
-                      style={{ fontWeight: o.value === form.type ? 700 : 400 }}>
-                      <Icon name={o.icon} size={14} color="var(--text-muted)" />
-                      <span>{o.label}</span>
-                      {o.value === form.type && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                    {!typeLocked && <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />}
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent style={{ minWidth: 160 }}>
+                    {typeOptions.map(o => (
+                      <DropdownMenuItem key={o.value} onClick={() => f({ type: o.value })}
+                        style={{ fontWeight: o.value === form.type ? 700 : 400 }}>
+                        <Icon name={o.icon} size={14} color="var(--text-muted)" />
+                        <span>{o.label}</span>
+                        {o.value === form.type && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>스페이스</Label>
@@ -435,7 +489,75 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
             </div>
           </div>
 
-          {/* ③ Value / Path */}
+          {/* ②-bis Colour swatch editor — only for color-swatch widgets.
+                A native color picker handles the hex (HTML5 input
+                type=color, integrated with the OS picker), and a
+                separate name input lets the user label the swatch
+                (e.g. "Brand primary"). The Pantone-style widget
+                renders the name above the hex when a name is set. */}
+          {isColorSwatch && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '6px 0 2px' }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                {/* Color picker swatch — clicking opens the OS native
+                    color picker. We render a styled wrapper so it
+                    matches the rest of the dialog instead of looking
+                    like a default browser control. */}
+                <label style={{
+                  position: 'relative',
+                  width: 56, height: 56,
+                  borderRadius: 10,
+                  background: swatchHex,
+                  border: '1px solid var(--border-rgba)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                  boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
+                  overflow: 'hidden',
+                }}>
+                  <input
+                    type="color"
+                    value={swatchHex}
+                    onChange={e => setSwatchHex(e.target.value.toUpperCase())}
+                    style={{
+                      position: 'absolute', inset: 0,
+                      width: '100%', height: '100%',
+                      opacity: 0, cursor: 'pointer', border: 'none',
+                    }}
+                  />
+                </label>
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>HEX</Label>
+                  <Input
+                    value={swatchHex}
+                    onChange={e => {
+                      const v = e.target.value.toUpperCase();
+                      // Only accept hex-shaped input. Tolerant on
+                      // length so the user can type one char at a
+                      // time without the value snapping back.
+                      if (/^#?[0-9A-F]{0,6}$/.test(v)) {
+                        setSwatchHex(v.startsWith('#') ? v : '#' + v);
+                      }
+                    }}
+                    placeholder="#RRGGBB"
+                    className="font-mono text-xs"
+                    style={{ height: 30, fontSize: 12 }}
+                  />
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>이름 (선택)</Label>
+                <Input
+                  value={swatchName}
+                  onChange={e => setSwatchName(e.target.value)}
+                  placeholder="예: 브랜드 프라이머리"
+                  style={{ height: 30, fontSize: 12 }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ③ Value / Path — hidden for widgets (no URL/path on a
+                widget; the renderer wires its own behaviour). */}
+          {!isWidgetMode && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>{valueLabel}</Label>
             <div style={{ display: 'flex', gap: 6 }}>
@@ -473,8 +595,11 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
               </div>
             )}
           </div>
+          )}
 
-          {/* ④ Monitor */}
+          {/* ④ Monitor — also hidden for widgets (they have no
+              launchable target so monitor preference is meaningless). */}
+          {!isWidgetMode && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>모니터</span>
             <div style={{ display: 'flex', gap: 4 }}>
@@ -490,6 +615,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
               ))}
             </div>
           </div>
+          )}
 
           {/* ⑤ Advanced toggle */}
           <button
@@ -636,7 +762,15 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
 
         <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)', marginTop: 4 }}>
           <Button variant="ghost" onClick={onClose}>취소</Button>
-          <Button onClick={handleSave} disabled={!form.title.trim() || !form.value.trim()}>
+          {/* Widgets carry no `value` — gating on it would leave the
+              save button permanently disabled for widget edits.
+              For widgets we only require a non-empty title; the
+              value validation is bypassed. handleSave's own check
+              mirrors this. */}
+          <Button
+            onClick={handleSave}
+            disabled={!form.title.trim() || (!isWidgetMode && !form.value.trim())}
+          >
             {isEdit ? '저장' : '추가'}
           </Button>
         </DialogFooter>

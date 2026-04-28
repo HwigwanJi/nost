@@ -66,7 +66,7 @@ export interface ElectronAPI {
   onMonitorsChanged: (cb: (monitors: Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>) => void) => void;
   getRecentItems: () => Promise<Array<{ title: string; value: string; type: 'folder' | 'app'; lastAccessed: string }>>;
   readClipboard: () => Promise<string>;
-  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'none'; value?: string; label?: string }>;
+  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'hex' | 'text' | 'none'; value?: string; label?: string }>;
   checkWindowsAlive: (titles: string[]) => Promise<Record<string, boolean>>;
   checkFileExists: (filePath: string) => Promise<boolean>;
   checkItemsForTile: (items: { type: string; value: string; title: string }[]) => Promise<Array<{ idx: number; alive: boolean; note: string }>>;
@@ -99,35 +99,19 @@ export interface ElectronAPI {
   // badge click to launch N times after N effect re-runs.
   onBadgesLaunchItem: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string; itemId: string }) => void) => () => void;
   onBadgesLaunchRef:  (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => () => void;
-  onBadgesRevealSpace: (cb: (payload: { refId: string }) => void) => void;
-  onBadgesUpdated: (cb: (badges: import('./types').FloatingBadge[]) => void) => void;
-  // ── Media widget ─────────────────────────────────────────────────
-  getMediaState: () => Promise<MediaState>;
-  /** Returns an unsubscribe function — see onBadgesLaunchItem note. */
-  onMediaState: (cb: (state: MediaState) => void) => () => void;
-  mediaCommand: (action: 'play-pause' | 'next' | 'prev' | 'stop') => void;
-}
-
-/**
- * Snapshot pushed by the main process every time SMTC reports a change.
- * `supported: false` means the host can't read SMTC at all (non-Windows
- * or pre-Win10 1809) — widgets render a friendly fallback instead of
- * trying to fake a state. `session: null` means SMTC is supported but
- * nothing is currently publishing media — also a valid idle state.
- */
-export interface MediaState {
-  supported: boolean;
-  session?: {
-    sourceAppId: string;
-    title: string;
-    artist: string;
-    album: string;
-    isPlaying: boolean;
-    position: number;     // ms
-    duration: number;     // ms
-    lastUpdated: number;  // epoch ms — for renderer-side position extrapolation
-    thumb: string | null; // data URL or null when art unavailable
-  } | null;
+  // Both return unsubscribe fns — call from useEffect cleanup. The
+  // pre-fix void return triggered a listener pile-up bug under unstable
+  // deps, surfaced by Node's MaxListenersExceededWarning at ~10. See
+  // App.tsx's badges effect for the canonical consumption pattern.
+  onBadgesRevealSpace: (cb: (payload: { refId: string }) => void) => () => void;
+  onBadgesUpdated: (cb: (badges: import('./types').FloatingBadge[]) => void) => () => void;
+  // ── Media widget — write side only ──────────────────────────────
+  // We dropped the read side (NowPlaying via SMTC) after the YouTube
+  // freeze. The widget is a control surface — keys go out, no state
+  // comes back. mediaFocusSource taps the extension's tab list to
+  // bring the audible browser tab to front when the wrapper is clicked.
+  mediaCommand: (action: 'play-pause' | 'next' | 'prev' | 'stop' | 'vol-up' | 'vol-down' | 'mute') => void;
+  mediaFocusSource: () => Promise<{ tabId: number; title: string; url: string } | null>;
 }
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
@@ -197,11 +181,10 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   // Dev-mode stubs — return a no-op unsubscribe to satisfy the new signature.
   onBadgesLaunchItem: () => () => {},
   onBadgesLaunchRef:  () => () => {},
-  onBadgesRevealSpace: noop,
-  onBadgesUpdated: noop,
-  // Dev-mode media stubs: report unsupported so widgets render their
-  // fallback instead of waiting forever for a session.
-  getMediaState: async () => ({ supported: false, session: null }),
-  onMediaState: () => () => {},
+  // Dev-mode stubs — return no-op unsubscribes (signature parity).
+  onBadgesRevealSpace: () => () => {},
+  onBadgesUpdated: () => () => {},
+  // Dev-mode media stubs.
   mediaCommand: noop,
+  mediaFocusSource: async () => null,
 };

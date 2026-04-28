@@ -335,6 +335,77 @@ export function useAppData() {
     });
   }, []);
 
+  /**
+   * Move a single space (with all its items) from the active preset
+   * to another preset. The receiver gets the space appended to the
+   * end of its `spaces[]`; the sender loses it.
+   *
+   * Caveats consciously NOT handled here (yet):
+   *   - Floating badges referencing the moved space stay in the
+   *     SOURCE preset's badges array. They become dangling — the
+   *     overlay will quietly skip them on next render. Cleaning these
+   *     up would require deciding which preset "owns" each badge,
+   *     which is a UX call the user hasn't asked for. For now: live
+   *     dangling references; user can recreate the badge if they
+   *     want it on the target preset.
+   *   - Node groups / decks similarly may reference items inside the
+   *     moved space. Same trade-off — they're scoped per-preset, so
+   *     references in the source preset go stale.
+   *
+   * Why we mirror the active preset back into top-level `spaces`:
+   * the rest of the codebase reads `data.spaces` (not
+   * `data.presets[active].spaces`) — see migrateData. So when the
+   * source preset IS the active one, we have to update both views.
+   * When moving FROM active, the active preset loses the space; we
+   * mirror that. When moving TO the active preset, we'd never call
+   * this (target === active is filtered out at the call site), but
+   * the mirror logic stays defensive.
+   */
+  const moveSpaceToPreset = useCallback((spaceId: string, targetPresetId: PresetId) => {
+    setRawData(prev => {
+      // Find the source preset that owns this space.
+      const sourcePreset = prev.presets.find(p => p.spaces.some(s => s.id === spaceId));
+      if (!sourcePreset) return prev;
+      if (sourcePreset.id === targetPresetId) return prev;
+      const space = sourcePreset.spaces.find(s => s.id === spaceId);
+      if (!space) return prev;
+
+      // Atomic preset-array rebuild: source loses the space, target
+      // appends it. We don't rely on chained .map mutations because a
+      // future change might land both in the same render batch.
+      const newPresets = prev.presets.map(p => {
+        if (p.id === sourcePreset.id) {
+          return { ...p, spaces: p.spaces.filter(s => s.id !== spaceId) };
+        }
+        if (p.id === targetPresetId) {
+          // Don't reinsert if the target somehow already has it — the
+          // `targetPresetId !== sourcePreset.id` guard above means
+          // we'd only see it as a duplicate from a pathological state.
+          if (p.spaces.some(s => s.id === spaceId)) return p;
+          return { ...p, spaces: [...p.spaces, space] };
+        }
+        return p;
+      });
+
+      // Top-level `spaces` mirror — only changes when the active
+      // preset is involved. If the active preset is the source, drop
+      // the space from the mirror. If it's the target, append.
+      let nextSpaces = prev.spaces;
+      if (prev.activePresetId === sourcePreset.id) {
+        nextSpaces = nextSpaces.filter(s => s.id !== spaceId);
+      } else if (prev.activePresetId === targetPresetId) {
+        if (!nextSpaces.some(s => s.id === spaceId)) {
+          nextSpaces = [...nextSpaces, space];
+        }
+      }
+
+      const next = { ...prev, presets: newPresets, spaces: nextSpaces };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next).then(() => electronAPI.syncBadges());
+      return next;
+    });
+  }, []);
+
   const markTourCompleted = useCallback((tourId: string) => {
     setRawData(prev => {
       if ((prev.completedTours ?? []).includes(tourId)) return prev;
@@ -517,6 +588,11 @@ export function useAppData() {
         s.id === spaceId ? { ...s, items: [...s.items, newItem] } : s
       ),
     });
+    // Returning the new item lets callers chain follow-ups —
+    // e.g. "add a colour swatch and immediately open the edit
+    // dialog so the user can label it" (handleClipboardAdd, the
+    // hex fast-path in openQuickAdd, etc.).
+    return newItem;
   }, [data, save]);
 
   const updateItem = useCallback((spaceId: string, item: LauncherItem) => {
@@ -1052,6 +1128,7 @@ export function useAppData() {
     activePresetId: raw.activePresetId,
     setActivePreset,
     renamePreset,
+    moveSpaceToPreset,
     completedTours: raw.completedTours ?? [],
     markTourCompleted,
     // ── Licensing (Phase 5) ────────────────────────────────────

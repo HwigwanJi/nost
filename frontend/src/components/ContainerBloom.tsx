@@ -119,6 +119,12 @@ export function ContainerBloom({ containerRect, filledSlots, hotDir, accent }: P
     return Math.min(1, local / dur);
   };
 
+  // Aggregate progress for the dim backdrop — fades in lockstep with
+  // the first slot zone (no stagger; the dim should beat the zones'
+  // arrival so the user reads "scene change" first, then sees zones
+  // emerging from the now-darkened canvas).
+  const dimProgress = Math.min(1, Math.max(0, elapsed / 180));
+
   return createPortal(
     <div
       // Above all app content but below any system modal we might add later.
@@ -131,6 +137,27 @@ export function ContainerBloom({ containerRect, filledSlots, hotDir, accent }: P
         zIndex: 9100,
       }}
     >
+      {/* Dim backdrop with a cut-out around the container card.
+          We use the same box-shadow spotlight trick as TourOverlay:
+          a single positioned div sized to the container rect (+ small
+          padding), with a huge outward shadow that paints darkness
+          everywhere OUTSIDE that rect. The rect itself stays bright
+          so the container + connection lines + slot zones read
+          clearly. No mix-blend-mode needed. */}
+      <div style={{
+        position: 'fixed',
+        left: containerRect.left - 4,
+        top: containerRect.top - 4,
+        width: containerRect.width + 8,
+        height: containerRect.height + 8,
+        borderRadius: 14,
+        // 99999px shadow guarantees the dim reaches every viewport
+        // edge regardless of monitor size. Alpha animates with
+        // dimProgress so the dim fades in gracefully.
+        boxShadow: `0 0 0 99999px rgba(0, 0, 0, ${0.42 * dimProgress})`,
+        transition: 'box-shadow 80ms linear',
+      }} />
+
       {/* Connection lines (SVG layer, also pointer-events none) */}
       <svg
         style={{

@@ -13,8 +13,28 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('badges', {
   // ── Data push from main ───────────────────────────────────────────
-  /** Called once at startup + any time badges/spaces/nodes/decks change. */
-  onState: (cb) => ipcRenderer.on('badges-state', (_, state) => cb(state)),
+  /**
+   * Subscribe to overlay-state pushes. Returns an unsubscribe fn so
+   * useEffect cleanup can detach. Without this, React StrictMode's
+   * mount → unmount → re-mount cycle accumulated a fresh listener
+   * on every cycle (no removeListener) and every push fan-outed to
+   * all of them — extra setState churn and a small window where the
+   * partial state was visible.
+   */
+  onState: (cb) => {
+    const handler = (_, state) => cb(state);
+    ipcRenderer.on('badges-state', handler);
+    return () => ipcRenderer.removeListener('badges-state', handler);
+  },
+  /**
+   * Renderer announces "I'm mounted and listening — push me the
+   * current state." Exists because main's one-shot push on
+   * `ready-to-show` raced React's useEffect (the listener wasn't
+   * registered yet when the push fired). Calling this from the
+   * overlay's mount effect guarantees we always get the initial
+   * state regardless of mount-order timing.
+   */
+  requestState: () => ipcRenderer.send('badges-request-state'),
 
   // ── Mouse-event pass-through toggling ─────────────────────────────
   /**

@@ -686,15 +686,31 @@ export default function App() {
   // Listeners that need launchAndPosition / handleNodeGroupLaunch are
   // registered further down (see the second badge useEffect) once those
   // identifiers have been declared.
+  // Register the badges-updated / badges-reveal-space listeners EXACTLY
+  // ONCE for the lifetime of App. Earlier this effect had `[store]`
+  // deps and no cleanup — `store` is a fresh object every render, so
+  // each render added another ipcRenderer listener. After ~10 it
+  // tripped Node's MaxListenersExceededWarning and main-process IPC
+  // started fanning out to every accumulated handler simultaneously,
+  // saturating the renderer event loop and causing the freeze users
+  // hit when YouTube was playing (timeline events at 5–10 Hz × N
+  // accumulated listeners = renderer "Not Responding").
+  //
+  // Same fix shape as the badge-launch listeners (v1.3.2): `[]` deps,
+  // ref-based access to `store` so we always read the latest, and
+  // unsubscribe via the new return value of preload's onBadges*.
+  const storeRef = useRef(store);
+  storeRef.current = store;
   useEffect(() => {
-    electronAPI.onBadgesUpdated((badges) => {
-      store.setFloatingBadgesLocal(badges ?? []);
+    const offUpdated = electronAPI.onBadgesUpdated((badges) => {
+      storeRef.current.setFloatingBadgesLocal(badges ?? []);
     });
-    electronAPI.onBadgesRevealSpace(({ refId }) => {
+    const offReveal = electronAPI.onBadgesRevealSpace(({ refId }) => {
       const el = document.querySelector(`[data-space-id="${refId}"]`) as HTMLElement | null;
       el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
-  }, [store]);
+    return () => { offUpdated(); offReveal(); };
+  }, []);
 
   const floatingBadges = data.floatingBadges ?? [];
   const spacesFloating = useMemo(() => {
@@ -718,12 +734,26 @@ export default function App() {
     refId: string,
   ) => {
     if (!quotaChecks.floatingBadge()) return;
-    const r = await electronAPI.pinBadge(refType, refId);
+    // Spawn the badge near the user's current pointer (in screen
+    // coords) so it lands where they're looking, not at the primary
+    // monitor's bottom-right by default. Falls back to undefined if
+    // no recent pointer telemetry is available — main's handler
+    // then uses its own default placement.
+    //
+    // Why screen coords (not page/window): main writes badge
+    // positions in screen coords because the overlay window spans
+    // the entire virtual desktop. Window-relative coords would land
+    // at the wrong place once main translates them to overlay-local.
+    const lastPtr = lastPointerScreenRef.current;
+    const screenX = lastPtr ? lastPtr.x - 23 : undefined;  // -23 ≈ half a 46px badge
+    const screenY = lastPtr ? lastPtr.y - 23 : undefined;
+    const r = await electronAPI.pinBadge(refType, refId, screenX, screenY);
     if (!r.success) {
       const reason = r.reason === 'missing-ref' ? '잘못된 대상' : '플로팅 실패';
       showToast(reason);
     }
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quotaChecks]);
   appLog.debug(`data.spaces.length=${data?.spaces?.length ?? 'undefined'}`);
 
   const [dialog, setDialog] = useState<DialogMode>('none');
@@ -1094,8 +1124,27 @@ export default function App() {
   }, []);
 
   // ── Clipboard quick-add suggestion ───────────────────────
-  const [clipSuggestion, setClipSuggestion] = useState<{ type: 'url' | 'app' | 'folder'; value: string; label: string } | null>(null);
+  const [clipSuggestion, setClipSuggestion] = useState<{ type: 'url' | 'app' | 'folder' | 'hex' | 'text'; value: string; label: string } | null>(null);
   const lastClipValueRef = useRef('');
+
+  // Tracks the user's most recent pointer position in SCREEN coords
+  // (window x/y + clientX/y, then converted by main when needed).
+  // pinAsFloating reads this so a freshly-promoted badge lands near
+  // where the user clicked, not at the primary monitor's bottom-
+  // right corner default. Throttled-ish via a single mousemove
+  // listener — the cost is one int pair per move event.
+  const lastPointerScreenRef = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      // e.screenX/Y on Windows can return physical pixels under
+      // fractional DPI scaling, but Electron normalises to DIP for
+      // the window's own webContents. We use it as-is here since
+      // main's badge code stores in DIP screen coords too.
+      lastPointerScreenRef.current = { x: e.screenX, y: e.screenY };
+    };
+    window.addEventListener('mousemove', onMove);
+    return () => window.removeEventListener('mousemove', onMove);
+  }, []);
   useEffect(() => {
     const check = async () => {
       const result = await electronAPI.analyzeClipboard();
@@ -1303,11 +1352,8 @@ export default function App() {
     setDialog('scan');
   }, []);
 
-  const openQuickAdd = useCallback((spaceId?: string) => {
-    setEditSpaceId(spaceId ?? data.spaces[0]?.id ?? '');
-    setDialog('quickadd');
-  }, [data.spaces]);
-
+  // openQuickAdd is declared AFTER handleAddColorSwatch (further
+  // down) so its closure can refer to that handler — see below.
   const openManualWizard = useCallback((spaceId?: string) => {
     setEditItem(null);
     setPrefilledItem(null);
@@ -1338,27 +1384,112 @@ export default function App() {
       value: '',                          // not used for widgets
       iconType: 'material',
       icon: 'widgets',
-      color: '#a855f7',
+      // No color hardcode — let the widget inherit space color (or the
+      // theme accent) at render time. User can still override via the
+      // card context menu like any other card.
       clickCount: 0,
       pinned: false,
       widget: { kind: 'media-control' },
     });
     showToast('미디어 위젯을 추가했어요');
-    // Mark "just-added" so the card gets the brief highlight pulse.
-    // (justAddedItemIds is managed by useAppData internally — addItem
-    //  flags the new item id automatically; nothing more to do here.)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quotaChecks, store]);
+
+  /**
+   * Add a colour-swatch widget. Each swatch lives in its own grid
+   * cell so the user can sort, pin, delete it like any other card —
+   * see ColorSwatchWidget for the rationale ("one card per colour"
+   * vs. multi-swatch palette in a single widget).
+   *
+   * Optional `prefill` lets the clipboard suggestion path drop a
+   * detected hex straight into a new widget without opening a
+   * picker. When omitted we seed with the theme accent so the user
+   * gets *something* to look at — they can edit immediately.
+   */
+  const handleAddColorSwatch = useCallback((
+    spaceId: string,
+    prefill?: { hex: string; name?: string },
+  ): LauncherItem | null => {
+    if (!quotaChecks.widget()) return null;
+    if (!quotaChecks.card()) return null;
+    const hex = (prefill?.hex || '#6366F1').toUpperCase();
+    const name = prefill?.name;
+    const newItem = store.addItem(spaceId, {
+      type: 'widget',
+      title: name || hex,
+      value: '',
+      iconType: 'material',
+      icon: 'palette',
+      clickCount: 0,
+      pinned: false,
+      widget: { kind: 'color-swatch', options: name ? { hex, name } : { hex } },
+    });
+    showToast(`팔레트에 ${hex} 추가됨`);
+    return newItem;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quotaChecks, store]);
+
+  /**
+   * "빠른추가" — peek at the clipboard first. Hex codes get the
+   * fast-path: a colour-swatch widget is added directly without
+   * opening the quick-add dialog (the user said "팔레트로 추가하게
+   * 해줘" — they want the gesture to be one-step). Anything else
+   * falls through to the normal quick-add UI.
+   *
+   * Declared here, AFTER handleAddColorSwatch, so the closure
+   * captures a defined identifier (TS strict-mode TDZ guards).
+   */
+  const openQuickAdd = useCallback(async (spaceId?: string) => {
+    const target = spaceId ?? data.spaces[0]?.id ?? '';
+    try {
+      const r = await electronAPI.analyzeClipboard();
+      if (r.type === 'hex' && r.value && target) {
+        // Add the swatch and immediately open the edit dialog
+        // pre-targeted at it — the user explicitly wanted "labelling
+        // bay" right after auto-detection, mirroring how URL / app
+        // / folder quick-add lands the user in the dialog where
+        // they can refine the title before committing.
+        const newItem = handleAddColorSwatch(target, { hex: r.value });
+        if (newItem) {
+          setEditItem(newItem);
+          setEditSpaceId(target);
+          setDialog('item');
+        }
+        return;
+      }
+    } catch { /* fall through to normal quick-add */ }
+    setEditSpaceId(target);
+    setDialog('quickadd');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.spaces, handleAddColorSwatch]);
 
   const handleClipboardAdd = useCallback(() => {
     if (!clipSuggestion) return;
     const { type, value, label } = clipSuggestion;
+    setClipSuggestion(null);
+    // Hex fast-path — add the swatch and follow up with the edit
+    // dialog so the user can immediately label it (matches the
+    // "+ 빠른추가" hex flow). Earlier this was a silent add; the
+    // user asked for the labelling bay because an unlabelled #hex
+    // is hard to recall later.
+    if (type === 'hex') {
+      const targetSpaceId = data.spaces[0]?.id;
+      if (targetSpaceId) {
+        const newItem = handleAddColorSwatch(targetSpaceId, { hex: value });
+        if (newItem) {
+          setEditItem(newItem);
+          setEditSpaceId(targetSpaceId);
+          setDialog('item');
+        }
+      }
+      return;
+    }
     setEditItem(null);
     setPrefilledItem({ type, value, title: label, clickCount: 0, pinned: false } as Partial<import('./types').LauncherItem>);
     setEditSpaceId(data.spaces[0]?.id ?? '');
-    setClipSuggestion(null);
     setDialog('item');
-  }, [clipSuggestion, data.spaces]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clipSuggestion, data.spaces, handleAddColorSwatch]);
 
   // ── Kick feature (file dialog detection) ─────────────────
   const [activeDialog, setActiveDialog] = useState<{ isDialog: boolean; title?: string } | null>(null);
@@ -1995,9 +2126,44 @@ export default function App() {
       return;
     }
 
+    // Dropped directly on a space's outer wrapper (the SortableSpace
+    // itself, not its inner drop-space-* zone). Happens for empty
+    // spaces because dnd-kit's closestCorners picks the wrapper
+    // sortable over the inner droppable when there are no items
+    // around to disambiguate. Without this branch, drops onto empty
+    // spaces silently no-op'd — visible bug.
+    const directSpaceMatch = data.spaces.find(s => s.id === overId);
+    if (directSpaceMatch) {
+      if (directSpaceMatch.id !== sourceSpace.id) {
+        store.moveItemToSpace(activeId, sourceSpace.id, directSpaceMatch.id);
+      }
+      return;
+    }
+
     // Dropped onto another item
     const targetSpace = data.spaces.find(s => s.items.some(i => i.id === overId));
-    if (!targetSpace) return;
+    if (!targetSpace) {
+      // Last-resort fallback: hit-test the pointer against every
+      // visible space rect. Covers cases where collision detection
+      // returns null (rare DPI / scroll edge cases).
+      const start = event.activatorEvent as PointerEvent | MouseEvent | undefined;
+      if (start) {
+        const px = (start.clientX ?? 0) + event.delta.x;
+        const py = (start.clientY ?? 0) + event.delta.y;
+        const els = document.querySelectorAll<HTMLElement>('[data-space-id]');
+        for (const el of Array.from(els)) {
+          const r = el.getBoundingClientRect();
+          if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) {
+            const spaceId = el.dataset.spaceId;
+            if (spaceId && spaceId !== sourceSpace.id) {
+              store.moveItemToSpace(activeId, sourceSpace.id, spaceId);
+            }
+            return;
+          }
+        }
+      }
+      return;
+    }
 
     if (sourceSpace.id === targetSpace.id) {
       const items = sourceSpace.items;
@@ -2774,6 +2940,19 @@ export default function App() {
                             onDuplicate={() => store.duplicateSpace(space.id)}
                             onSetColor={color => store.setSpaceColor(space.id, color)}
                             onSetIcon={icon => store.setSpaceIcon(space.id, icon)}
+                            // Move-to-preset menu — only show targets the
+                            // user can actually reach (filter the current
+                            // preset and Pro-locked ones via entitlement).
+                            movePresets={(['1','2','3'] as const)
+                              .filter(id => id !== store.activePresetId && entitlement.canUsePreset(id))
+                              .map(id => ({
+                                id,
+                                label: store.presets.find(p => p.id === id)?.label ?? `프리셋 ${id}`,
+                              }))}
+                            onMoveToPreset={(target) => {
+                              store.moveSpaceToPreset(space.id, target);
+                              showToast(`프리셋 ${target}로 이동했어요`);
+                            }}
                             onToggleCollapse={() => store.toggleSpaceCollapsed(space.id)}
                             onEditItem={item => openEditItem(item, space.id)}
                             onDeleteItem={itemId => handleDeleteItem(space.id, itemId)}
@@ -2784,6 +2963,7 @@ export default function App() {
                             onAddItem={() => openManualWizard(space.id)}
                             onScanItem={() => openScan(space.id)}
                             onAddWidget={() => handleAddWidget(space.id)}
+                            onAddColorSwatch={() => handleAddColorSwatch(space.id)}
                             defaultOpen={!(data.collapsedSpaceIds ?? []).includes(space.id)}
                             onSetMonitor={(itemId, monitor) => handleSetMonitor(space.id, itemId, monitor)}
                             onConvertToContainer={itemId => { if (quotaChecks.container()) handleConvertToContainer(space.id, itemId); }}

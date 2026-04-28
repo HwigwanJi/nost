@@ -34,6 +34,14 @@ interface SpaceAccordionProps {
   onDelete: () => void;
   onDuplicate: () => void;
   onSetColor: (color: string) => void;
+  /**
+   * Move this space (with its items) to another preset. Caller
+   * provides the list of accessible target presets so we can render
+   * one menu item per option. When omitted (single-preset world or
+   * no other presets accessible), the move section is hidden.
+   */
+  movePresets?: Array<{ id: '1' | '2' | '3'; label: string }>;
+  onMoveToPreset?: (targetId: '1' | '2' | '3') => void;
   onSetIcon: (icon: string) => void;
   onEditItem: (item: LauncherItem) => void;
   onDeleteItem: (itemId: string) => void;
@@ -46,6 +54,9 @@ interface SpaceAccordionProps {
   /** Add a widget card (media, future kinds). Optional — caller may
    *  omit when widgets aren't relevant for that space context. */
   onAddWidget?: () => void;
+  /** Add a colour-swatch widget. Opens a colour picker inline (or
+   *  uses the clipboard hex if present); see App.tsx handler. */
+  onAddColorSwatch?: () => void;
   onToggleCollapse: () => void;
   onFloatOut?: () => void;
   isFloating?: boolean;
@@ -90,6 +101,8 @@ export function SpaceAccordion({
   onDelete,
   onDuplicate,
   onSetColor,
+  movePresets,
+  onMoveToPreset,
   onSetIcon,
   onEditItem,
   onDeleteItem,
@@ -100,6 +113,7 @@ export function SpaceAccordion({
   onAddItem,
   onScanItem,
   onAddWidget,
+  onAddColorSwatch,
   onToggleCollapse,
   onFloatOut,
   isFloating = false,
@@ -388,6 +402,32 @@ export function SpaceAccordion({
               <DropdownMenuItem onClick={onDuplicate}>
                 <Icon name="content_copy" className="text-sm" />스페이스 복제
               </DropdownMenuItem>
+
+              {/* "Move to preset" — one item per accessible target.
+                  Caller already filters out the current preset and any
+                  Pro-locked ones, so we just render whatever we got.
+                  Hidden entirely when there's nothing to move to (e.g.
+                  free tier where only preset 1 exists). */}
+              {movePresets && movePresets.length > 0 && onMoveToPreset && (
+                <>
+                  <DropdownMenuSeparator />
+                  {movePresets.map(p => (
+                    <DropdownMenuItem
+                      key={p.id}
+                      onClick={() => onMoveToPreset(p.id)}
+                    >
+                      <Icon name="swap_horiz" className="text-sm" />
+                      프리셋 {p.id}
+                      {p.label !== `프리셋 ${p.id}` && (
+                        <span style={{ marginLeft: 4, color: 'var(--text-muted)', fontSize: 11 }}>
+                          ({p.label})
+                        </span>
+                      )}
+                      <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)' }}>이동</span>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={onDelete} className="text-destructive">
                 <Icon name="delete" className="text-sm" />스페이스 삭제
@@ -486,10 +526,10 @@ export function SpaceAccordion({
                     <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
                     <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
                     {onAddWidget && (
-                      <DropdownMenuItem onClick={onAddWidget}>
-                        <Icon name="widgets" size={13} style={{ marginRight: 6, color: 'var(--accent)' }} />
-                        위젯
-                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={onAddWidget}>위젯</DropdownMenuItem>
+                    )}
+                    {onAddColorSwatch && (
+                      <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
                     )}
                   </DropdownMenuContent>
                 </DropdownMenu>

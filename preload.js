@@ -121,26 +121,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('badges-launch-ref', handler);
     return () => ipcRenderer.removeListener('badges-launch-ref', handler);
   },
-  /** Badge context-menu "실행" on a space ref → scroll that space into view. */
-  onBadgesRevealSpace: (cb) =>
-    ipcRenderer.on('badges-reveal-space', (_, payload) => cb(payload)),
+  /** Badge context-menu "실행" on a space ref → scroll that space into view.
+   *  Returns an unsubscribe fn — same lesson as onBadgesLaunchItem: without
+   *  it, every effect re-run piles a listener and the warning at ~10 fires
+   *  ("MaxListenersExceededWarning"), shortly followed by main-process
+   *  thrashing as each IPC fan-outs N times. */
+  onBadgesRevealSpace: (cb) => {
+    const handler = (_, payload) => cb(payload);
+    ipcRenderer.on('badges-reveal-space', handler);
+    return () => ipcRenderer.removeListener('badges-reveal-space', handler);
+  },
   /** Fires whenever the floatingBadges list changes — main renderer can
    *  update UI (e.g. hide the "float" button for already-pinned items). */
-  onBadgesUpdated: (cb) =>
-    ipcRenderer.on('badges-updated', (_, badges) => cb(badges)),
-
-  // ── Media widget — SMTC bridge ───────────────────────────────────
-  /** Pull the current media state on demand (e.g. on widget mount). */
-  getMediaState: () => ipcRenderer.invoke('media-get-state'),
-  /** Subscribe to push updates. Returns an unsubscribe fn — match the
-   *  badge-launch pattern so React effect cleanup actually frees the
-   *  listener (otherwise re-renders accumulate one per ten seconds and
-   *  every state push fires every accumulated listener). */
-  onMediaState: (cb) => {
-    const handler = (_, state) => cb(state);
-    ipcRenderer.on('media-state', handler);
-    return () => ipcRenderer.removeListener('media-state', handler);
+  onBadgesUpdated: (cb) => {
+    const handler = (_, badges) => cb(badges);
+    ipcRenderer.on('badges-updated', handler);
+    return () => ipcRenderer.removeListener('badges-updated', handler);
   },
-  /** Fire a media key. action: 'play-pause' | 'next' | 'prev' | 'stop'. */
+
+  // ── Media widget — Windows media-key bridge ─────────────────────
+  /** Fire a media key. action: 'play-pause' | 'next' | 'prev' | 'stop' |
+   *  'vol-up' | 'vol-down' | 'mute'. */
   mediaCommand: (action) => ipcRenderer.send('media-command', action),
+  /** Ask main to focus whichever browser tab is currently playing
+   *  audio. Returns null if no audible tab is known (extension not
+   *  installed / no audio playing). */
+  mediaFocusSource: () => ipcRenderer.invoke('media-focus-source'),
 });

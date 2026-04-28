@@ -21,7 +21,7 @@ export interface ContainerSlots {
  * (they don't launch — they self-render). Search through item.type
  * === 'widget' for those gates.
  */
-export type WidgetKind = 'media-control';
+export type WidgetKind = 'media-control' | 'color-swatch';
 // extensible later: 'clock' | 'weather' | 'task-counter' | …
 
 export interface MediaControlWidgetOptions {
@@ -30,11 +30,26 @@ export interface MediaControlWidgetOptions {
   preferredAppId?: string;
 }
 
-export interface WidgetData {
-  kind: WidgetKind;
-  /** Per-kind options — discriminated union. v1 only has media. */
-  options?: MediaControlWidgetOptions;
+export interface ColorSwatchOptions {
+  /** Full hex string with leading "#" — `#RRGGBB`. We normalise
+   *  3-char shorthand and uppercase at write time so the renderer
+   *  can render `#RRGGBB` deterministically. */
+  hex: string;
+  /** Optional friendly label. When absent, the widget falls back to
+   *  the LauncherItem's `title`. Pantone-style: hex always shown,
+   *  name is supplementary. */
+  name?: string;
 }
+
+/**
+ * Discriminated union of widget kinds — `kind` is the discriminator,
+ * `options` is the kind-specific payload. Renderers branch on
+ * `widget.kind` and can rely on the matching options shape thanks
+ * to the narrowing.
+ */
+export type WidgetData =
+  | { kind: 'media-control';  options?: MediaControlWidgetOptions }
+  | { kind: 'color-swatch';   options: ColorSwatchOptions };
 
 export interface LauncherItem {
   id: string;

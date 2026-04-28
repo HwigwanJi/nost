@@ -23,7 +23,16 @@ async function sendTabs() {
         windowId: t.windowId,
         title: t.title || '',
         url: t.url,
-        favIconUrl: t.favIconUrl || ''
+        favIconUrl: t.favIconUrl || '',
+        // `audible: true` = tab is currently making sound (YouTube
+        // playing, Spotify Web playing, etc). nost's media widget
+        // uses this as a "best-effort current media tab" signal,
+        // since SMTC reads were dropped after the freeze regression.
+        audible: !!t.audible,
+        // `mutedInfo.muted: true` overrides audible — a tab can be
+        // marked audible by Chrome but the user has muted it from
+        // the tab strip. Forward both so main can decide.
+        muted: !!t.mutedInfo?.muted,
       }));
 
     tabCount = tabs.length;
@@ -43,7 +52,13 @@ chrome.tabs.onCreated.addListener(() => sendTabs());
 chrome.tabs.onRemoved.addListener(() => sendTabs());
 chrome.tabs.onActivated.addListener(() => sendTabs());
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === 'complete') {
+  // `complete` is the original trigger (page-load done → fresh title /
+  // URL / favicon). We additionally fire on `audible` and `mutedInfo`
+  // transitions so the media widget gets a near-real-time pulse when
+  // the user starts/stops a YouTube tab without us having to poll.
+  if (changeInfo.status === 'complete'
+      || changeInfo.audible !== undefined
+      || changeInfo.mutedInfo !== undefined) {
     sendTabs();
   }
 });

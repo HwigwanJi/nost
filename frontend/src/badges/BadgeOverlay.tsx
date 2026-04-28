@@ -18,7 +18,14 @@ export interface OverlayState {
 }
 
 interface BadgeApi {
-  onState:        (cb: (s: OverlayState) => void) => void;
+  /** Returns an unsubscribe fn — call from useEffect cleanup so
+   *  StrictMode's mount→unmount→remount doesn't pile up listeners. */
+  onState:        (cb: (s: OverlayState) => void) => () => void;
+  /** Ask main to (re-)push the current overlay state. Used at mount
+   *  to defeat a race where main's one-shot ready-to-show push fired
+   *  before this component's useEffect registered its listener — see
+   *  preload-badges.js for the longer note. */
+  requestState:   () => void;
   setCapture:     (capture: boolean) => void;
   unpin:          (id: string) => void;
   reposition:     (id: string, x: number, y: number) => void;
@@ -32,28 +39,43 @@ interface BadgeApi {
 const api = (window as unknown as { badges: BadgeApi }).badges;
 
 export function BadgeOverlay() {
+  // Hydration gate — until the first authoritative state push arrives,
+  // we render nothing. Prevents the "transient render with default
+  // 1920x1080 overlay size + zero origin" flash that caused badges to
+  // briefly land at wrong screen coords before correcting.
+  //
+  // The defaults here (size 0/0, origin 0/0) are arbitrary and never
+  // used — they exist only because useState requires an initial value
+  // and hydratedRef.current === false gates rendering anyway.
   const [state, setState] = useState<OverlayState>({
     badges: [],
     overlayOrigin: { x: 0, y: 0 },
-    overlaySize:   { width: 1920, height: 1080 },
+    overlaySize:   { width: 0, height: 0 },
   });
+  const [hydrated, setHydrated] = useState(false);
   /** ID of the badge whose mini-window is currently expanded, or null. */
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Tracks the current capture flag so we only send IPC on transitions.
   const captureRef = useRef(false);
 
   useEffect(() => {
-    api.onState((s) => {
-      setState(prev => ({
-        ...prev,
-        ...s,
-      }));
+    // Pull the current state explicitly. Main's one-shot push on
+    // `ready-to-show` was racing this effect — when the FIRST badge
+    // was promoted, the listener wasn't registered in time and the
+    // payload was dropped, so the overlay sat empty until a SECOND
+    // promote fired pushBadgeState() again. Asking for state on
+    // mount bypasses the race entirely.
+    const off = api.onState((s) => {
+      setState(prev => ({ ...prev, ...s }));
+      setHydrated(true);
       // If the expanded badge was removed (unpinned / deleted space) close popover.
       setExpandedId(prev => {
         if (!prev) return prev;
         return s.badges.some(b => b.id === prev) ? prev : null;
       });
     });
+    api.requestState();
+    return off;
   }, []);
 
   // Click-through management.
@@ -104,7 +126,11 @@ export function BadgeOverlay() {
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
     >
-      {state.badges.map(b => (
+      {/* Render badges only after the first authoritative state has
+          arrived — avoids a transient frame with default origin/size
+          where badges would land at the wrong screen coords and then
+          jump when the real state replaced them. */}
+      {hydrated && state.badges.map(b => (
         <Badge
           key={b.id}
           data={b}

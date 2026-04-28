@@ -293,12 +293,16 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
       {/* Keyframes for one-shot landing animation. Kept co-located so the
           overlay has no external CSS dependency. */}
       <style>{`
-        /* Monotonic rise — no overshoot. The previous keyframe peaked at
-           scale(1.04) at 70%, then fell to 1.0, which felt like the badge
-           was shrinking once the user interacted with it. */
+        /* Pure scale + opacity rise — NO translateY. An earlier
+           version included a 6 px translateY that disappeared at
+           the keyframe end; users perceived this as the badge
+           "jumping down" 6 px right after appearing, especially
+           when their first click happened to coincide with the
+           220 ms animation boundary. Scale + fade alone is enough
+           visual interest without touching final position. */
         @keyframes nost-badge-land {
-          0%   { transform: scale(0.78) translateY(-6px); opacity: 0; }
-          100% { transform: scale(1)    translateY(0);    opacity: 1; }
+          0%   { transform: scale(0.84); opacity: 0; }
+          100% { transform: scale(1);    opacity: 1; }
         }
       `}</style>
       <div

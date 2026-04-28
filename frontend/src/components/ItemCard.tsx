@@ -15,6 +15,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { MediaWidget } from '../widgets/MediaWidget';
+import { ColorSwatchWidget } from '../widgets/ColorSwatchWidget';
 import { ContainerSlotGhosts } from './ContainerSlotGhosts';
 import { isUserBusy } from '../lib/userBusy';
 
@@ -176,34 +177,41 @@ export function ItemCard({
 
   // ── dnd-kit ─────────────────────────────────────────────────
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
-  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
 
-  // ── Widget short-circuit ─────────────────────────────────────
-  // Widget items render their own UI surface — they don't launch, don't
-  // open ItemDialog on click, don't participate in node/deck mode. We
-  // forward the dnd handle so widgets are still draggable/sortable
-  // alongside regular cards.
-  if (item.type === 'widget' && item.widget) {
-    if (item.widget.kind === 'media-control') {
-      return (
-        <MediaWidget
-          item={item}
-          dragHandle={{ setNodeRef, style, attributes, listeners, isDragging }}
-          onContextMenu={(e) => {
-            // Reuse the same context menu the rest of ItemCard surfaces
-            // (rename / color / delete) by deferring to onEdit's owner —
-            // for v1 we provide a minimal menu via the standard onEdit
-            // path: right-click opens the edit dialog. Future kinds can
-            // route through here too.
-            e.preventDefault();
-            onEdit(item);
-          }}
-        />
-      );
-    }
-    // Unknown widget kind → fall through to normal rendering as a
-    // safety net (renders as a plain card with the title).
-  }
+  // Container cards stay PUT during another card's drag.
+  //
+  // Why: dnd-kit's rectSortingStrategy displaces every card in the
+  // SortableContext to make room for the dragged item. When the
+  // dragged item passes over a container, the container shifts away
+  // — visually the container "runs from" the user, and the bloom UX
+  // (which relies on the container's position to anchor the slot
+  // zones) ends up chasing a moving target. The user reported this
+  // exact behaviour as "this isn't worth paying for".
+  //
+  // Suppressing the displacement only when:
+  //   - this card IS a container (item.isContainer)
+  //   - this card is NOT itself the active drag (isDragging === false,
+  //     so the user can still pick up & move containers normally)
+  // …leaves the rest of the row free to shift, while the container
+  // stays anchored. The bloom geometry stays stable, drops land where
+  // the user expects, and reordering between non-container cards
+  // works unchanged.
+  const suppressTransform = item.isContainer && !isDragging;
+  const style = {
+    transform: suppressTransform ? undefined : CSS.Transform.toString(transform),
+    transition: suppressTransform ? undefined : transition,
+    opacity: isDragging ? 0.4 : 1,
+  };
+
+  // ── Widget mode flag ─────────────────────────────────────────
+  // Widget items render their own UI surface (one of MediaWidget /
+  // ColorSwatchWidget) instead of ItemCard's standard launchable
+  // card. Earlier versions early-returned here, which bypassed the
+  // ContextMenu / Tooltip wrapper and broke parity with regular
+  // cards (no rename, no delete from right-click). We now keep the
+  // wrapper and just swap the inner body — context menu, drag, pin,
+  // edit, delete all work the same way as for any other card.
+  const isWidget = item.type === 'widget' && !!item.widget;
 
   // Outside-click is handled by a transparent overlay rendered in the portal — no document listeners needed.
 
@@ -546,7 +554,20 @@ export function ItemCard({
   } : null;
   const filledSlots = slotItems ? DIRS.filter(d => slotItems[d]) : [];
 
-  const cardEl = (
+  // For widget cards, dispatch on `widget.kind`. Each widget renders
+  // its own body (with data-card / data-card-id and dragHandle
+  // participation). Unknown kinds fall through to the standard card
+  // as a safety net — store data corruption shouldn't crash the grid.
+  let widgetBody: React.ReactNode = null;
+  if (isWidget && item.widget) {
+    const dragHandle = { setNodeRef, style, attributes, listeners, isDragging };
+    if (item.widget.kind === 'media-control') {
+      widgetBody = <MediaWidget item={item} space={space} dragHandle={dragHandle} />;
+    } else if (item.widget.kind === 'color-swatch') {
+      widgetBody = <ColorSwatchWidget item={item} space={space} dragHandle={dragHandle} />;
+    }
+  }
+  const cardEl = widgetBody ?? (
     <div
       ref={(el) => { setNodeRef(el); (cardRef as React.MutableRefObject<HTMLDivElement | null>).current = el; }}
       data-card
@@ -1035,12 +1056,18 @@ export function ItemCard({
     <>
       <ContextMenu>
         <ContextMenuTrigger>
-          <Tooltip>
-            <TooltipTrigger render={cardEl} />
-            <TooltipContent side="bottom" className="text-xs max-w-[200px] truncate">
-              {item.isContainer ? `컨테이너 · ${filledSlots.length}/${DIRS.length} 슬롯` : item.value}
-            </TooltipContent>
-          </Tooltip>
+          {/* Widgets skip the Tooltip wrapper — their `value` is empty
+              and the content tells the user what they are. Regular
+              cards keep the tooltip showing target URL / path /
+              container status. */}
+          {isWidget ? cardEl : (
+            <Tooltip>
+              <TooltipTrigger render={cardEl} />
+              <TooltipContent side="bottom" className="text-xs max-w-[200px] truncate">
+                {item.isContainer ? `컨테이너 · ${filledSlots.length}/${DIRS.length} 슬롯` : item.value}
+              </TooltipContent>
+            </Tooltip>
+          )}
         </ContextMenuTrigger>
 
         <ContextMenuContent>
@@ -1052,22 +1079,28 @@ export function ItemCard({
             {pinned ? '핀 해제' : '위치 고정'}
           </ContextMenuItem>
 
-          <ContextMenuSeparator />
-
-          {!item.isContainer && onConvertToContainer && (
-            <ContextMenuItem onClick={onConvertToContainer} className="gap-2 cursor-pointer">
-              <Icon name="grid_view" className="text-sm" />컨테이너로 전환
-            </ContextMenuItem>
-          )}
-          {item.isContainer && (
+          {/* Container-related items don't apply to widget cards —
+              widgets aren't launchable, so wrapping them in a 4-slot
+              container has no meaning. */}
+          {!isWidget && (
             <>
-              <ContextMenuItem onClick={() => onEditSlots?.()} className="gap-2 cursor-pointer">
-                <Icon name="tune" className="text-sm" />슬롯 편집
-              </ContextMenuItem>
-              {onConvertFromContainer && (
-                <ContextMenuItem onClick={onConvertFromContainer} className="gap-2 cursor-pointer">
-                  <Icon name="grid_off" className="text-sm" />일반 카드로 전환
+              <ContextMenuSeparator />
+              {!item.isContainer && onConvertToContainer && (
+                <ContextMenuItem onClick={onConvertToContainer} className="gap-2 cursor-pointer">
+                  <Icon name="grid_view" className="text-sm" />컨테이너로 전환
                 </ContextMenuItem>
+              )}
+              {item.isContainer && (
+                <>
+                  <ContextMenuItem onClick={() => onEditSlots?.()} className="gap-2 cursor-pointer">
+                    <Icon name="tune" className="text-sm" />슬롯 편집
+                  </ContextMenuItem>
+                  {onConvertFromContainer && (
+                    <ContextMenuItem onClick={onConvertFromContainer} className="gap-2 cursor-pointer">
+                      <Icon name="grid_off" className="text-sm" />일반 카드로 전환
+                    </ContextMenuItem>
+                  )}
+                </>
               )}
             </>
           )}
@@ -1079,7 +1112,9 @@ export function ItemCard({
         </ContextMenuContent>
       </ContextMenu>
 
-      {holdPopup}
+      {/* Hold popup is the long-press monitor / slot picker — only
+          relevant for launchable / container cards, not widgets. */}
+      {!isWidget && holdPopup}
     </>
   );
 }
