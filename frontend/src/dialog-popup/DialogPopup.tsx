@@ -349,14 +349,15 @@ function Chip({ label, icon, onClick, tint, muted, text, border }: {
 /**
  * Self-contained preset dropdown.
  *
- * Layout dance: the popup window is normally a 50-px-tall strip directly
- * above the file dialog. When the menu opens, it would normally clip at
- * the popup window's edge. To avoid that we ask main to GROW the window
- * upward (180 px tall) while the menu is open. The chip strip is
- * anchored to the bottom of the window (CSS `align-items: flex-end` on
- * #popup-root), so it stays at the same screen Y throughout — the new
- * empty space appears ABOVE it, which is exactly where this menu opens
- * (positioned via `bottom: 100%` on the trigger).
+ * Layout: the popup window is normally a 50-px-tall strip directly above
+ * the file dialog. When the menu opens, we ask main to GROW the window
+ * downward (220 px) so the menu has room. The chip strip is anchored to
+ * the TOP of the window (CSS `align-items: flex-start` on #popup-root),
+ * so it stays at the same screen Y throughout. The dropdown menu opens
+ * downward from the trigger (`top: calc(100% + 6px)`) into the new
+ * empty space. The taller window will visually overlap the dialog's
+ * title bar while open — acceptable, the menu is on top in z-order
+ * and the dialog is fine once the user clicks somewhere.
  */
 function PresetDropdown({ presets, activeId, viewId, light, text, muted, border, bg, onPick }: {
   presets: PresetSummary[];
@@ -415,11 +416,10 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
         <div
           style={{
             position: 'absolute',
-            // Open UP from the trigger: the popup window grew upward to
-            // make room, so the menu lives in the new empty area above
-            // the chip strip. `bottom: 100%` anchors it to just above
-            // the trigger button.
-            bottom: 'calc(100% + 6px)',
+            // Open DOWN from the trigger: the popup window grew downward
+            // to make room, so the menu lives in the new empty area
+            // below the chip strip.
+            top: 'calc(100% + 6px)',
             right: 0,
             minWidth: 160,
             padding: 4,
@@ -429,7 +429,7 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
             background: bg,
             border: `1px solid ${border}`,
             borderRadius: 8,
-            boxShadow: '0 -6px 20px rgba(0, 0, 0, 0.32)',
+            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.32)',
             backdropFilter: 'blur(20px) saturate(160%)',
             zIndex: 10,
           }}

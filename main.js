@@ -871,12 +871,15 @@ function positionDialogPopup(rect) {
   // dialogs) would crush the chip row otherwise.
   const width  = Math.max(420, Math.min(rect.width, 900));
   const x      = Math.round(rect.x + (rect.width - width) / 2);
-  // When the preset dropdown is open we grow the window UP so the menu
-  // has room above the chip strip. The chip strip itself stays centred
-  // within the (taller) window — visually it'll shift up by half the
-  // growth, opening a vertical gap below it where the dropdown lives.
+  // The popup's TOP edge is always anchored at (dialog.y - 50 - 6).
+  // When the preset dropdown opens, the height grows DOWNWARD instead
+  // of upward — the chip strip (anchored to popup-root's top edge)
+  // stays at the same screen Y, and the new empty space below is where
+  // the dropdown menu opens. The taller popup will visibly overlap the
+  // dialog's title bar while the menu is open; that's intentional and
+  // preferable to the menu being clipped at the popup edge.
+  const y      = Math.round(rect.y - DIALOG_POPUP_HEIGHT - DIALOG_POPUP_OFFSET);
   const height = dialogPopupExpanded ? DIALOG_POPUP_HEIGHT_EXPANDED : DIALOG_POPUP_HEIGHT;
-  const y      = Math.round(rect.y - height - DIALOG_POPUP_OFFSET);
   try {
     dialogPopupWin.setBounds({ x, y, width, height });
   } catch (_) { /* dialog moved off-screen mid-set; ignore */ }

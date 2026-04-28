@@ -42,12 +42,17 @@
         position: absolute;
         inset: 0;
         display: flex;
-        /* Chip strip is anchored to the BOTTOM of the window. When the preset
-           dropdown opens, main grows the window upward — anchoring to the
-           bottom means the chip strip stays at the same screen Y throughout,
-           and the new empty space at the top is where the dropdown floats. */
-        align-items: flex-end;
-        padding-bottom: 6px;
+        /* Chip strip is anchored to the TOP of the window. When the preset
+           dropdown opens, main grows the window downward — the chip strip
+           stays at the same screen Y, and the new empty area appears below
+           the chip strip where the dropdown menu opens.
+           Earlier we tried "grow upward / chips at bottom" but that pushed
+           the popup off the top of the screen on dialogs near the top, and
+           the math for menu clipping kept getting subtly wrong. Down is
+           simpler — the menu visibly overlaps the dialog title bar, but
+           it's on top in z-order so clicks still land on the menu. */
+        align-items: flex-start;
+        padding-top: 6px;
       }
     </style>
   </head>
