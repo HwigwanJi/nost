@@ -26,7 +26,6 @@ import { Sidebar } from './components/Sidebar';
 import { RecommendPanel } from './components/RecommendPanel';
 import { useGhostCards } from './hooks/useGhostCards';
 import { GhostCard } from './components/GhostCard';
-import { DialogContextBar } from './components/DialogContextBar';
 import { NodePanel } from './components/NodePanel';
 import { ContainerSlotPicker, type PendingRemoval, type PendingNewItem } from './components/ContainerSlotPicker';
 import { BatchDropDialog, type PendingDrop } from './components/BatchDropDialog';
@@ -3292,9 +3291,6 @@ export default function App() {
         onDismiss={dismissTileOverlay}
         onMaximize={handleMaximizeFromOverlay}
       />
-
-      {/* ── Dialog context bar (download/save dialog detection) ── */}
-      <DialogContextBar allItems={allItems} />
 
       {/* ── Toast ────────────────────────────────────────────── */}
       <ToastOverlay

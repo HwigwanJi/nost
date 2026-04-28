@@ -833,8 +833,17 @@ export function useAppData() {
    * in the same write). Used by ItemDialog when the user picks a different
    * preset in the edit dropdowns.
    *
-   * `data.spaces` is a mirror of the active preset's spaces — so when the
-   * source or target is the active preset, we update both views.
+   * IMPORTANT: bypasses `setDataRaw` and goes straight to `setRawData`.
+   * `setDataRaw` is a convenience wrapper that folds active-preset
+   * mutations back into the `presets[]` shape — but it does the OPPOSITE
+   * of what we need here: it ignores any direct `presets[]` modification
+   * the caller makes and only propagates `flatNext.spaces`. We're
+   * deliberately mutating non-active presets, so we need raw control.
+   *
+   * The bug this fixes: cards moved into a non-active preset would
+   * disappear into the void. The mirror logic dropped the item from the
+   * source (which IS the active preset) but never propagated the addition
+   * to the target preset, so the card vanished from both ends.
    */
   const moveItemAcrossPresets = useCallback((
     itemId: string,
@@ -842,7 +851,7 @@ export function useAppData() {
     targetSpaceId: string,
     updatedItem: LauncherItem,
   ) => {
-    setDataRaw(prev => {
+    setRawData(prev => {
       const sourcePreset = prev.presets.find(p => p.spaces.some(s => s.items.some(i => i.id === itemId)));
       if (!sourcePreset || sourcePreset.id === targetPresetId) return prev;
 
@@ -859,9 +868,15 @@ export function useAppData() {
       if (prev.activePresetId === sourcePreset.id) nextSpaces = nextSpaces.map(removeFrom);
       if (prev.activePresetId === targetPresetId)  nextSpaces = nextSpaces.map(addTo);
 
-      return { ...prev, presets: newPresets, spaces: nextSpaces };
+      const next = { ...prev, presets: newPresets, spaces: nextSpaces };
+      // Mirror what `save` does — persist + tell main to refresh badges,
+      // since cross-preset moves can affect floatingBadges visibility on
+      // preset switch.
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next).then(() => electronAPI.syncBadges());
+      return next;
     });
-  }, [setDataRaw]);
+  }, []);
 
   // ── Node Groups ──────────────────────────────────────────
   const getNodeGroupForItem = useCallback((itemId: string): NodeGroup | undefined => {
