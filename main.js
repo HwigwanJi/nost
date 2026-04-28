@@ -2242,9 +2242,16 @@ function registerIpcHandlers() {
     } catch { return { isDialog: false }; }
   });
 
-  /** Navigate the active file dialog to a specific folder path. */
+  /** Navigate the active file dialog to a specific folder path.
+   *
+   *  -STA is required: the PS script uses [System.Windows.Forms.Clipboard]
+   *  to ferry the Unicode-safe path through the clipboard (replacing the
+   *  old SendKeys-typing approach that mangled Korean characters). The
+   *  managed Clipboard API needs STA threading; without -STA you get a
+   *  "Current thread must be set to single thread apartment (STA) mode"
+   *  exception and nothing pastes. */
   ipcMain.on('jump-to-dialog-folder', (_, folderPath) => {
-    exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('jump-to-dialog-folder.ps1')}"`, {
+    exec(`powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "${ps('jump-to-dialog-folder.ps1')}"`, {
       env: { ...process.env, QL_PATH: folderPath },
     });
   });
