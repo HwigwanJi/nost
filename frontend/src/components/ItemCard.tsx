@@ -632,10 +632,26 @@ export function ItemCard({
         setHintVisible(false);
       }}
     >
-      {/* ── Container badge (top-right) ──────────────────────────── */}
-      {item.isContainer && (
+      {/* ── Top-right corner glyph ──────────────────────────────────
+           Single visual slot, decided by priority:
+             (1) Container → grid_view (this is the most important state
+                 because it changes drag/click behaviour)
+             (2) else Pinned → bookmark (was previously encoded as a
+                 colour override on the bottom stripe; users said the
+                 pin signal got lost in the soup of stripes)
+           Both render at the same coords so only one shows at a time
+           — no visual conflict, no double-encoding. */}
+      {item.isContainer ? (
         <Icon name="grid_view" size={10} color="var(--accent)" style={{ position:'absolute', top:5, right:5, opacity:0.7 }} />
-      )}
+      ) : pinned ? (
+        <Icon
+          name="bookmark"
+          size={11}
+          color="var(--accent)"
+          style={{ position:'absolute', top:3, right:5, opacity:0.55, transition:'opacity 0.15s' }}
+          className="group-hover:!opacity-90"
+        />
+      ) : null}
 
       {/* ── Empty-slot ghost rectangles ──────────────────────────────
            Show on container hover (after the 350ms hint dwell, same as
@@ -687,27 +703,53 @@ export function ItemCard({
         <Icon name="keyboard_arrow_right" size={9} color="var(--text-dim)" style={{ position:'absolute', right:2,  top:'50%',   transform:'translateY(-50%)' }} />
       </div>
 
-      {/* ── Node + Deck badges (top-left) ────────────────────────────
-          Shown at full opacity in node/deck mode; hidden until hover in normal mode.
-          Circles no longer overlap — 2px gap keeps numbers readable.          */}
-      {((nodeBadges && nodeBadges.length > 0 && !isNodeAnchor) || (deckBadges && deckBadges.length > 0)) && (
-        <div
-          className={`absolute top-[5px] left-[5px] flex gap-[2px] transition-opacity duration-150 ${
-            (activeMode === 'node' || activeMode === 'deck') ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-          }`}
-        >
-          {nodeBadges && !isNodeAnchor && nodeBadges.slice(0, 2).map((idx) => (
-            <span key={`n${idx}`} style={{ width:13, height:13, borderRadius:'50%', background:'var(--accent)', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid rgba(255,255,255,0.2)' }}>
-              {idx}
-            </span>
-          ))}
-          {deckBadges && deckBadges.slice(0, 2).map((idx) => (
-            <span key={`d${idx}`} style={{ width:13, height:13, borderRadius:'50%', background:'#f97316', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid rgba(255,255,255,0.2)' }}>
-              {idx}
-            </span>
-          ))}
-        </div>
-      )}
+      {/* ── Workflow membership pill (top-left) ──────────────────────
+          Replaces the previous "two separate coloured circles per card"
+          with ONE compact pill that lists membership inline. Reduces
+          colour count (was: blue node + orange deck on the same card =
+          chromatic mismatch), brings node and deck under one visual
+          grammar (small caps "n1·d2" letters), and saves space when a
+          card belongs to both.
+
+          Visibility: full opacity in node/deck mode; fades in on hover
+          in normal mode — same trigger as before. */}
+      {((nodeBadges && nodeBadges.length > 0 && !isNodeAnchor) || (deckBadges && deckBadges.length > 0)) && (() => {
+        const parts: Array<{ k: 'n' | 'd'; n: number }> = [];
+        if (nodeBadges && !isNodeAnchor) for (const i of nodeBadges.slice(0, 2)) parts.push({ k: 'n', n: i });
+        if (deckBadges)                  for (const i of deckBadges.slice(0, 2)) parts.push({ k: 'd', n: i });
+        if (parts.length === 0) return null;
+
+        return (
+          <div
+            className={`absolute top-[5px] left-[5px] transition-opacity duration-150 ${
+              (activeMode === 'node' || activeMode === 'deck') ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            }`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 2,
+              height: 14,
+              padding: '0 5px',
+              borderRadius: 7,
+              background: 'var(--accent)',
+              color: '#fff',
+              fontSize: 8,
+              fontWeight: 700,
+              letterSpacing: '0.02em',
+              fontFamily: 'inherit',
+            }}
+            title={parts.map(p => `${p.k === 'n' ? '노드' : '덱'} ${p.n}`).join(' · ')}
+          >
+            {parts.map((p, i) => (
+              <span key={`${p.k}${p.n}`} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {i > 0 && <span style={{ opacity: 0.5, margin: '0 2px' }}>·</span>}
+                <span style={{ opacity: 0.7, marginRight: 1 }}>{p.k}</span>
+                <span>{p.n}</span>
+              </span>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── Monitor badge (bottom-left) ──────────────────────────────
           Invisible when auto (monitor === undefined) — becomes visible on hover.
@@ -781,9 +823,11 @@ export function ItemCard({
       {/* ── Icon — type-tint badge container ────────────────────────
           Wraps the icon in a 36×36 rounded square with 8% opacity type-color
           background. This gives the card a visual anchor and passively encodes
-          the item type through color — safe in both light/dark themes because
-          the tint is transparent enough to read over any background.
-          Inactive items get a red tint instead, replacing the old wifi_off corner icon. */}
+          the item type through colour.
+          Inactive items used to get a red tint here, but combined with the
+          50% card opacity it read as alarming — like an error. We now rely
+          on the card-level opacity alone, which is enough to communicate
+          "this is dimmed" without the safety-orange. */}
       <div
         title={isInactive ? '창이 닫혀있습니다' : undefined}
         style={{
@@ -792,9 +836,7 @@ export function ItemCard({
           // Image icons: let the image speak for itself — no tint behind it
           background: (item.iconType === 'image' && item.icon && !imageIconFailed)
             ? 'transparent'
-            : isInactive
-              ? 'rgba(239,68,68,0.1)'   // red tint = window is gone (replaces wifi_off icon)
-              : `${accentColor}14`,     // 8% type-color tint
+            : `${accentColor}14`,     // 8% type-color tint (always)
           transition: 'background 0.15s',
         }}
       >
@@ -816,9 +858,15 @@ export function ItemCard({
         <HighlightText text={item.title} query={searchQuery} />
       </span>
 
-      {/* ── Bottom stripe — pin or space color (pin dot removed; stripe handles both) ── */}
-      {(pinned || space.color) && (
-        <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: pinned ? 'var(--accent)' : space.color, opacity: pinned ? 0.45 : 0.6 }} />
+      {/* ── Bottom stripe — space-color only ────────────────────────
+          Pre-v1.3.9 this stripe doubled as the pin indicator (accent
+          colour when pinned, space colour otherwise). That meant pinned
+          cards lost their space-membership signal, and unpinned cards
+          competed visually for the accent colour with node-linked cards.
+          Now: the stripe is ALWAYS the space colour; pin lives as a
+          dedicated bookmark glyph in the top-right corner. */}
+      {space.color && (
+        <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: space.color, opacity: 0.55 }} />
       )}
 
       {/* F6: stale dot — item hasn't been clicked in 60+ days AND was used before

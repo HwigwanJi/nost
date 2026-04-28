@@ -112,8 +112,9 @@ export interface FloatingButtonSettings {
   enabled: boolean;
   /** Orb fill opacity in the idle (not-hovered) state, 0.3–1.0. */
   idleOpacity: number;
-  /** Orb size preset. */
-  size: 'small' | 'normal';
+  /** Orb size in pixels (28–72 typical). Legacy 'small' / 'normal' values
+   *  from pre-v1.3.8 settings are migrated at read time in main.js. */
+  size: number | 'small' | 'normal';
   /** Hide the orb automatically while a fullscreen app has focus. */
   hideOnFullscreen: boolean;
   /** Last stored position. Defaults to bottom-right on primary display when absent. */

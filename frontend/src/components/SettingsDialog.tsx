@@ -344,35 +344,41 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     onCheckedChange={v => f('floatingButton', {
                       enabled: v,
                       idleOpacity: form.floatingButton?.idleOpacity ?? 0.65,
-                      size: form.floatingButton?.size ?? 'normal',
+                      size: form.floatingButton?.size ?? 48,
                       hideOnFullscreen: form.floatingButton?.hideOnFullscreen ?? true,
                       position: form.floatingButton?.position,
                     })}
                   />
 
-                  {form.floatingButton?.enabled && (
+                  {form.floatingButton?.enabled && (() => {
+                    // Migrate legacy 'small' / 'normal' string values to numbers
+                    // so the slider has a real value to bind to.
+                    const rawSize = form.floatingButton?.size;
+                    const sizePx =
+                      typeof rawSize === 'number' ? rawSize :
+                      rawSize === 'small' ? 40 : 48;
+                    return (
                     <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      {/* Size */}
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>크기</span>
-                        <div style={{ display: 'flex', background: 'var(--border-rgba)', borderRadius: 8, padding: 3, gap: 2 }}>
-                          {(['small', 'normal'] as const).map(sz => (
-                            <button
-                              key={sz}
-                              onClick={() => f('floatingButton', { ...form.floatingButton!, size: sz })}
-                              style={{
-                                padding: '4px 14px', fontSize: 11, borderRadius: 6,
-                                fontWeight: form.floatingButton?.size === sz ? 700 : 400,
-                                border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                                background: form.floatingButton?.size === sz ? 'var(--bg-rgba)' : 'transparent',
-                                color: form.floatingButton?.size === sz ? 'var(--text-color)' : 'var(--text-muted)',
-                                transition: 'all 0.15s',
-                              }}
-                            >
-                              {sz === 'small' ? '작게' : '보통'}
-                            </button>
-                          ))}
+                      {/* Size — continuous slider, 28..72px (icon hits 64px Material grid budget at the top end) */}
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>크기</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)', background: 'var(--border-rgba)', padding: '2px 8px', borderRadius: 5 }}>
+                            {sizePx}px
+                          </span>
                         </div>
+                        <Slider
+                          value={[sizePx]}
+                          min={28} max={72} step={2}
+                          onValueChange={val => {
+                            const v = Array.isArray(val) ? (val as number[])[0] : (val as number);
+                            f('floatingButton', { ...form.floatingButton!, size: v });
+                          }}
+                          className="w-full"
+                        />
+                        <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.4 }}>
+                          작게 28 · 보통 48 · 크게 64. 변경은 즉시 반영됩니다.
+                        </p>
                       </div>
 
                       {/* Idle opacity */}
@@ -397,7 +403,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                         </p>
                       </div>
                     </div>
-                  )}
+                    );
+                  })()}
                 </Section>
 
                 <Section>

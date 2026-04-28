@@ -828,6 +828,41 @@ export function useAppData() {
     });
   }, [data, save]);
 
+  /**
+   * Move an item to a space in a DIFFERENT preset (and update its content
+   * in the same write). Used by ItemDialog when the user picks a different
+   * preset in the edit dropdowns.
+   *
+   * `data.spaces` is a mirror of the active preset's spaces — so when the
+   * source or target is the active preset, we update both views.
+   */
+  const moveItemAcrossPresets = useCallback((
+    itemId: string,
+    targetPresetId: string,
+    targetSpaceId: string,
+    updatedItem: LauncherItem,
+  ) => {
+    setDataRaw(prev => {
+      const sourcePreset = prev.presets.find(p => p.spaces.some(s => s.items.some(i => i.id === itemId)));
+      if (!sourcePreset || sourcePreset.id === targetPresetId) return prev;
+
+      const removeFrom = (s: Space) => ({ ...s, items: s.items.filter(i => i.id !== itemId) });
+      const addTo = (s: Space) => s.id === targetSpaceId ? { ...s, items: [...s.items, updatedItem] } : s;
+
+      const newPresets = prev.presets.map(p => {
+        if (p.id === sourcePreset.id) return { ...p, spaces: p.spaces.map(removeFrom) };
+        if (p.id === targetPresetId)  return { ...p, spaces: p.spaces.map(addTo) };
+        return p;
+      });
+
+      let nextSpaces = prev.spaces;
+      if (prev.activePresetId === sourcePreset.id) nextSpaces = nextSpaces.map(removeFrom);
+      if (prev.activePresetId === targetPresetId)  nextSpaces = nextSpaces.map(addTo);
+
+      return { ...prev, presets: newPresets, spaces: nextSpaces };
+    });
+  }, [setDataRaw]);
+
   // ── Node Groups ──────────────────────────────────────────
   const getNodeGroupForItem = useCallback((itemId: string): NodeGroup | undefined => {
     return (data.nodeGroups ?? []).find(g => g.itemIds.includes(itemId));
@@ -1109,6 +1144,7 @@ export function useAppData() {
     reorderItems,
     moveItemToSpace,
     updateItemAndMove,
+    moveItemAcrossPresets,
     updateSettings,
     reloadFromStore,
     getNodeGroupForItem,

@@ -1164,11 +1164,52 @@ export default function App() {
     () => localStorage.getItem('ext-banner-dismissed') === '1'
   );
   const [extConnected, setExtConnected] = useState<boolean | null>(null);
+  const [extRechecking, setExtRechecking] = useState(false);
+
+  const recheckExtension = useCallback(async () => {
+    setExtRechecking(true);
+    try {
+      const s = await electronAPI.getExtensionBridgeStatus();
+      const connected = s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0;
+      setExtConnected(connected);
+      // If user manually clicked refresh and they had previously dismissed the
+      // banner, surface it again — otherwise an extension that comes back
+      // online has no visible feedback.
+      if (connected && extBannerDismissed) {
+        setExtBannerDismissed(false);
+        localStorage.removeItem('ext-banner-dismissed');
+      }
+    } finally {
+      setExtRechecking(false);
+    }
+  }, [extBannerDismissed]);
+
   useEffect(() => {
-    electronAPI.getExtensionBridgeStatus().then(s => {
-      setExtConnected(s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0);
-    });
-  }, []);
+    // First check on mount.
+    void recheckExtension();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // After an app update / cold start, the SSE handshake with the bridge can
+  // take a few seconds to settle (Chrome has to wake the service worker).
+  // So when status is "not connected" we retry every 4s for up to 40s.
+  // Once connected we stop polling — manual refresh button covers later
+  // disconnects (uninstall, Chrome closed, etc).
+  useEffect(() => {
+    if (extConnected !== false) return;
+    let attempts = 0;
+    const id = setInterval(() => {
+      attempts++;
+      if (attempts > 10) { clearInterval(id); return; }
+      electronAPI.getExtensionBridgeStatus().then(s => {
+        const connected = s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0;
+        if (connected) {
+          setExtConnected(true);
+          clearInterval(id);
+        }
+      });
+    }, 4000);
+    return () => clearInterval(id);
+  }, [extConnected]);
 
   // ── Settings initial tab ──────────────────────────────────
   const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'data' | undefined>(undefined);
@@ -1518,10 +1559,23 @@ export default function App() {
     setDialog('item');
   }, []);
 
-  const handleSaveItem = useCallback((spaceId: string, item: Omit<LauncherItem, 'id'> | LauncherItem) => {
+  const handleSaveItem = useCallback((
+    spaceId: string,
+    item: Omit<LauncherItem, 'id'> | LauncherItem,
+    targetPresetId?: '1' | '2' | '3',
+  ) => {
     if ('id' in item) {
-      // Edit existing — find item's CURRENT space (may have changed in dialog)
-      const currentSpaceId = data.spaces.find(s => s.items.some(i => i.id === (item as LauncherItem).id))?.id;
+      const itemId = (item as LauncherItem).id;
+
+      // Cross-preset move: targetPresetId is set only when ItemDialog's
+      // preset dropdown picked a different preset than the item's owner.
+      if (targetPresetId) {
+        store.moveItemAcrossPresets(itemId, targetPresetId, spaceId, item as LauncherItem);
+        return;
+      }
+
+      // Edit existing within the same preset — find item's CURRENT space (may have changed in dialog)
+      const currentSpaceId = data.spaces.find(s => s.items.some(i => i.id === itemId))?.id;
       if (currentSpaceId && currentSpaceId !== spaceId) {
         store.updateItemAndMove(currentSpaceId, spaceId, item as LauncherItem);
       } else {
@@ -2867,8 +2921,17 @@ export default function App() {
             }}>
               <Icon name="extension_off" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
               <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                브라우저 익스텐션이 감지되지 않았습니다. 탭 제어 기능을 사용하려면 설치해주세요.
+                브라우저 익스텐션이 감지되지 않았습니다. 이미 설치돼 있다면 새로고침해보세요.
               </span>
+              <button
+                onClick={() => void recheckExtension()}
+                disabled={extRechecking}
+                title="연결 상태 새로고침"
+                style={{ flexShrink: 0, padding: '3px 8px', borderRadius: 5, border: '1px solid var(--border-rgba)', background: 'transparent', color: 'var(--text-muted)', fontSize: 10, cursor: extRechecking ? 'default' : 'pointer', fontFamily: 'inherit', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4, opacity: extRechecking ? 0.5 : 1 }}
+              >
+                <Icon name="refresh" size={12} style={{ animation: extRechecking ? 'spin 0.9s linear infinite' : 'none' }} />
+                새로고침
+              </button>
               <button
                 onClick={() => openSettingsTab('extension')}
                 style={{ flexShrink: 0, padding: '3px 10px', borderRadius: 5, border: '1px solid var(--border-focus)', background: 'transparent', color: 'var(--accent)', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}
@@ -3247,6 +3310,8 @@ export default function App() {
         open={dialog === 'item'}
         onClose={() => { setDialog('none'); setEditItem(null); setPrefilledItem(null); }}
         spaces={data.spaces}
+        presets={store.presets}
+        currentPresetId={store.activePresetId}
         editItem={editItem || (prefilledItem as LauncherItem)}
         defaultSpaceId={editSpaceId}
         monitorCount={monitorCount}

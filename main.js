@@ -640,8 +640,18 @@ function centeredBounds(pct = 75) {
 // hover (when the halo is at its widest) without wasting screen real estate.
 const FLOATING_ORB_GLOW_PAD = 22;
 
+// Accept either a numeric pixel size (current schema) or a legacy enum
+// ('small' / 'normal') from older settings blobs. Clamp to a sane range so a
+// corrupt store can't render a 1×1 or 2000×2000 orb.
 function floatingWindowSizeFor(sizePreset) {
-  const orbPx = sizePreset === 'small' ? 40 : 48;
+  let orbPx;
+  if (typeof sizePreset === 'number' && Number.isFinite(sizePreset)) {
+    orbPx = Math.max(24, Math.min(96, Math.round(sizePreset)));
+  } else if (sizePreset === 'small') {
+    orbPx = 40;
+  } else {
+    orbPx = 48;
+  }
   const winPx = orbPx + FLOATING_ORB_GLOW_PAD * 2;
   return { orbPx, winPx };
 }
@@ -2660,9 +2670,36 @@ app.whenReady().then(() => {
   screen.on('display-removed',         sendMonitorChange);
   screen.on('display-metrics-changed', sendMonitorChange);
   // Badge overlay spans the virtual desktop — resize it when displays change.
-  screen.on('display-added',           () => syncBadgeOverlay());
-  screen.on('display-removed',         () => syncBadgeOverlay());
-  screen.on('display-metrics-changed', () => syncBadgeOverlay());
+  // ── Display event handlers ─────────────────────────────────
+  // `display-metrics-changed` is noisy on Windows: it fires not only on
+  // monitor add/remove or DPI/resolution change, but every time a window
+  // crosses a DPI boundary or even momentarily during taskbar
+  // auto-hide/show. Without de-bouncing, dragging Chrome tabs between
+  // windows on a cross-DPI multi-monitor setup triggered a full
+  // syncBadgeOverlay() (and its setBounds + pushBadgeState) several times
+  // per second — visually, the floating badges appeared to "fly".
+  //
+  // Two-layer guard:
+  //   1. trailing-edge debounce so a burst collapses to one sync.
+  //   2. skip the sync entirely when the virtual desktop bounds didn't
+  //      actually change (most spurious metrics-changed events).
+  let _displaySyncTimer = null;
+  let _lastVDB = null;
+  const scheduleDisplaySync = () => {
+    if (_displaySyncTimer) clearTimeout(_displaySyncTimer);
+    _displaySyncTimer = setTimeout(() => {
+      _displaySyncTimer = null;
+      const vdb = getVirtualDesktopBounds();
+      const same = _lastVDB
+        && _lastVDB.x === vdb.x && _lastVDB.y === vdb.y
+        && _lastVDB.width === vdb.width && _lastVDB.height === vdb.height;
+      _lastVDB = vdb;
+      if (!same) syncBadgeOverlay();
+    }, 250);
+  };
+  screen.on('display-added',           () => { _lastVDB = null; scheduleDisplaySync(); });
+  screen.on('display-removed',         () => { _lastVDB = null; scheduleDisplaySync(); });
+  screen.on('display-metrics-changed', scheduleDisplaySync);
 
   // ── Auto-updater (packaged builds only) ──────────────────────────
   if (app.isPackaged) {

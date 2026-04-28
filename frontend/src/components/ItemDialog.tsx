@@ -21,7 +21,13 @@ interface ItemDialogProps {
   // (e.g. file-drop → folder/app only, URL-drop → url/browser) pass this so the
   // user isn't shown meaningless alternatives. Omit to show every type.
   allowedTypes?: Array<LauncherItem['type']>;
-  onSave: (spaceId: string, item: Omit<LauncherItem, 'id'> | LauncherItem) => void;
+  // All presets (including non-active). Passing this enables a Preset
+  // dropdown alongside the Space dropdown when editing — so users can move
+  // a card across presets, not just within one.
+  // Omit when adding a new card; new cards always go to the active preset.
+  presets?: Array<{ id: '1' | '2' | '3'; label?: string; spaces: Space[] }>;
+  currentPresetId?: '1' | '2' | '3';
+  onSave: (spaceId: string, item: Omit<LauncherItem, 'id'> | LauncherItem, targetPresetId?: '1' | '2' | '3') => void;
 }
 
 // Monotone Material Symbols only — emoji were jarring when mixed with the rest
@@ -71,14 +77,25 @@ const MAT_ICONS = [
   'favorite','radio_button_checked','emoji_emotions','face',
 ];
 
-export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1, allowedTypes, onSave }: ItemDialogProps) {
+export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1, allowedTypes, presets, currentPresetId, onSave }: ItemDialogProps) {
   useBusyMark('modal:item-edit', open);
   const isEdit = !!(editItem && 'id' in editItem && editItem.id);
+
+  // Find which preset currently owns the item (only relevant when editing
+  // and the caller passed `presets`). The preset dropdown defaults to this
+  // — switching it filters the space dropdown to that preset's spaces.
+  const initialPresetId: '1' | '2' | '3' | undefined = (() => {
+    if (!isEdit || !presets || !editItem) return currentPresetId;
+    const owning = presets.find(p => p.spaces.some(s => s.items.some(i => i.id === (editItem as LauncherItem).id)));
+    return (owning?.id as '1' | '2' | '3' | undefined) ?? currentPresetId;
+  })();
+
   type ItemForm = {
     title: string;
     type: LauncherItem['type'];
     value: string;
     color: string;
+    presetId?: '1' | '2' | '3';
     spaceId: string;
     iconType: 'material' | 'image';
     icon: string;
@@ -90,7 +107,16 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     type: editItem?.type ?? 'url',
     value: editItem?.value ?? '',
     color: editItem?.color ?? '',
+    presetId: initialPresetId,
     spaceId: (() => {
+      // When editing across-preset, find the space inside the OWNING preset
+      // (which may not be the currently-displayed `spaces` prop).
+      if (isEdit && editItem && presets) {
+        for (const p of presets) {
+          const s = p.spaces.find(sp => sp.items.some(i => i.id === (editItem as LauncherItem).id));
+          if (s) return s.id;
+        }
+      }
       if (editItem) return spaces.find(s => s.items.some(i => i.id === editItem.id))?.id ?? defaultSpaceId ?? spaces[0]?.id ?? '';
       return defaultSpaceId ?? spaces[0]?.id ?? '';
     })(),
@@ -98,6 +124,14 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     icon: editItem?.icon ?? 'star',
     monitor: editItem?.monitor ?? undefined,
   }));
+
+  // Spaces actually visible in the Space dropdown — filtered to the
+  // currently-selected preset when editing across presets.
+  const visibleSpaces: Space[] = (() => {
+    if (!presets || !form.presetId) return spaces;
+    const p = presets.find(pp => pp.id === form.presetId);
+    return p?.spaces ?? spaces;
+  })();
 
   const [iconSearch, setIconSearch] = useState(isEdit && editItem?.iconType === 'material' ? editItem.icon ?? '' : '');
   const [cropSrc, setCropSrc] = useState<string | null>(null);
@@ -326,7 +360,14 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     }
 
     if (isEdit) {
-      onSave(form.spaceId, { ...editItem, ...base, ...(widget ? { widget } : {}) } as LauncherItem);
+      // Pass targetPresetId only when it differs from the original owning
+      // preset — keeps existing in-preset edit codepath untouched.
+      const presetMoved = !!(form.presetId && initialPresetId && form.presetId !== initialPresetId);
+      onSave(
+        form.spaceId,
+        { ...editItem, ...base, ...(widget ? { widget } : {}) } as LauncherItem,
+        presetMoved ? form.presetId : undefined,
+      );
     } else {
       onSave(form.spaceId, { ...base, ...(widget ? { widget } : {}) } as Omit<LauncherItem, 'id'>);
     }
@@ -341,7 +382,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     fontSize: 12, color: 'var(--text-color)', transition: 'border-color 0.12s',
   };
 
-  const selectedSpace = spaces.find(s => s.id === form.spaceId);
+  const selectedSpace = visibleSpaces.find(s => s.id === form.spaceId);
   const selectedType = TYPE_OPTIONS.find(o => o.value === form.type);
   // Widget cards have an entirely different shape — no value/URL/path,
   // no type to choose, no icon picker (the widget renders its own
@@ -467,6 +508,44 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
               </div>
             )}
 
+            {/* Preset dropdown — only when editing AND caller passed presets.
+                Lets the user move a card to a different preset entirely.
+                Adding new cards always uses the active preset (no dropdown). */}
+            {isEdit && presets && presets.length > 1 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>프리셋</Label>
+                <DropdownMenu>
+                  <DropdownMenuTrigger style={dropBtnStyle}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {(() => {
+                        const p = presets.find(pp => pp.id === form.presetId);
+                        return p ? (p.label || `프리셋 ${p.id}`) : '선택';
+                      })()}
+                    </span>
+                    <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent style={{ minWidth: 160 }}>
+                    {presets.map(p => (
+                      <DropdownMenuItem
+                        key={p.id}
+                        onClick={() => {
+                          // When the preset changes, reset the space to the
+                          // first space of that preset so the dropdown below
+                          // doesn't show a stale-looking selection.
+                          const firstSpaceId = p.spaces[0]?.id ?? '';
+                          setForm(prev => ({ ...prev, presetId: p.id, spaceId: firstSpaceId }));
+                        }}
+                        style={{ fontWeight: p.id === form.presetId ? 700 : 400 }}
+                      >
+                        {p.label || `프리셋 ${p.id}`}
+                        {p.id === form.presetId && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )}
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>스페이스</Label>
               <DropdownMenu>
@@ -477,7 +556,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
                   <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />
                 </DropdownMenuTrigger>
                 <DropdownMenuContent style={{ minWidth: 160 }}>
-                  {spaces.map(s => (
+                  {visibleSpaces.map(s => (
                     <DropdownMenuItem key={s.id} onClick={() => f({ spaceId: s.id })}
                       style={{ fontWeight: s.id === form.spaceId ? 700 : 400 }}>
                       {s.icon} {s.name}

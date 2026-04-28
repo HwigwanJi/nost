@@ -343,22 +343,47 @@ export function ScanDialog({ open, onClose, onSelect }: ScanDialogProps) {
             flexShrink: 0,
           }}
         >
-          <DialogTitle
-            style={{
-              fontSize: 14,
-              fontWeight: 500,
-              color: 'var(--text-color)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 7,
-            }}
-          >
-            <Icon name="radar" size={16} color="var(--text-muted)" />
-            스마트 스캔
-          </DialogTitle>
-          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-            현재 열려 있는 창/탭을 클릭해서 스페이스에 빠르게 추가하세요.
-          </p>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <DialogTitle
+                style={{
+                  fontSize: 14,
+                  fontWeight: 500,
+                  color: 'var(--text-color)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                }}
+              >
+                <Icon name="radar" size={16} color="var(--text-muted)" />
+                스마트 스캔
+              </DialogTitle>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                현재 열려 있는 창/탭을 클릭해서 스페이스에 빠르게 추가하세요.
+              </p>
+            </div>
+            <button
+              onClick={() => void refreshScan()}
+              disabled={loading}
+              title="다시 스캔"
+              aria-label="다시 스캔"
+              style={{
+                flexShrink: 0,
+                width: 28, height: 28,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                background: 'transparent',
+                border: '1px solid var(--border-rgba)',
+                borderRadius: 7,
+                color: 'var(--text-muted)',
+                cursor: loading ? 'default' : 'pointer',
+                opacity: loading ? 0.5 : 1,
+                transition: 'opacity 0.15s, background 0.15s',
+                fontFamily: 'inherit',
+              }}
+            >
+              <Icon name="refresh" size={14} style={{ animation: loading ? 'spin 0.9s linear infinite' : 'none' }} />
+            </button>
+          </div>
         </DialogHeader>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px 18px' }}>
