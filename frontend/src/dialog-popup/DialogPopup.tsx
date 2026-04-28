@@ -170,6 +170,17 @@ export function DialogPopup() {
   const text   = light ? C.textL   : C.text;
   const muted  = light ? C.mutedL  : C.muted;
 
+  // L2 (drill into a space): subtle background tint so the user can
+  // tell at a glance "I'm inside <space name>", not just from the back
+  // button label. Uses the drilled space's colour at low opacity layered
+  // over the base bg; system pseudo-space falls back to the accent.
+  const stripTint = drillSpace
+    ? (drillSpace.color ? hexToRgba(drillSpace.color, light ? 0.10 : 0.18) : hexToRgba(C.accent, light ? 0.08 : 0.16))
+    : null;
+  const stripBorder = drillSpace
+    ? (drillSpace.color ? hexToRgba(drillSpace.color, light ? 0.28 : 0.36) : hexToRgba(C.accent, light ? 0.24 : 0.32))
+    : border;
+
   return (
     <div
       data-popup-interactive
@@ -181,8 +192,10 @@ export function DialogPopup() {
         alignItems: 'center',
         gap: 6,
         padding: '0 8px',
-        background: bg,
-        border: `1px solid ${border}`,
+        background: stripTint
+          ? `linear-gradient(${stripTint}, ${stripTint}), ${bg}`
+          : bg,
+        border: `1px solid ${stripBorder}`,
         borderRadius: 10,
         boxShadow: '0 4px 18px rgba(0, 0, 0, 0.18)',
         backdropFilter: 'blur(20px) saturate(160%)',
@@ -191,6 +204,7 @@ export function DialogPopup() {
         // vertically. Default `overflow: hidden` clipped the menu inside
         // the strip's own bounds.
         overflow: 'visible',
+        transition: 'background 180ms ease, border-color 180ms ease',
       }}
     >
       {/* Left section: brand + back/title */}
