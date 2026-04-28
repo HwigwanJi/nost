@@ -25,9 +25,10 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main:     path.resolve(__dirname, 'index.html'),
-        floating: path.resolve(__dirname, 'floating.html'),
-        badges:   path.resolve(__dirname, 'badges.html'),
+        main:        path.resolve(__dirname, 'index.html'),
+        floating:    path.resolve(__dirname, 'floating.html'),
+        badges:      path.resolve(__dirname, 'badges.html'),
+        dialogPopup: path.resolve(__dirname, 'dialog-popup.html'),
       },
     },
   },

@@ -23,6 +23,7 @@
       "preload.js",
       "preload-floating.js",
       "preload-badges.js",
+      "preload-dialog-popup.js",
       "icon.png",
       "frontend/dist/**/*"
     ],

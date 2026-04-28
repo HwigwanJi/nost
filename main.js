@@ -35,6 +35,10 @@ let mainWindow;
 let loadingWindow    = null;
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
 let badgeOverlay     = null;   // Phase 2 single overlay window hosting every floating badge
+let dialogPopupWin   = null;   // Save-As dialog companion popup
+let dialogPollTimer  = null;   // setInterval handle for dialog detection
+let dialogTrackedHwnd = 0;     // last seen dialog HWND so we can detect "still the same dialog" vs "different one"
+let dialogDismissedHwnd = 0;   // user clicked ✕ for THIS dialog — don't show until they open a different one
 let tray             = null;
 let currentShortcut  = 'Alt+4';
 
@@ -786,6 +790,182 @@ function refreshFloatingVisuals() {
     size:        settings.size,
     accentColor: settings.accentColor,
   });
+}
+
+// ── Save-As dialog companion popup ───────────────────────────────────
+//
+// A small frameless BrowserWindow that pops up above whichever Windows
+// file dialog (#32770) is in the foreground. Its UI is two-level:
+//   L1: chips per space (with folder-card count badges)
+//   L2: chips per folder card inside the picked space
+// Click a folder → reuse the existing jump-to-dialog-folder pipeline
+// (clipboard paste, Unicode-safe).
+//
+// Lifecycle is event-driven from main: a 600 ms detect-dialog poll spawns
+// the window when a dialog appears, repositions it as the dialog moves,
+// and destroys it when the dialog closes. The renderer never controls
+// its own visibility — it only handles "user clicked ✕" via dialog-popup-
+// dismiss IPC.
+
+const DIALOG_POPUP_HEIGHT = 50;     // window height (DIP)
+const DIALOG_POPUP_OFFSET = 6;      // gap between popup bottom and dialog top
+const DIALOG_POLL_MS      = 600;    // detection poll cadence
+
+function buildDialogPopupState() {
+  // Renderer wants spaces with folder cards + a system pseudo-space. We
+  // pull from the active preset's mirror (data.spaces) — same shape the
+  // main UI sees.
+  const data = store.get('appData') || {};
+  const spaces = Array.isArray(data.spaces) ? data.spaces : [];
+  const home = process.env.USERPROFILE || '';
+
+  return {
+    systemFolders: home ? [
+      { id: '__sys-downloads', title: '다운로드',  path: `${home}\\Downloads` },
+      { id: '__sys-desktop',   title: '바탕화면',  path: `${home}\\Desktop` },
+      { id: '__sys-documents', title: '문서',      path: `${home}\\Documents` },
+    ] : [],
+    spaces: spaces.map(s => ({
+      id: s.id,
+      name: s.name || '이름 없음',
+      icon: s.icon,
+      color: s.color,
+      folders: (s.items || [])
+        .filter(i => i.type === 'folder' && i.value)
+        .map(i => ({ id: i.id, title: i.title || i.value, path: i.value })),
+    })),
+  };
+}
+
+function pushDialogPopupState(extra = {}) {
+  if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+  const base = buildDialogPopupState();
+  dialogPopupWin.webContents.send('dialog-popup-state', { ...base, ...extra });
+}
+
+function destroyDialogPopupWindow() {
+  if (dialogPopupWin && !dialogPopupWin.isDestroyed()) {
+    dialogPopupWin.destroy();
+  }
+  dialogPopupWin = null;
+}
+
+function positionDialogPopup(rect) {
+  if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
+  // Sit centred above the dialog. We trust the dialog's reported width
+  // (typical Save-As dialogs are 700–900 px wide) and match it. If the
+  // popup width would push outside the work area we let setBounds clamp;
+  // the "snap to screen edge" Windows does in that case is acceptable.
+  const width  = Math.max(420, Math.min(rect.width, 900));
+  const x      = Math.round(rect.x + (rect.width - width) / 2);
+  const y      = Math.round(rect.y - DIALOG_POPUP_HEIGHT - DIALOG_POPUP_OFFSET);
+  try {
+    dialogPopupWin.setBounds({ x, y, width, height: DIALOG_POPUP_HEIGHT });
+  } catch (_) { /* dialog moved off-screen mid-set; ignore */ }
+}
+
+function createDialogPopupWindow(rect, dialogTitle) {
+  if (dialogPopupWin && !dialogPopupWin.isDestroyed()) return dialogPopupWin;
+
+  // Memory-only session — the popup is short-lived per dialog and we don't
+  // want it polluting the default cache.
+  const dpSession = session.fromPartition('dialog-popup-memory');
+  try {
+    dpSession.clearCache();
+    dpSession.clearStorageData({ storages: ['cachestorage', 'cookies', 'localstorage'] }).catch(() => {});
+  } catch (_) {}
+
+  dialogPopupWin = new BrowserWindow({
+    width: Math.max(420, Math.min(rect?.width ?? 480, 900)),
+    height: DIALOG_POPUP_HEIGHT,
+    x: 0, y: 0,
+    frame: false, transparent: true, resizable: false,
+    alwaysOnTop: true, skipTaskbar: true, focusable: false,
+    hasShadow: false, show: false, useContentSize: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-dialog-popup.js'),
+      contextIsolation: true,
+      session: dpSession,
+    },
+  });
+  dialogPopupWin.setAlwaysOnTop(true, 'screen-saver');
+  dialogPopupWin.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+  dialogPopupWin.setIgnoreMouseEvents(false);
+
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
+  if (rendererUrl) {
+    dialogPopupWin.loadURL(`${rendererUrl}/dialog-popup.html`);
+  } else {
+    dialogPopupWin.loadFile(path.join(__dirname, 'frontend', 'dist', 'dialog-popup.html'));
+  }
+
+  dialogPopupWin.once('ready-to-show', () => {
+    if (rect) positionDialogPopup(rect);
+    pushDialogPopupState({ dialogTitle });
+    dialogPopupWin.show();
+  });
+
+  dialogPopupWin.on('closed', () => { dialogPopupWin = null; });
+  return dialogPopupWin;
+}
+
+/**
+ * Tick the dialog poll. Fired every DIALOG_POLL_MS. Decides whether to
+ * spawn / reposition / destroy the popup based on what's currently in the
+ * foreground.
+ */
+async function tickDialogPoll() {
+  let detected;
+  try {
+    const { stdout } = await runPsAsync('detect-dialog.ps1', {}, { timeout: 4000 });
+    detected = JSON.parse(stdout.trim());
+  } catch {
+    return; // PS hiccup — skip this tick.
+  }
+
+  if (!detected || !detected.isDialog) {
+    // No dialog currently focused. Tear down if we had one up.
+    if (dialogPopupWin && !dialogPopupWin.isDestroyed()) {
+      destroyDialogPopupWindow();
+    }
+    dialogTrackedHwnd = 0;
+    // Reset dismiss flag once the user moves on — they get a fresh popup
+    // for the next dialog.
+    if (dialogDismissedHwnd) dialogDismissedHwnd = 0;
+    return;
+  }
+
+  // Skip dialogs without obvious file-save/open intent. The #32770 class is
+  // shared by Properties / Print / etc. dialogs we don't want to attach to.
+  // Heuristic: title contains 저장, Save, 열기, Open. (Trivially extensible.)
+  const t = (detected.title || '');
+  const looksLikeFileDialog = /저장|열기|Save|Open|찾아보기|Browse/i.test(t);
+  if (!looksLikeFileDialog) {
+    if (dialogPopupWin && !dialogPopupWin.isDestroyed()) destroyDialogPopupWindow();
+    dialogTrackedHwnd = 0;
+    return;
+  }
+
+  // User dismissed THIS dialog's popup — don't reattach.
+  if (detected.hwnd && detected.hwnd === dialogDismissedHwnd) return;
+
+  if (!dialogPopupWin || dialogPopupWin.isDestroyed()) {
+    createDialogPopupWindow(detected.rect, t);
+    dialogTrackedHwnd = detected.hwnd || 0;
+  } else if (detected.hwnd !== dialogTrackedHwnd) {
+    // Different dialog became foreground — reuse the popup, just refresh.
+    dialogTrackedHwnd = detected.hwnd || 0;
+    pushDialogPopupState({ dialogTitle: t });
+    if (detected.rect) positionDialogPopup(detected.rect);
+  } else {
+    // Same dialog — keep position synced (dialog might have been moved).
+    if (detected.rect) positionDialogPopup(detected.rect);
+  }
+}
+
+function startDialogPoll() {
+  if (dialogPollTimer) return;
+  dialogPollTimer = setInterval(tickDialogPoll, DIALOG_POLL_MS);
 }
 
 // ── Floating badges overlay (Phase 2) ────────────────────────────────
@@ -2255,6 +2435,19 @@ function registerIpcHandlers() {
       env: { ...process.env, QL_PATH: folderPath },
     });
   });
+
+  // ── Dialog companion popup IPC ───────────────────────────────────
+  ipcMain.on('dialog-popup-request-state', () => pushDialogPopupState());
+  ipcMain.on('dialog-popup-dismiss', () => {
+    // Mark THIS dialog as dismissed so the poll doesn't reattach.
+    dialogDismissedHwnd = dialogTrackedHwnd;
+    destroyDialogPopupWindow();
+  });
+
+  // Start the dialog detection poll. Runs for the app lifetime — cheap
+  // (one PS invocation every 600ms with a tiny payload). When no dialog
+  // is in foreground the tick is essentially a no-op.
+  startDialogPoll();
 
   // ── 12j. Auto-Updater ────────────────────────────────────────────
 
