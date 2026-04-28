@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>nost — 한곳에서 빠르게</title>
+  <meta name="description" content="nost는 자주 쓰는 앱·URL·문서를 한 화면에 모으는 데스크탑 런처입니다. Windows 10/11 무료." />
+
+  <!-- OG -->
+  <meta property="og:title" content="nost — 한곳에서 빠르게" />
+  <meta property="og:description" content="자주 쓰는 앱·URL·문서를 한 화면에. Windows 10/11 무료." />
+  <meta property="og:image" content="https://hwigwanji.github.io/nost/screenshot.png" />
+  <meta property="og:type" content="website" />
+
+  <link rel="icon" href="icon128.png" type="image/png" />
+  <link rel="apple-touch-icon" href="icon128.png" />
+
+  <!-- Pretendard via CDN — same family used inside the app, so the
+       download page reads as "nost" continuous with the launcher. -->
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css" />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a href="#" class="brand">
+      <svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true">
+        <rect width="512" height="512" rx="116" fill="var(--accent)"/>
+        <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="#fff"/>
+      </svg>
+      <span class="brand-name">nost</span>
+    </a>
+    <nav class="topnav">
+      <a href="https://github.com/HwigwanJi/nost" target="_blank" rel="noopener noreferrer">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1 class="headline">
+        자주 쓰는 모든 것,<br>
+        <span class="accent-text">한 화면에서.</span>
+      </h1>
+      <p class="sub">
+        nost는 앱·URL·문서·폴더를 그리드 카드로 묶어 두고 한 번의 클릭으로 여는 데스크탑 런처입니다.
+      </p>
+
+      <div class="cta-row">
+        <a id="download-btn" class="btn btn-primary" href="https://github.com/HwigwanJi/nost/releases/latest" target="_blank" rel="noopener noreferrer">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18" aria-hidden="true">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          </svg>
+          <span id="download-label">Windows용 다운로드</span>
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/HwigwanJi/nost/releases" target="_blank" rel="noopener noreferrer">
+          전체 버전
+        </a>
+      </div>
+      <p class="meta" id="meta">
+        <span id="meta-version">최신 버전 확인 중…</span>
+        <span class="meta-dot">·</span>
+        Windows 10 / 11
+        <span class="meta-dot">·</span>
+        무료
+      </p>
+
+      <div class="screenshot-frame">
+        <img src="screenshot.png" alt="nost 런처 스크린샷" loading="lazy" />
+      </div>
+    </section>
+
+    <section class="features">
+      <div class="feature">
+        <div class="feature-icon">⌨</div>
+        <h3>키보드 한 번으로 호출</h3>
+        <p>전역 단축키로 어디에서든 nost를 바로 띄워 검색·실행하세요.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">▦</div>
+        <h3>스페이스로 분류</h3>
+        <p>업무·개인·프로젝트별로 카드 그리드를 나눠 두세요. 프리셋 1·2·3으로 통째로 전환.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">⚡</div>
+        <h3>플로팅 뱃지</h3>
+        <p>자주 가는 스페이스를 화면 위 떠있는 뱃지로 분리해 어디서든 한 클릭.</p>
+      </div>
+      <div class="feature">
+        <div class="feature-icon">🎨</div>
+        <h3>위젯 카드</h3>
+        <p>미디어 컨트롤·컬러 팔레트 같은 동적 카드를 한 칸에. 클립보드 hex 자동 인식.</p>
+      </div>
+    </section>
+
+    <section class="cta-end">
+      <h2>지금 받으세요</h2>
+      <a id="download-btn-2" class="btn btn-primary btn-lg" href="https://github.com/HwigwanJi/nost/releases/latest" target="_blank" rel="noopener noreferrer">
+        Windows용 다운로드
+      </a>
+      <p class="meta">100% 무료 · 광고 없음 · 오픈소스</p>
+    </section>
+  </main>
+
+  <footer>
+    <div>
+      © 2026 Antigravity ·
+      <a href="https://github.com/HwigwanJi/nost" target="_blank" rel="noopener noreferrer">GitHub</a> ·
+      <a href="https://github.com/HwigwanJi/nost/issues" target="_blank" rel="noopener noreferrer">이슈 제보</a>
+    </div>
+  </footer>
+
+  <script src="main.js"></script>
+</body>
+</html>
