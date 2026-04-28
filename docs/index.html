@@ -70,26 +70,123 @@
       </div>
     </section>
 
-    <section class="features">
-      <div class="feature">
-        <div class="feature-icon">⌨</div>
-        <h3>키보드 한 번으로 호출</h3>
-        <p>전역 단축키로 어디에서든 nost를 바로 띄워 검색·실행하세요.</p>
+    <!-- ── Feature groups ─────────────────────────────────────
+         Each group bundles a few related capabilities under a
+         single banner. The banner explains the WHY of the group;
+         the inner items list the WHAT. Better discoverability
+         than a flat 4-tile grid for users skimming for a use case
+         they care about ("자주 호출 해야 하는데...", "정리하고
+         싶은데..."). -->
+
+    <section class="feature-group">
+      <div class="group-banner">
+        <span class="group-icon">⚡</span>
+        <div>
+          <h2>빠르게 호출</h2>
+          <p>어디서 작업하든 1초 안에 nost로 들어옵니다.</p>
+        </div>
       </div>
-      <div class="feature">
-        <div class="feature-icon">▦</div>
-        <h3>스페이스로 분류</h3>
-        <p>업무·개인·프로젝트별로 카드 그리드를 나눠 두세요. 프리셋 1·2·3으로 통째로 전환.</p>
+      <div class="group-items">
+        <div class="item">
+          <h4>전역 단축키</h4>
+          <p>풀스크린 게임·영상 위에서도 단축키 한 번으로 즉시 띄움. ESC로 다시 숨김.</p>
+        </div>
+        <div class="item">
+          <h4>플로팅 뱃지</h4>
+          <p>자주 쓰는 스페이스를 화면 위 떠있는 원형 뱃지로 떼어내 한 클릭으로 미니 창 호출.</p>
+        </div>
+        <div class="item">
+          <h4>플로팅 버튼</h4>
+          <p>본 창이 닫혀 있어도 화면 가장자리에 항상 떠있는 작은 버튼으로 nost 복귀.</p>
+        </div>
+        <div class="item">
+          <h4>Tab 키 프리셋 전환</h4>
+          <p>입력 안 할 때 Tab 누르면 프리셋 1 → 2 → 3 순환. 키보드만으로 컨텍스트 전환.</p>
+        </div>
       </div>
-      <div class="feature">
-        <div class="feature-icon">⚡</div>
-        <h3>플로팅 뱃지</h3>
-        <p>자주 가는 스페이스를 화면 위 떠있는 뱃지로 분리해 어디서든 한 클릭.</p>
+    </section>
+
+    <section class="feature-group">
+      <div class="group-banner">
+        <span class="group-icon">▦</span>
+        <div>
+          <h2>깔끔하게 정리</h2>
+          <p>업무·개인·프로젝트가 섞이지 않게 공간을 나눠 두세요.</p>
+        </div>
       </div>
-      <div class="feature">
-        <div class="feature-icon">🎨</div>
-        <h3>위젯 카드</h3>
-        <p>미디어 컨트롤·컬러 팔레트 같은 동적 카드를 한 칸에. 클립보드 hex 자동 인식.</p>
+      <div class="group-items">
+        <div class="item">
+          <h4>스페이스</h4>
+          <p>관련 카드를 그룹으로 묶는 기본 단위. 색·아이콘·이름 자유 지정.</p>
+        </div>
+        <div class="item">
+          <h4>프리셋 1·2·3</h4>
+          <p>완전히 독립된 스페이스 세트 3개. "업무용 / 개인용 / 작업용" 같이 통째로 전환.</p>
+        </div>
+        <div class="item">
+          <h4>컨테이너 슬롯</h4>
+          <p>한 카드에 상하좌우 4개 보조 카드를 묶어서 멀티런처화. 드래그로 직관적 슬롯 채우기.</p>
+        </div>
+        <div class="item">
+          <h4>페어 레이아웃</h4>
+          <p>좁은 스페이스는 같은 행에 둘씩 배치. 자주 쓰는 카드들이 한눈에.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="feature-group">
+      <div class="group-banner">
+        <span class="group-icon">✨</span>
+        <div>
+          <h2>스마트하게 추가</h2>
+          <p>nost가 알아서 잡아서 카드로. 손이 덜 갑니다.</p>
+        </div>
+      </div>
+      <div class="group-items">
+        <div class="item">
+          <h4>클립보드 자동 감지</h4>
+          <p>URL · 폴더 경로 · #HEX 컬러 · 일반 텍스트가 복사돼 있으면 한 줄 배너로 추가 제안.</p>
+        </div>
+        <div class="item">
+          <h4>스마트 스캔</h4>
+          <p>현재 열린 창과 브라우저 탭을 한 번에 스캔해서 카드 후보로 보여줍니다.</p>
+        </div>
+        <div class="item">
+          <h4>빠른 추가</h4>
+          <p>"+ 추가" 한 번이면 클립보드 분석 → 적합한 타입 자동 선택 → 곧장 카드.</p>
+        </div>
+        <div class="item">
+          <h4>시작 템플릿</h4>
+          <p>처음 켜면 직군별(개발·디자인·학생·일반) 시드 카드로 빈 화면 0초 채움.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="feature-group">
+      <div class="group-banner">
+        <span class="group-icon">🎴</span>
+        <div>
+          <h2>위젯 + 워크플로우</h2>
+          <p>한 칸 안에서 동작하거나, 여러 카드를 묶어서 실행하거나.</p>
+        </div>
+      </div>
+      <div class="group-items">
+        <div class="item">
+          <h4>미디어 컨트롤 위젯</h4>
+          <p>YouTube·Spotify·뭐든 OS 미디어 키로. Pill 드래그로 이전/다음, 슬라이더로 볼륨.</p>
+        </div>
+        <div class="item">
+          <h4>컬러 팔레트 위젯</h4>
+          <p>Pantone 카드 스타일로 자주 쓰는 색을 보관. 클릭 = HEX 클립보드 복사.</p>
+        </div>
+        <div class="item">
+          <h4>노드 — 동시 실행</h4>
+          <p>여러 카드를 한 그룹으로 묶어 한 번에 실행. 모니터별 정해진 위치에 자동 배치.</p>
+        </div>
+        <div class="item">
+          <h4>덱 — 순차 실행</h4>
+          <p>카드들을 정해진 순서대로 실행. 회의 시작 루틴, 출근 루틴 같은 흐름 자동화.</p>
+        </div>
       </div>
     </section>
 

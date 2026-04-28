@@ -174,44 +174,77 @@ main {
   display: block;
 }
 
-/* ── Features grid ──────────────────────────────────── */
-.features {
-  margin: 80px auto 64px;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 18px;
+/* ── Feature groups ─────────────────────────────────── */
+.feature-group {
   max-width: 940px;
+  margin: 64px auto;
 }
-.feature {
-  background: var(--surface);
-  border: 1px solid var(--border);
+/* The first group sits closer to the screenshot above for visual
+   continuity; later groups get more breathing room because the
+   reader's already in "absorbing detail" mode. */
+.feature-group + .feature-group { margin-top: 88px; }
+
+.group-banner {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 28px;
+}
+.group-icon {
+  width: 56px;
+  height: 56px;
   border-radius: 14px;
-  padding: 20px 18px;
-  transition: transform 140ms ease, border-color 140ms ease;
-}
-.feature:hover {
-  transform: translateY(-2px);
-  border-color: rgba(99, 102, 241, 0.32);
-}
-.feature-icon {
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
-  background: rgba(99, 102, 241, 0.12);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(99, 102, 241, 0.06));
   color: var(--accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
-  margin-bottom: 10px;
+  font-size: 26px;
+  flex-shrink: 0;
+  border: 1px solid rgba(99, 102, 241, 0.18);
 }
-.feature h3 {
+.group-banner h2 {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+}
+.group-banner p {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+  max-width: 540px;
+}
+
+.group-items {
+  display: grid;
+  /* 2-up on desktop, 1-up on phones — keeps each item readable
+     instead of going to 4 narrow columns where the descriptions
+     get cramped. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 160ms ease;
+}
+.item:hover {
+  transform: translateY(-2px);
+  border-color: rgba(99, 102, 241, 0.32);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.08);
+}
+.item h4 {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0 0 6px;
+  color: var(--text);
 }
-.feature p {
+.item p {
   font-size: 12.5px;
   color: var(--text-muted);
   line-height: 1.55;
@@ -253,6 +286,10 @@ footer a:hover {
 /* ── Mobile ─────────────────────────────────────────── */
 @media (max-width: 640px) {
   .hero { padding: 32px 0 16px; }
-  .features { margin-top: 48px; }
+  .feature-group { margin: 48px auto; }
+  .feature-group + .feature-group { margin-top: 56px; }
+  .group-banner { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .group-icon { width: 44px; height: 44px; font-size: 22px; border-radius: 11px; }
+  .group-banner h2 { font-size: 20px; }
   .cta-end { padding: 48px 0 64px; }
 }
