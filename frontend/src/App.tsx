@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Toaster, toast as sonnerToast } from 'sonner';
+import { Toaster } from 'sonner';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -1287,16 +1287,19 @@ export default function App() {
     if (!targetSpaceId) return;
     const newItem = store.addMemo(targetSpaceId, value);
     if (newItem) {
-      sonnerToast('메모로 저장됨', {
-        description: data.spaces[0].name,
-        action: {
+      // Use the in-house toast queue (same chrome as every other
+      // app toast) — sonner had a different look + position which
+      // the user flagged as off-brand.
+      showToast(`메모로 저장됨 · ${data.spaces[0].name}`, {
+        actions: [{
           label: '열기',
+          icon: 'open_in_new',
           onClick: () => setEditingMemoId({ spaceId: targetSpaceId, itemId: newItem.id }),
-        },
+        }],
         duration: 4000,
       });
     }
-  }, [clipTextPrompt, data.spaces, store]);
+  }, [clipTextPrompt, data.spaces, store, showToast]);
 
   const handleClipTextDismiss = useCallback(() => {
     if (clipTextPrompt) dismissedTextRef.current.add(clipTextPrompt.value);
@@ -2002,9 +2005,12 @@ export default function App() {
       // because it was never offered, not because they're sure.
       const refIdAfter = lastAddedItemRef.current;
       if (refIdAfter) {
-        sonnerToast('카드 추가됨', {
-          description: '아이콘이나 색상을 바꿔볼까요?',
-          action: { label: '꾸미기', onClick: () => handleRequestAdvanced(sid) },
+        showToast('카드 추가됨 · 아이콘이나 색상을 바꿔볼까요?', {
+          actions: [{
+            label: '꾸미기',
+            icon: 'palette',
+            onClick: () => handleRequestAdvanced(sid),
+          }],
           duration: 5000,
         });
       }
@@ -4032,6 +4038,7 @@ export default function App() {
         onRequestAdvanced={handleRequestAdvanced}
         startAdvanced={itemDialogStartAdvanced}
         onPickOnScreen={handlePickOnScreen}
+        showToast={showToast}
       />
       <ItemWizard
         open={dialog === 'quickadd'}

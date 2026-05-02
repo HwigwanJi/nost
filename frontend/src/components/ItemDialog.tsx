@@ -38,7 +38,6 @@
  */
 
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { toast } from 'sonner';
 import type { LauncherItem, Space } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -74,6 +73,10 @@ interface ItemDialogProps {
    *  enables a click-on-space picker mode in the main UI. Omit to
    *  hide the button. */
   onPickOnScreen?: (item: Omit<LauncherItem, 'id'>) => void;
+  /** Optional — bridge to the in-house toast queue. The dialog's
+   *  post-save "꾸미기" nudge prefers this over sonner so the
+   *  visual chrome matches every other toast in the app. */
+  showToast?: (msg: string, opts?: { actions?: Array<{ label: string; icon: string; onClick: () => void }>; duration?: number }) => void;
 }
 
 const TYPE_OPTIONS: Array<{ value: LauncherItem['type']; label: string; icon: string; hint: string }> = [
@@ -132,7 +135,7 @@ const isEmojiIcon = (s: string) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.tes
 export function ItemDialog({
   open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1,
   allowedTypes, presets, currentPresetId, onSave,
-  onRequestAdvanced, startAdvanced, onPickOnScreen,
+  onRequestAdvanced, startAdvanced, onPickOnScreen, showToast,
 }: ItemDialogProps) {
   useBusyMark('modal:item-edit', open);
   const isEdit = !!(editItem && 'id' in editItem && editItem.id);
@@ -664,10 +667,13 @@ export function ItemDialog({
       onSave(useSpace, payload as LauncherItem, presetMoved ? form.presetId : undefined);
     } else {
       onSave(useSpace, payload as Omit<LauncherItem, 'id'>);
-      if (!advancedTouchedRef.current && onRequestAdvanced) {
-        toast('카드 추가됨', {
-          description: '아이콘이나 색상을 바꿔볼까요?',
-          action: { label: '꾸미기', onClick: () => onRequestAdvanced(useSpace) },
+      if (!advancedTouchedRef.current && onRequestAdvanced && showToast) {
+        showToast('카드 추가됨 · 아이콘이나 색상을 바꿔볼까요?', {
+          actions: [{
+            label: '꾸미기',
+            icon: 'palette',
+            onClick: () => onRequestAdvanced(useSpace),
+          }],
           duration: 5000,
         });
       }
