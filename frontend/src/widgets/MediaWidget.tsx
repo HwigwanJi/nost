@@ -3,6 +3,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Slider } from '@/components/ui/slider';
 import { electronAPI } from '../electronBridge';
 import { useAppActions } from '../contexts/AppContext';
+import { WIDGET } from './widgetTokens';
 import type { LauncherItem, Space } from '../types';
 
 /**
@@ -271,37 +272,30 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
           zIndex: 2,
         }} />
 
-        {/* ── Inside card area (38px) — holds the transport pill ──
-            Same height, same horizontal margin, same vertical
-            alignment as MemoCard / ColorSwatch's inside card. The
-            pill itself stays its natural width (gesture-friendly),
-            centred within the area. */}
+        {/* ── Inside card area — the pill IS the inside card ────
+            Earlier versions wrapped a 60×28 pill inside a 38px
+            transparent flex container — visually the inside card
+            looked smaller than memo/colour because only the pill
+            had a fill. The user spotted this twice. Fix: the pill
+            now fills the inside-card area edge-to-edge (width 100%
+            within the wrapper's WIDGET.insideMarginX padding,
+            height = WIDGET.insideHeight). All three widgets now
+            present a primary box at exactly the same dimensions. */}
         <div
           style={{
             flex: 1,
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            padding: '8px 12px 0 12px',
+            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px 0 ${WIDGET.insideMarginX}px`,
             minHeight: 0,
           }}
         >
-          <div
-            style={{
-              width: '100%',
-              height: 38,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <PlayPauseGesturePill
-              accent={accent}
-              onPlayPause={() => { fire('play-pause'); showToast('재생 / 일시정지', { duration: 1100 }); }}
-              onPrev={() => { fire('prev'); showToast('이전 트랙', { duration: 1100 }); }}
-              onNext={() => { fire('next'); showToast('다음 트랙', { duration: 1100 }); }}
-            />
-          </div>
+          <PlayPauseGesturePill
+            accent={accent}
+            onPlayPause={() => { fire('play-pause'); showToast('재생 / 일시정지', { duration: 1100 }); }}
+            onPrev={() => { fire('prev'); showToast('이전 트랙', { duration: 1100 }); }}
+            onNext={() => { fire('next'); showToast('다음 트랙', { duration: 1100 }); }}
+          />
         </div>
 
         {/* ── Bottom T-split (30px) — mute icon | volume slider ──
@@ -516,15 +510,19 @@ function PlayPauseGesturePill({ accent, onPlayPause, onPrev, onNext }: {
       onContextMenu={(e) => e.stopPropagation()}
       title={'짧게 : 재생 / 일시정지\n왼쪽으로 : 이전 트랙\n오른쪽으로 : 다음 트랙'}
       style={{
-        width: 60, height: 28,
-        borderRadius: 10,
+        // Fills the inside-card area (= WIDGET.insideHeight tall,
+        // 100% wide within the wrapper's insideMarginX padding) so
+        // the music widget's primary box matches MemoCard's swipe
+        // surface and ColorSwatch's color block byte-for-byte.
+        width: '100%',
+        height: WIDGET.insideHeight,
+        borderRadius: WIDGET.primaryRadius,
         background: `color-mix(in srgb, var(--surface) 50%, ${accent} 16%)`,
         border: `1px solid color-mix(in srgb, ${accent} 40%, transparent)`,
         color: accent,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        gap: 1,
+        gap: 4,
         cursor: 'pointer',
-        flexShrink: 0,
         boxShadow: `0 1px 2px color-mix(in srgb, ${accent} 12%, transparent)`,
         position: 'relative',
         userSelect: 'none',
@@ -580,19 +578,22 @@ function PlayPauseGesturePill({ accent, onPlayPause, onPrev, onNext }: {
         opacity: hint ? 0.25 : 1,
         transition: 'opacity 100ms ease',
       }}>
+        {/* Slightly larger glyphs now that the pill fills the
+            inside-card area — the previous 14/13 px icons looked
+            stranded in the middle of a 38 px tall surface. */}
         <span style={{
-          width: 16, height: 16,
+          width: 18, height: 18,
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           lineHeight: 1,
         }}>
-          <Icon name="play_arrow" size={14} filled weight={600} />
+          <Icon name="play_arrow" size={16} filled weight={600} />
         </span>
         <span style={{
-          width: 14, height: 16,
+          width: 16, height: 18,
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
           lineHeight: 1,
         }}>
-          <Icon name="pause" size={13} filled weight={600} />
+          <Icon name="pause" size={15} filled weight={600} />
         </span>
       </span>
     </button>
