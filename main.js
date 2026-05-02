@@ -2053,6 +2053,92 @@ function registerIpcHandlers() {
     } catch (e) { return { success: false, reason: String(e) }; }
   });
 
+  // ── 12c-bis. Memo (사라지는 메모) — txt export ───────────────────
+  //
+  // Renderer hands us {body, slug, customFolder?}; we write a UTF-8
+  // text file to either the user's chosen folder or the default
+  // %APPDATA%/nost/memos/. Shell-opens the file so it lands in the OS
+  // default editor (notepad / VSCode / whatever the user picked for
+  // .txt). Returns the absolute path so the renderer can also turn
+  // the memo card into a file card pointing at it.
+  //
+  // Filename: ${slug}_${YYYYMMDD}.txt — collisions get a numeric suffix.
+  // Why we don't trust the renderer's filename: NTFS forbidden chars
+  // and length limits are easier to enforce here in one place.
+  ipcMain.handle('memo-export-txt', async (_e, args) => {
+    try {
+      const { body, slug, customFolder, openAfter } = (args && typeof args === 'object') ? args : {};
+      if (typeof body !== 'string') return { success: false, reason: 'invalid-body' };
+      const baseSlug = (typeof slug === 'string' && slug.trim()) ? slug.trim() : '메모';
+
+      // Pick the destination folder. Renderer can override via
+      // customFolder (validated for existence), default = userData/memos.
+      let folder = path.join(app.getPath('userData'), 'memos');
+      if (typeof customFolder === 'string' && customFolder.trim()) {
+        try {
+          const stat = fs.statSync(customFolder);
+          if (stat.isDirectory()) folder = customFolder;
+        } catch { /* fall back to default */ }
+      }
+      try { fs.mkdirSync(folder, { recursive: true }); }
+      catch (e) { return { success: false, reason: `mkdir: ${String(e)}` }; }
+
+      // Date suffix in local time.
+      const d = new Date();
+      const ymd = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+
+      // Sanitize slug for NTFS — defence-in-depth (renderer slugifies too).
+      const safeSlug = baseSlug.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 40) || '메모';
+
+      // Find a non-colliding filename.
+      let filename = `${safeSlug}_${ymd}.txt`;
+      let candidate = path.join(folder, filename);
+      let n = 2;
+      while (fs.existsSync(candidate) && n < 100) {
+        filename = `${safeSlug}_${ymd}_${n}.txt`;
+        candidate = path.join(folder, filename);
+        n++;
+      }
+
+      // Write with UTF-8 BOM so legacy Notepad on Win10 still detects
+      // Korean correctly. Newer Notepad (Win11) is fine without it,
+      // but BOM is harmless either way.
+      const BOM = '﻿';
+      fs.writeFileSync(candidate, BOM + body, 'utf-8');
+
+      if (openAfter) {
+        // Don't await; we want the response back immediately.
+        shell.openPath(candidate).catch(() => {});
+      }
+      return { success: true, filePath: candidate };
+    } catch (e) {
+      return { success: false, reason: String(e) };
+    }
+  });
+
+  // Open the memos folder (or the user's custom folder) in Explorer.
+  // Used by the settings page "변경" / "폴더 열기" affordance.
+  ipcMain.handle('memo-open-folder', async (_e, customFolder) => {
+    try {
+      let folder = path.join(app.getPath('userData'), 'memos');
+      if (typeof customFolder === 'string' && customFolder.trim()) {
+        try {
+          const stat = fs.statSync(customFolder);
+          if (stat.isDirectory()) folder = customFolder;
+        } catch { /* fall back */ }
+      }
+      try { fs.mkdirSync(folder, { recursive: true }); } catch { /* no-op */ }
+      shell.openPath(folder);
+      return { success: true, filePath: folder };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  // Resolve the default memo folder (used when settings.memo.exportFolder is unset).
+  // Renderer shows this in the settings UI as a placeholder/preview.
+  ipcMain.handle('memo-default-folder', () => {
+    return path.join(app.getPath('userData'), 'memos');
+  });
+
   // ── 12d. Clipboard ───────────────────────────────────────────────
 
   ipcMain.handle('read-clipboard', async () => {

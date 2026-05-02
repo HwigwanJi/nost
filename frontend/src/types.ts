@@ -51,10 +51,57 @@ export type WidgetData =
   | { kind: 'media-control';  options?: MediaControlWidgetOptions }
   | { kind: 'color-swatch';   options: ColorSwatchOptions };
 
+/**
+ * Memo (사라지는 메모) — embedded in a LauncherItem when type === 'memo'.
+ *
+ * Why a separate sub-document rather than reusing `value` for the body:
+ * memos carry a *time dimension* (TTL, last-touched, trash) that no other
+ * card type cares about. Folding it into `value` would force every
+ * non-memo code path to interpret JSON-in-a-string. Following the same
+ * tagged-union pattern as `widget`.
+ *
+ * Lifecycle:
+ *   - Created: createdAt = now, expiresAt = now + defaultTtl, lastTouchedAt = now
+ *   - Edited / 점 톡 살리기: lastTouchedAt = now, expiresAt = now + defaultTtl (RESET)
+ *   - 핀: pinned=true on the parent LauncherItem — expiresAt is ignored
+ *   - 만료 (now > expiresAt && !pinned): trashedAt is set to that moment
+ *   - 휴지통 보관 만료 (now - trashedAt > trashRetentionHours): hard-delete
+ *
+ * The body's first non-empty line is the card title — single source of
+ * truth, no separate title field. Migration of legacy items keeps the
+ * LauncherItem.title in sync at write time so other places (search,
+ * accessibility) can read item.title without parsing the body.
+ */
+export interface MemoData {
+  /** Plain text body. First non-empty line acts as the title. */
+  body: string;
+  /** Unix ms when the memo was first created. */
+  createdAt: number;
+  /** Unix ms when the memo expires (auto-trashes). Ignored when item.pinned. */
+  expiresAt: number;
+  /** Unix ms of the last edit OR 점 톡 살리기. Used to display "마지막 수정". */
+  lastTouchedAt: number;
+  /** Unix ms when the memo entered the trash. Absent = active memo. */
+  trashedAt?: number;
+}
+
+/** Memo subsystem settings — lives on AppSettings.memo. */
+export interface MemoSettings {
+  /** New-memo TTL in days. 1~90. Per-memo expiresAt is BAKED at creation;
+   *  changing this here only affects future memos and future "톡 살리기"
+   *  resets. (Decision 1 from plans/memo-feature-v1.md.) */
+  defaultTtlDays: number;
+  /** Trash retention before hard-delete: 24h / 72h / 168h (1w). */
+  trashRetentionHours: 24 | 72 | 168;
+  /** Optional override for txt export folder. Empty = use default
+   *  (`%APPDATA%/nost/memos/`) chosen by main process. */
+  exportFolder?: string;
+}
+
 export interface LauncherItem {
   id: string;
   title: string;
-  type: 'url' | 'folder' | 'app' | 'window' | 'browser' | 'text' | 'cmd' | 'widget';
+  type: 'url' | 'folder' | 'app' | 'window' | 'browser' | 'text' | 'cmd' | 'widget' | 'memo';
   /**
    * For type !== 'widget': the launchable payload (URL, file path, cmd line, …).
    * For type === 'widget': not used — widgets render from `widget.kind` instead.
@@ -79,6 +126,9 @@ export interface LauncherItem {
   // for type === 'widget' (defensive; the migration writes it but a
   // future bug shouldn't crash the renderer).
   widget?: WidgetData;
+  // Memo — populated only when type === 'memo'. Same defensive policy
+  // as `widget`: if absent on a 'memo'-typed item, render as if empty.
+  memo?: MemoData;
 }
 
 export interface Space {
@@ -133,7 +183,18 @@ export interface AppSettings {
   monitorDirections?: Record<number, 'w' | 'a' | 's' | 'd' | 'c'>; // Key assigned to each monitor: wasd = direction, c = current
   floatingButton?: FloatingButtonSettings; // Phase 1: main FAB only
   license?: License;             // Phase 5: paid-tier entitlement cache
+  memo?: MemoSettings;           // Memo feature (v1.3.16+)
 }
+
+/** Memo defaults — applied at migration time when settings.memo is absent. */
+export const DEFAULT_MEMO_SETTINGS: MemoSettings = {
+  defaultTtlDays: 7,
+  trashRetentionHours: 24,
+};
+
+/** Memo TTL configuration limits. */
+export const MEMO_TTL_DAYS_MIN = 1;
+export const MEMO_TTL_DAYS_MAX = 90;
 
 // ── Licensing & Entitlement (Phase 5) ─────────────────────────────
 //

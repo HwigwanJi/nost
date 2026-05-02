@@ -141,6 +141,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.removeListener('badges-updated', handler);
   },
 
+  // ── Memo (사라지는 메모) — txt export ───────────────────────────
+  /** Export a memo body as a UTF-8 .txt file. Returns the absolute path
+   *  on success. `slug` is the renderer-prepared filename slug; main
+   *  re-sanitises it as defence-in-depth. `customFolder` overrides the
+   *  default %APPDATA%/nost/memos/. `openAfter` shell-opens the file
+   *  after writing. */
+  exportMemoTxt: (args) => ipcRenderer.invoke('memo-export-txt', args),
+  /** Open the memos folder (default or custom) in OS file explorer. */
+  openMemoFolder: (customFolder) => ipcRenderer.invoke('memo-open-folder', customFolder),
+  /** Resolve the default memo export folder (no custom override). Used
+   *  to populate the settings UI placeholder. */
+  getMemoDefaultFolder: () => ipcRenderer.invoke('memo-default-folder'),
+
   // ── Media widget — Windows media-key bridge ─────────────────────
   /** Fire a media key. action: 'play-pause' | 'next' | 'prev' | 'stop' |
    *  'vol-up' | 'vol-down' | 'mute'. */

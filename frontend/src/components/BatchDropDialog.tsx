@@ -41,6 +41,8 @@ const TYPE_META: Record<LauncherItem['type'], { icon: string; label: string; col
   // Widgets aren't drop-creatable (added via "+ 위젯" UI), but the
   // record needs all union members. Color follows the accent family.
   widget:  { icon: 'widgets',      label: '위젯',    color: '#a855f7' },
+  // Memos aren't drop-creatable either; same reasoning as widget.
+  memo:    { icon: 'sticky_note_2',label: '메모',    color: '#f5b800' },
 };
 
 // Types shown in the per-item dropdown (leaves out window/browser which are not droppable)

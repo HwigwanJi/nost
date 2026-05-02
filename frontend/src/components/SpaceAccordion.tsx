@@ -57,6 +57,17 @@ interface SpaceAccordionProps {
   /** Add a colour-swatch widget. Opens a colour picker inline (or
    *  uses the clipboard hex if present); see App.tsx handler. */
   onAddColorSwatch?: () => void;
+  /** Add a memo card (사라지는 메모) to this space. Optional — older
+   *  call sites that don't yet integrate memo simply omit this. */
+  onAddMemo?: () => void;
+  /** Open the inplace memo editor for the given memo card. Required for
+   *  memo cards to be interactive; if missing, ItemCard falls back to
+   *  the standard launchable card render (defensive). */
+  onOpenMemoEditor?: (itemId: string) => void;
+  /** Hover-icon copy: write the memo body to clipboard. */
+  onCopyMemoBody?: (itemId: string) => void;
+  /** "톡 살리기" — TTL reset on a memo card. */
+  onExtendMemoTtl?: (itemId: string) => void;
   onToggleCollapse: () => void;
   onFloatOut?: () => void;
   isFloating?: boolean;
@@ -114,6 +125,10 @@ export function SpaceAccordion({
   onScanItem,
   onAddWidget,
   onAddColorSwatch,
+  onAddMemo,
+  onOpenMemoEditor,
+  onCopyMemoBody,
+  onExtendMemoTtl,
   onToggleCollapse,
   onFloatOut,
   isFloating = false,
@@ -462,7 +477,12 @@ export function SpaceAccordion({
                 gap: 8,
               }}
             >
-              {space.items.filter(i => !i.hiddenInSpace).map(item => (
+              {space.items
+                // Hide hidden-in-space (container slots) AND trashed memos.
+                // Trashed memos still live in the data tree (for restore via
+                // the trash UI) but never render in the active grid.
+                .filter(i => !i.hiddenInSpace && !(i.type === 'memo' && i.memo?.trashedAt))
+                .map(item => (
                 <ItemCard
                   key={item.id}
                   item={item}
@@ -476,6 +496,9 @@ export function SpaceAccordion({
                   onConvertToContainer={onConvertToContainer ? () => onConvertToContainer(item.id) : undefined}
                   onConvertFromContainer={onConvertFromContainer ? () => onConvertFromContainer(item.id) : undefined}
                   onEditSlots={onEditSlots ? (dir) => onEditSlots(item.id, dir) : undefined}
+                  onOpenMemoEditor={onOpenMemoEditor}
+                  onCopyMemoBody={onCopyMemoBody}
+                  onExtendMemoTtl={onExtendMemoTtl}
                 />
               ))}
 
@@ -530,6 +553,9 @@ export function SpaceAccordion({
                     )}
                     {onAddColorSwatch && (
                       <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
+                    )}
+                    {onAddMemo && (
+                      <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
                     )}
                   </DropdownMenuContent>
                 </DropdownMenu>

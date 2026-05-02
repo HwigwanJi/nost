@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import type { AppSettings } from '../types';
+import { MEMO_TTL_DAYS_MIN, MEMO_TTL_DAYS_MAX, DEFAULT_MEMO_SETTINGS } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { electronAPI } from '../electronBridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -13,13 +14,14 @@ import { useBusyMark } from '../lib/userBusy';
 import { TOURS } from '../tour/tours';
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'dev-mode' | 'error';
-type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'data';
+type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data';
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'general',   label: '일반',   icon: 'tune' },
   { id: 'monitor',   label: '모니터', icon: 'desktop_windows' },
   { id: 'docs',      label: '문서',   icon: 'description' },
   { id: 'extension', label: '확장',   icon: 'extension' },
+  { id: 'memo',      label: '메모',   icon: 'sticky_note_2' },
   { id: 'data',      label: '데이터', icon: 'save' },
 ];
 
@@ -40,6 +42,14 @@ interface SettingsDialogProps {
   updateDownloaded?: boolean;
   downloadProgress?: number | null;
   initialTab?: Tab;
+  // ── Memo (사라지는 메모) ────────────────────────────────────────
+  /** Open the trash dialog (memos are stored in the data tree, but the
+   *  trash UI lives at App-level; we call up to surface it). */
+  onOpenMemoTrash?: () => void;
+  /** Bulk +ttl across every active memo. Returns count touched. */
+  onExtendAllMemos?: () => number;
+  /** Empty the trash hard. Returns count purged. */
+  onEmptyMemoTrash?: () => number;
 }
 
 // ── Small building blocks ────────────────────────────────────────────
@@ -84,6 +94,112 @@ function SwitchRow({ icon, title, description, checked, onCheckedChange }: {
   );
 }
 
+// ── Memo (사라지는 메모) — small pickers ─────────────────────────
+const TTL_PRESETS: number[] = [1, 3, 7, 14, 30];
+
+function MemoTtlPicker({ value, onChange }: { value: number; onChange: (days: number) => void }) {
+  const [customMode, setCustomMode] = useState(!TTL_PRESETS.includes(value));
+  const [customStr, setCustomStr] = useState(String(value));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {TTL_PRESETS.map(d => {
+          const active = !customMode && value === d;
+          return (
+            <button
+              key={d}
+              onClick={() => { setCustomMode(false); onChange(d); }}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 7,
+                background: active ? 'var(--accent-dim)' : 'var(--surface)',
+                color: active ? 'var(--accent)' : 'var(--text-color)',
+                border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                fontSize: 12,
+                fontWeight: active ? 600 : 500,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              {d}일
+            </button>
+          );
+        })}
+        <button
+          onClick={() => { setCustomMode(true); }}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 7,
+            background: customMode ? 'var(--accent-dim)' : 'var(--surface)',
+            color: customMode ? 'var(--accent)' : 'var(--text-color)',
+            border: `1px solid ${customMode ? 'var(--accent)' : 'var(--border-rgba)'}`,
+            fontSize: 12,
+            fontWeight: customMode ? 600 : 500,
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+          }}
+        >
+          직접 입력
+        </button>
+      </div>
+      {customMode && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Input
+            type="number"
+            value={customStr}
+            min={MEMO_TTL_DAYS_MIN}
+            max={MEMO_TTL_DAYS_MAX}
+            onChange={e => setCustomStr(e.target.value)}
+            onBlur={() => {
+              const n = Math.max(MEMO_TTL_DAYS_MIN, Math.min(MEMO_TTL_DAYS_MAX, Math.round(Number(customStr) || 7)));
+              setCustomStr(String(n));
+              onChange(n);
+            }}
+            style={{ width: 70, fontSize: 12 }}
+          />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            일 (1~90)
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MemoTrashRetentionPicker({ value, onChange }: { value: 24 | 72 | 168; onChange: (h: 24 | 72 | 168) => void }) {
+  const opts: Array<{ h: 24 | 72 | 168; label: string }> = [
+    { h: 24,  label: '24시간' },
+    { h: 72,  label: '3일' },
+    { h: 168, label: '7일' },
+  ];
+  return (
+    <div style={{ display: 'flex', gap: 6 }}>
+      {opts.map(o => {
+        const active = value === o.h;
+        return (
+          <button
+            key={o.h}
+            onClick={() => onChange(o.h)}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 7,
+              background: active ? 'var(--accent-dim)' : 'var(--surface)',
+              color: active ? 'var(--accent)' : 'var(--text-color)',
+              border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+              fontSize: 12,
+              fontWeight: active ? 600 : 500,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function AccentBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
@@ -120,7 +236,7 @@ function GhostBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttribut
 
 // ── Main component ───────────────────────────────────────────────────
 
-export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onOpenMemoTrash, onExtendAllMemos, onEmptyMemoTrash }: SettingsDialogProps) {
   useBusyMark('modal:settings', open);
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
   const [form, setForm] = useState<AppSettings>({ ...settings });
@@ -729,6 +845,114 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
               </>}
 
               {/* ══ 데이터 ══════════════════════════════════════════ */}
+              {/* ══ 메모 (사라지는 메모) ════════════════════════════ */}
+              {tab === 'memo' && <>
+                <Section>
+                  <SectionLabel icon="schedule" text="새 메모 기본 수명" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    새로 만드는 메모가 이 기간 뒤 휴지통으로 갑니다. 기존
+                    메모와 핀 고정한 메모는 영향 없음.
+                  </p>
+                  <MemoTtlPicker
+                    value={(form.memo ?? DEFAULT_MEMO_SETTINGS).defaultTtlDays}
+                    onChange={(days) => setForm(f => ({
+                      ...f,
+                      memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), defaultTtlDays: days },
+                    }))}
+                  />
+                </Section>
+
+                <Section>
+                  <SectionLabel icon="delete" text="휴지통" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    만료된 메모는 휴지통에 보관됐다가, 아래 시간이 지나면
+                    영구 삭제됩니다.
+                  </p>
+                  <MemoTrashRetentionPicker
+                    value={(form.memo ?? DEFAULT_MEMO_SETTINGS).trashRetentionHours}
+                    onChange={(h) => setForm(f => ({
+                      ...f,
+                      memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), trashRetentionHours: h },
+                    }))}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <GhostBtn onClick={() => onOpenMemoTrash?.()}>
+                      <Icon name="folder_open" size={14} />
+                      휴지통 보기
+                    </GhostBtn>
+                    <GhostBtn onClick={() => {
+                      if (!onEmptyMemoTrash) return;
+                      const n = onEmptyMemoTrash();
+                      setBackupStatus(n > 0 ? `${n}개 메모를 영구 삭제했어요` : '휴지통이 이미 비어있어요');
+                      setTimeout(() => setBackupStatus(null), 4000);
+                    }}>
+                      <Icon name="delete_forever" size={14} />
+                      비우기
+                    </GhostBtn>
+                  </div>
+                </Section>
+
+                <Section>
+                  <SectionLabel icon="folder" text="메모 내보내기 폴더" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    메모를 txt 파일로 내보낼 때 저장될 폴더입니다. 비워
+                    두면 기본 폴더(<code style={{ fontSize: 10, opacity: 0.85 }}>%APPDATA%/nost/memos/</code>)에 저장됩니다.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <Input
+                      value={(form.memo ?? DEFAULT_MEMO_SETTINGS).exportFolder ?? ''}
+                      placeholder="기본 폴더 사용"
+                      onChange={e => setForm(f => ({
+                        ...f,
+                        memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), exportFolder: e.target.value || undefined },
+                      }))}
+                      style={{ flex: 1, fontSize: 11 }}
+                    />
+                    <GhostBtn
+                      onClick={async () => {
+                        const folder = await electronAPI.pickFolder();
+                        if (folder) {
+                          setForm(f => ({
+                            ...f,
+                            memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), exportFolder: folder },
+                          }));
+                        }
+                      }}
+                      style={{ width: 'auto', flexShrink: 0, padding: '7px 12px' }}
+                    >
+                      <Icon name="folder_open" size={14} />
+                      찾기
+                    </GhostBtn>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <GhostBtn onClick={() => electronAPI.openMemoFolder((form.memo ?? DEFAULT_MEMO_SETTINGS).exportFolder)}>
+                      <Icon name="open_in_new" size={14} />
+                      폴더 열기
+                    </GhostBtn>
+                  </div>
+                </Section>
+
+                <Section>
+                  <SectionLabel icon="restart_alt" text="일괄 정리" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    여행 다녀와서 한 번씩 쓰는 비상 버튼. 모든 활성 메모의
+                    수명을 기본 일수만큼 다시 채웁니다 (핀, 휴지통 제외).
+                  </p>
+                  <GhostBtn onClick={() => {
+                    if (!onExtendAllMemos) return;
+                    const n = onExtendAllMemos();
+                    setBackupStatus(n > 0 ? `${n}개 메모의 수명을 다시 채웠어요` : '활성 메모가 없어요');
+                    setTimeout(() => setBackupStatus(null), 4000);
+                  }}>
+                    <Icon name="schedule" size={14} />
+                    모든 메모 +수명
+                  </GhostBtn>
+                  {backupStatus && (
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>{backupStatus}</p>
+                  )}
+                </Section>
+              </>}
+
               {tab === 'data' && <>
                 <Section>
                   <SectionLabel icon="system_update" text="앱 업데이트" />

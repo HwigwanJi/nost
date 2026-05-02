@@ -1,9 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId } from '../types';
+import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId, MemoData } from '../types';
+import { DEFAULT_MEMO_SETTINGS } from '../types';
 import { newTrialLicense } from './useEntitlement';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
 import { createLogger } from '../lib/logger';
+import { purgeExpiredMemos } from '../lib/memoUtils';
 
 const log = createLogger('useAppData');
 
@@ -127,6 +129,7 @@ function migrateData(parsed: AppData): AppData {
       size: 'normal',
       hideOnFullscreen: true,
     },
+    memo: parsed.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS },
   };
 
   // ── Preset shape migration ──────────────────────────────────
@@ -236,7 +239,18 @@ export function useAppData() {
       ));
       log.debug(`storeLoad resolved. hasStore=${hasStore}`);
       if (hasStore) {
-        setRawData(migrateData(stored as AppData));
+        // Run the memo auto-purge sweep RIGHT after migration so the
+        // first paint already reflects expired→trash and trash→deleted
+        // transitions. We persist the swept shape so the store on disk
+        // matches what's in memory (otherwise an unchanged-on-render
+        // close+reopen would resurrect ghosts).
+        const migrated = migrateData(stored as AppData);
+        const swept = purgeExpiredMemos(migrated, Date.now());
+        setRawData(swept);
+        if (swept !== migrated) {
+          // No-op when nothing changed (purge returns ===).
+          electronAPI.storeSave(swept);
+        }
       } else {
         const localRaw = localStorage.getItem(STORAGE_KEY);
         if (!localRaw) setIsFirstRun(true);
@@ -1131,6 +1145,169 @@ export function useAppData() {
     save({ ...data, settings });
   }, [data, save]);
 
+  // ── Memos (사라지는 메모) ─────────────────────────────────
+  // Thin wrappers over addItem/updateItem that bake the memo-specific
+  // shape — keeping the call sites readable. The TTL math lives in
+  // memoUtils so tests can validate it without going through React.
+  const addMemo = useCallback((spaceId: string): LauncherItem | null => {
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlDays = settings.defaultTtlDays;
+    const memo: MemoData = {
+      body: '',
+      createdAt: now,
+      expiresAt: now + ttlDays * 24 * 60 * 60 * 1000,
+      lastTouchedAt: now,
+    };
+    return addItem(spaceId, {
+      type: 'memo',
+      title: '',                    // computed from body at render time
+      value: '',                    // unused for memo (mirrors widget pattern)
+      iconType: 'material',
+      icon: 'sticky_note_2',
+      clickCount: 0,
+      pinned: false,
+      memo,
+    });
+  }, [data.settings.memo, addItem]);
+
+  /**
+   * Update a memo's body and RESET its TTL (edits = 살리기). Caller is
+   * responsible for the debounce; we just commit the latest snapshot.
+   * The title field is also regenerated so search / accessibility stay
+   * in sync.
+   */
+  const updateMemoBody = useCallback((spaceId: string, itemId: string, body: string) => {
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlMs = settings.defaultTtlDays * 24 * 60 * 60 * 1000;
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => s.id !== spaceId ? s : {
+          ...s,
+          items: s.items.map(i => {
+            if (i.id !== itemId || i.type !== 'memo' || !i.memo) return i;
+            // Lazy-import to avoid circular: derive title here inline.
+            const firstLine = (() => {
+              for (const raw of body.split(/\r?\n/)) {
+                const line = raw.replace(/^\s*[-*+•]\s+/, '').replace(/^\s*#{1,6}\s+/, '').replace(/^\s*\[[ xX]\]\s+/, '').trim();
+                if (line.length > 0) return line.slice(0, 80);
+              }
+              return '';
+            })();
+            return {
+              ...i,
+              title: firstLine,
+              memo: {
+                ...i.memo,
+                body,
+                lastTouchedAt: now,
+                expiresAt: now + ttlMs,
+              },
+            };
+          }),
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [data.settings.memo, setDataRaw]);
+
+  /** "점 톡 살리기" — TTL reset only, body untouched. */
+  const extendMemo = useCallback((spaceId: string, itemId: string) => {
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlMs = settings.defaultTtlDays * 24 * 60 * 60 * 1000;
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => s.id !== spaceId ? s : {
+          ...s,
+          items: s.items.map(i => {
+            if (i.id !== itemId || i.type !== 'memo' || !i.memo) return i;
+            return { ...i, memo: { ...i.memo, lastTouchedAt: now, expiresAt: now + ttlMs, trashedAt: undefined } };
+          }),
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [data.settings.memo, setDataRaw]);
+
+  /** Manual trash (× button on card) — sets trashedAt without waiting for TTL. */
+  const trashMemo = useCallback((spaceId: string, itemId: string) => {
+    const now = Date.now();
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => s.id !== spaceId ? s : {
+          ...s,
+          items: s.items.map(i => {
+            if (i.id !== itemId || i.type !== 'memo' || !i.memo) return i;
+            return { ...i, memo: { ...i.memo, trashedAt: now } };
+          }),
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [setDataRaw]);
+
+  /** Bulk: extend every active (non-trashed, non-pinned) memo by the
+   *  default TTL — the buried-in-settings emergency button. */
+  const extendAllMemos = useCallback((): number => {
+    let count = 0;
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlMs = settings.defaultTtlDays * 24 * 60 * 60 * 1000;
+    setDataRaw(prev => {
+      const sweep = (i: LauncherItem): LauncherItem => {
+        if (i.type !== 'memo' || !i.memo || i.memo.trashedAt || i.pinned) return i;
+        count++;
+        return { ...i, memo: { ...i.memo, lastTouchedAt: now, expiresAt: now + ttlMs } };
+      };
+      const newPresets = prev.presets.map(p => ({
+        ...p,
+        spaces: p.spaces.map(s => ({ ...s, items: s.items.map(sweep) })),
+      }));
+      const active = newPresets.find(p => p.id === prev.activePresetId)!;
+      const next: AppData = { ...prev, presets: newPresets, spaces: active.spaces };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+    return count;
+  }, [data.settings.memo, setDataRaw]);
+
+  /** Hard-empty trash across all presets. Returns count purged. */
+  const emptyMemoTrash = useCallback((): number => {
+    let count = 0;
+    setDataRaw(prev => {
+      const filterSpace = (s: Space): Space => {
+        const kept = s.items.filter(i => !(i.type === 'memo' && i.memo?.trashedAt));
+        const removed = s.items.length - kept.length;
+        if (removed === 0) return s;
+        count += removed;
+        return { ...s, items: kept };
+      };
+      const newPresets = prev.presets.map(p => ({
+        ...p,
+        spaces: p.spaces.map(filterSpace),
+      }));
+      const active = newPresets.find(p => p.id === prev.activePresetId)!;
+      const next: AppData = { ...prev, presets: newPresets, spaces: active.spaces };
+      if (count === 0) return prev;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+    return count;
+  }, [setDataRaw]);
+
   return {
     data,
     isFirstRun,
@@ -1185,5 +1362,12 @@ export function useAppData() {
     // ── Licensing (Phase 5) ────────────────────────────────────
     setLicense,
     startTrialIfEligible,
+    // ── Memos (사라지는 메모) ──────────────────────────────────
+    addMemo,
+    updateMemoBody,
+    extendMemo,
+    trashMemo,
+    extendAllMemos,
+    emptyMemoTrash,
   };
 }

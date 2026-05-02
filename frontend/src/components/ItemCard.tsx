@@ -16,6 +16,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { MediaWidget } from '../widgets/MediaWidget';
 import { ColorSwatchWidget } from '../widgets/ColorSwatchWidget';
+import { MemoCard } from './MemoCard';
 import { ContainerSlotGhosts } from './ContainerSlotGhosts';
 import { isUserBusy } from '../lib/userBusy';
 
@@ -31,6 +32,12 @@ interface ItemCardProps {
   onConvertToContainer?: () => void;
   onConvertFromContainer?: () => void;
   onEditSlots?: (dir?: SlotDir) => void;
+  // ── Memo (사라지는 메모) ────────────────────────────────────────
+  // Plumbed in for type === 'memo' items only. Optional so existing
+  // call sites that don't render memo yet stay compiling.
+  onOpenMemoEditor?: (itemId: string) => void;
+  onCopyMemoBody?: (itemId: string) => void;
+  onExtendMemoTtl?: (itemId: string) => void;
 }
 
 type SlotDir = 'up' | 'down' | 'left' | 'right';
@@ -100,6 +107,7 @@ export function ItemCard({
   item, space, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, onSetMonitor,
   onConvertToContainer, onConvertFromContainer, onEditSlots,
+  onOpenMemoEditor, onCopyMemoBody, onExtendMemoTtl,
 }: ItemCardProps) {
   const [loading, setLoading] = useState(false);
   const [imageIconFailed, setImageIconFailed] = useState(false);
@@ -212,6 +220,12 @@ export function ItemCard({
   // wrapper and just swap the inner body — context menu, drag, pin,
   // edit, delete all work the same way as for any other card.
   const isWidget = item.type === 'widget' && !!item.widget;
+  // Memo branch — same wrapper-swap pattern as widgets. The wrapper still
+  // owns drag, context menu, pin badge, delete; MemoCard owns body markup
+  // and click intent (open editor, not launch). When a memo's onOpenMemoEditor
+  // callback is missing (older parents), we fall back to the standard card
+  // — defensive against partial integration during the v1.3.16 rollout.
+  const isMemo = item.type === 'memo' && !!item.memo;
 
   // Outside-click is handled by a transparent overlay rendered in the portal — no document listeners needed.
 
@@ -567,7 +581,24 @@ export function ItemCard({
       widgetBody = <ColorSwatchWidget item={item} space={space} dragHandle={dragHandle} />;
     }
   }
-  const cardEl = widgetBody ?? (
+  // Memo body — uses same dragHandle convention as widgets.
+  let memoBody: React.ReactNode = null;
+  if (isMemo && item.memo && onOpenMemoEditor) {
+    const dragHandle = { setNodeRef, style, attributes, listeners, isDragging };
+    memoBody = (
+      <MemoCard
+        item={item}
+        space={space}
+        dragHandle={dragHandle}
+        pinned={pinned}
+        isJustAdded={isJustAdded}
+        onOpenEditor={() => onOpenMemoEditor(item.id)}
+        onCopy={() => onCopyMemoBody?.(item.id)}
+        onExtend={() => onExtendMemoTtl?.(item.id)}
+      />
+    );
+  }
+  const cardEl = memoBody ?? widgetBody ?? (
     <div
       ref={(el) => { setNodeRef(el); (cardRef as React.MutableRefObject<HTMLDivElement | null>).current = el; }}
       data-card
@@ -1104,11 +1135,11 @@ export function ItemCard({
     <>
       <ContextMenu>
         <ContextMenuTrigger>
-          {/* Widgets skip the Tooltip wrapper — their `value` is empty
-              and the content tells the user what they are. Regular
-              cards keep the tooltip showing target URL / path /
-              container status. */}
-          {isWidget ? cardEl : (
+          {/* Widgets and memos skip the Tooltip wrapper — they have no
+              `value` to show and their body already communicates what
+              they are. Regular cards keep the tooltip showing target
+              URL / path / container status. */}
+          {(isWidget || isMemo) ? cardEl : (
             <Tooltip>
               <TooltipTrigger render={cardEl} />
               <TooltipContent side="bottom" className="text-xs max-w-[200px] truncate">
@@ -1127,10 +1158,10 @@ export function ItemCard({
             {pinned ? '핀 해제' : '위치 고정'}
           </ContextMenuItem>
 
-          {/* Container-related items don't apply to widget cards —
-              widgets aren't launchable, so wrapping them in a 4-slot
+          {/* Container-related items don't apply to widget or memo cards
+              — neither is launchable, so wrapping them in a 4-slot
               container has no meaning. */}
-          {!isWidget && (
+          {!isWidget && !isMemo && (
             <>
               <ContextMenuSeparator />
               {!item.isContainer && onConvertToContainer && (
@@ -1162,7 +1193,7 @@ export function ItemCard({
 
       {/* Hold popup is the long-press monitor / slot picker — only
           relevant for launchable / container cards, not widgets. */}
-      {!isWidget && holdPopup}
+      {!isWidget && !isMemo && holdPopup}
     </>
   );
 }

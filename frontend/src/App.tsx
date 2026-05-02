@@ -20,6 +20,10 @@ import { ImportWizard } from './onboarding/ImportWizard';
 import type { Template } from './onboarding/templates';
 import { ItemDialog } from './components/ItemDialog';
 import { ItemWizard } from './components/ItemWizard';
+import { MemoEditor } from './components/MemoEditor';
+import { MemoTrashDialog } from './components/MemoTrashDialog';
+import { MemoExpiringBanner } from './components/MemoExpiringBanner';
+import { memoIsExpiringSoon } from './lib/memoUtils';
 import { ScanDialog } from './components/ScanDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
@@ -765,6 +769,16 @@ export default function App() {
   const [editSpaceId, setEditSpaceId] = useState<string>('');
   const [prefilledItem, setPrefilledItem] = useState<Partial<LauncherItem> | null>(null);
   const [recommendOpen, setRecommendOpen] = useState(false);
+  // Memo (사라지는 메모) — currently-open editor target, or null when
+  // no memo is being edited. Lives on App-level state so the editor
+  // can render as a fixed overlay above the grid (inplace sheet, no
+  // BrowserWindow). spaceId is captured at open-time so the lookup
+  // remains correct even if the active preset changes mid-edit.
+  const [editingMemoId, setEditingMemoId] = useState<{ spaceId: string; itemId: string } | null>(null);
+  // Today-expiring banner dismissed for this session (per spec: closeable,
+  // doesn't reappear today). Keyed by date so it auto-resets next day.
+  const [bannerDismissedYmd, setBannerDismissedYmd] = useState<string | null>(null);
+  const [memoTrashOpen, setMemoTrashOpen] = useState(false);
 
   // Memoise the options object — the inner hook reads it via reference
   // checks, and a fresh `{}` every render forced re-derivation of every
@@ -1524,6 +1538,54 @@ export default function App() {
     return newItem;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quotaChecks, store]);
+
+  /**
+   * Add a memo card. Creates the item with current settings.memo
+   * defaults, then immediately opens the inplace editor so the user
+   * can start typing — same UX rhythm as Apple Notes / Things.
+   *
+   * Quota: memo counts against the same 20-card free-tier total as
+   * other cards (a memo is still a card on the grid). We don't
+   * separate-meter memos; if a free user wants more, the path is
+   * "use it or lose it" — old memos auto-fade and free up slots.
+   */
+  const handleAddMemo = useCallback((spaceId: string) => {
+    if (!quotaChecks.card()) return;
+    const newItem = store.addMemo(spaceId);
+    if (newItem) {
+      // Mark for cardEnter animation, same as the manual-add path.
+      markItemsAsNew([newItem.id]);
+      // Open the editor on the next tick — let the card mount first
+      // so its position is the spring-pop anchor.
+      setTimeout(() => setEditingMemoId({ spaceId, itemId: newItem.id }), 0);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quotaChecks, store]);
+
+  /** Hover-icon copy: write memo body to clipboard, with toast feedback. */
+  const handleCopyMemoBody = useCallback(async (spaceId: string, itemId: string) => {
+    const space = data.spaces.find(s => s.id === spaceId);
+    const item = space?.items.find(i => i.id === itemId);
+    const body = item?.memo?.body ?? '';
+    if (!body) {
+      showToast('메모가 비어있어요');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(body);
+    } catch {
+      try { electronAPI.copyText(body, false); } catch { /* dev mode */ }
+    }
+    showToast('메모를 복사했어요');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.spaces]);
+
+  /** "톡 살리기" — TTL reset on the targeted memo. */
+  const handleExtendMemoTtl = useCallback((spaceId: string, itemId: string) => {
+    store.extendMemo(spaceId, itemId);
+    showToast('수명을 다시 채웠어요');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store]);
 
   /**
    * "빠른추가" — peek at the clipboard first. Hex codes get the
@@ -3034,6 +3096,10 @@ export default function App() {
                             onScanItem={() => openScan(space.id)}
                             onAddWidget={() => handleAddWidget(space.id)}
                             onAddColorSwatch={() => handleAddColorSwatch(space.id)}
+                            onAddMemo={() => handleAddMemo(space.id)}
+                            onOpenMemoEditor={(itemId) => setEditingMemoId({ spaceId: space.id, itemId })}
+                            onCopyMemoBody={(itemId) => handleCopyMemoBody(space.id, itemId)}
+                            onExtendMemoTtl={(itemId) => handleExtendMemoTtl(space.id, itemId)}
                             defaultOpen={!(data.collapsedSpaceIds ?? []).includes(space.id)}
                             onSetMonitor={(itemId, monitor) => handleSetMonitor(space.id, itemId, monitor)}
                             onConvertToContainer={itemId => { if (quotaChecks.container()) handleConvertToContainer(space.id, itemId); }}
@@ -3064,6 +3130,37 @@ export default function App() {
                         data-tour-id="space-list"
                         style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
                       >
+                        {/* Today-expiring memos banner — counts across the
+                            ACTIVE preset only (other presets' memos aren't
+                            on-screen so warning about them is noise). One
+                            click "지금 보기" jumps to the first space that
+                            has an expiring memo. Closeable; reappears next day. */}
+                        {(() => {
+                          const ymd = (() => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`; })();
+                          if (bannerDismissedYmd === ymd) return null;
+                          const now = Date.now();
+                          let count = 0;
+                          let firstSpaceId: string | null = null;
+                          for (const sp of data.spaces) {
+                            for (const it of sp.items) {
+                              if (it.type === 'memo' && memoIsExpiringSoon(it, now)) {
+                                count++;
+                                if (!firstSpaceId) firstSpaceId = sp.id;
+                              }
+                            }
+                          }
+                          return (
+                            <MemoExpiringBanner
+                              count={count}
+                              onView={() => {
+                                if (!firstSpaceId) return;
+                                const el = document.querySelector(`[data-space-id="${firstSpaceId}"]`);
+                                el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                              }}
+                              onDismiss={() => setBannerDismissedYmd(ymd)}
+                            />
+                          );
+                        })()}
                         {rows.map(row => {
                           const isPair = !!row.rightSpace;
                           return (
@@ -3308,6 +3405,116 @@ export default function App() {
         onDismiss={dismissToast}
       />
 
+      {/* ── Memo inplace editor (사라지는 메모) ───────────────────
+          Renders ABOVE everything as a fixed overlay sheet. Zero new
+          BrowserWindow created — see MemoEditor docstring for why.
+          Lookup runs through every preset because the user might have
+          opened a memo, then switched preset (we want the editor to
+          keep working). When the underlying item disappears (e.g. a
+          preset wipe), the editor self-closes by detecting null. */}
+      {(() => {
+        if (!editingMemoId) return null;
+        let foundItem: LauncherItem | undefined;
+        let foundSpace = data.spaces.find(s => s.id === editingMemoId.spaceId);
+        let foundPresetId = store.activePresetId;
+        if (foundSpace) {
+          foundItem = foundSpace.items.find(i => i.id === editingMemoId.itemId);
+        }
+        if (!foundItem) {
+          // Cross-preset fallback — search all presets in case the user
+          // navigated away. Keep editing target until user explicitly closes.
+          for (const p of store.presets) {
+            for (const sp of p.spaces) {
+              const it = sp.items.find(i => i.id === editingMemoId.itemId);
+              if (it && it.type === 'memo') {
+                foundItem = it;
+                foundSpace = sp;
+                foundPresetId = p.id;
+                break;
+              }
+            }
+            if (foundItem) break;
+          }
+        }
+        if (!foundItem || !foundSpace) {
+          // Underlying memo got hard-deleted while editor was open. Close.
+          setTimeout(() => setEditingMemoId(null), 0);
+          return null;
+        }
+        const presetForUpdate = foundPresetId;
+        const spaceIdForUpdate = foundSpace.id;
+        const item = foundItem;
+        const isPinned = (foundSpace.pinnedIds ?? []).includes(item.id);
+        const exportFolder = data.settings.memo?.exportFolder;
+        return (
+          <MemoEditor
+            key={item.id}
+            item={item}
+            pinned={isPinned}
+            exportFolder={exportFolder}
+            showToast={showToast}
+            onChangeBody={(body) => {
+              // updateMemoBody only writes to the active preset. If the
+              // user navigated away from the source preset mid-edit,
+              // we'd silently lose the write — so pre-flight by switching
+              // back to the owning preset just before the write. Cheap:
+              // switching is immediate (mirror swap) and idempotent.
+              if (store.activePresetId !== presetForUpdate) {
+                store.setActivePreset(presetForUpdate as typeof store.activePresetId);
+              }
+              store.updateMemoBody(spaceIdForUpdate, item.id, body);
+            }}
+            onClose={() => setEditingMemoId(null)}
+            onExtend={() => {
+              if (store.activePresetId !== presetForUpdate) {
+                store.setActivePreset(presetForUpdate as typeof store.activePresetId);
+              }
+              store.extendMemo(spaceIdForUpdate, item.id);
+            }}
+            onTogglePin={() => handleTogglePin(foundSpace!, item.id)}
+            onTrash={() => {
+              store.trashMemo(spaceIdForUpdate, item.id);
+              setEditingMemoId(null);
+              showToast('휴지통으로 이동했어요');
+            }}
+            onExportedToTxt={() => {
+              // Export = move semantics. Hard-delete the memo so the
+              // .txt file is the single source of truth.
+              store.deleteItem(spaceIdForUpdate, item.id);
+            }}
+            onAutoDeleteIfEmpty={() => {
+              store.deleteItem(spaceIdForUpdate, item.id);
+            }}
+          />
+        );
+      })()}
+
+      {/* ── Memo trash dialog ──────────────────────────────────── */}
+      <MemoTrashDialog
+        open={memoTrashOpen}
+        onClose={() => setMemoTrashOpen(false)}
+        data={data}
+        onRestore={(presetId, spaceId, itemId) => {
+          if (store.activePresetId !== presetId) {
+            store.setActivePreset(presetId as typeof store.activePresetId);
+          }
+          // Setting a fresh expiresAt + clearing trashedAt is exactly what
+          // extendMemo does. (extendMemo also clears trashedAt — see hook.)
+          store.extendMemo(spaceId, itemId);
+          showToast('메모를 되살렸어요');
+        }}
+        onHardDelete={(presetId, spaceId, itemId) => {
+          if (store.activePresetId !== presetId) {
+            store.setActivePreset(presetId as typeof store.activePresetId);
+          }
+          store.deleteItem(spaceId, itemId);
+        }}
+        onEmptyAll={() => {
+          const n = store.emptyMemoTrash();
+          showToast(n > 0 ? `${n}개를 영구 삭제했어요` : '휴지통이 이미 비어있어요');
+        }}
+      />
+
       {/* ── Dialogs ──────────────────────────────────────────── */}
       <ItemDialog
         key={editItem?.id || (prefilledItem ? 'prefill-' + prefilledItem.value : 'none')}
@@ -3364,6 +3571,9 @@ export default function App() {
         updateDownloaded={updateDownloaded}
         downloadProgress={downloadProgress}
         initialTab={settingsInitialTab}
+        onOpenMemoTrash={() => { setDialog('none'); setMemoTrashOpen(true); }}
+        onExtendAllMemos={() => store.extendAllMemos()}
+        onEmptyMemoTrash={() => store.emptyMemoTrash()}
       />
       {batchDrop && (
         <BatchDropDialog
