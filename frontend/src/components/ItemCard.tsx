@@ -17,6 +17,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { MediaWidget } from '../widgets/MediaWidget';
 import { ColorSwatchWidget } from '../widgets/ColorSwatchWidget';
 import { MemoCard } from './MemoCard';
+import { MonitorPicker } from './MonitorPicker';
 import { ContainerSlotGhosts } from './ContainerSlotGhosts';
 import { isUserBusy } from '../lib/userBusy';
 
@@ -38,6 +39,7 @@ interface ItemCardProps {
   onOpenMemoEditor?: (itemId: string) => void;
   onCopyMemoBody?: (itemId: string) => void;
   onExtendMemoTtl?: (itemId: string) => void;
+  onExportMemoTxt?: (itemId: string) => void;
 }
 
 type SlotDir = 'up' | 'down' | 'left' | 'right';
@@ -107,7 +109,7 @@ export function ItemCard({
   item, space, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, onSetMonitor,
   onConvertToContainer, onConvertFromContainer, onEditSlots,
-  onOpenMemoEditor, onCopyMemoBody, onExtendMemoTtl,
+  onOpenMemoEditor, onCopyMemoBody, onExtendMemoTtl, onExportMemoTxt,
 }: ItemCardProps) {
   const [loading, setLoading] = useState(false);
   const [imageIconFailed, setImageIconFailed] = useState(false);
@@ -145,7 +147,7 @@ export function ItemCard({
   // ── Context ──────────────────────────────────────────────────
   const {
     activeMode = 'normal', nodeGroups = [], nodeBuilding = [], decks = [],
-    deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, allItems = [],
+    deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, monitors = [], allItems = [],
     monitorDirections, closeAfter, searchQuery = '',
     justAddedItemIds,
   } = useAppState();
@@ -609,7 +611,7 @@ export function ItemCard({
         onOpenEditor={() => onOpenMemoEditor(item.id)}
         onCopy={() => onCopyMemoBody?.(item.id)}
         onExtend={() => onExtendMemoTtl?.(item.id)}
-        onTogglePin={onTogglePin}
+        onExportTxt={() => onExportMemoTxt?.(item.id)}
       />
     );
   }
@@ -883,19 +885,21 @@ export function ItemCard({
               <div
                 onPointerDown={e => e.stopPropagation()}
                 onClick={e => e.stopPropagation()}
-                style={{ position:'fixed', left:monitorPickerPos.x, top:monitorPickerPos.y, zIndex:99999, background:'var(--bg-rgba, rgba(18,18,28,0.95))', backdropFilter:'blur(20px) saturate(150%)', border:'1px solid var(--border-rgba)', borderRadius:8, padding:4, display:'flex', flexDirection:'column', gap:2, boxShadow:'0 8px 28px rgba(0,0,0,0.35)', minWidth:120 }}
+                style={{
+                  position:'fixed',
+                  left: monitorPickerPos.x,
+                  top:  monitorPickerPos.y,
+                  zIndex: 99999,
+                  borderRadius: 10,
+                  boxShadow:'0 10px 32px rgba(0,0,0,0.32)',
+                }}
               >
-                <div style={{ fontSize:9, color:'var(--text-dim)', padding:'2px 8px 4px', fontWeight:600, letterSpacing:'0.05em' }}>모니터 지정</div>
-                <button onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onSetMonitor(undefined); setMonitorPickerPos(null); }} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', border:'none', borderRadius:5, cursor:'pointer', fontFamily:'inherit', background: item.monitor===undefined ? 'var(--accent-dim)' : 'transparent', color: item.monitor===undefined ? 'var(--accent)' : 'var(--text-color)', fontSize:11, fontWeight:600 }}>
-                  <span style={{ width:18, height:18, borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:800, background: item.monitor===undefined ? 'var(--accent)' : 'var(--border-rgba)', color: item.monitor===undefined ? '#fff' : 'var(--text-dim)' }}>C</span>
-                  자동 (마지막 위치)
-                </button>
-                {Array.from({ length: monitorCount }, (_, i) => i + 1).map(n => (
-                  <button key={n} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onSetMonitor(n); setMonitorPickerPos(null); }} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', border:'none', borderRadius:5, cursor:'pointer', fontFamily:'inherit', background: item.monitor===n ? 'var(--accent-dim)' : 'transparent', color: item.monitor===n ? 'var(--accent)' : 'var(--text-color)', fontSize:11, fontWeight:600 }}>
-                    <span style={{ width:18, height:18, borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:800, background: item.monitor===n ? 'var(--accent)' : 'var(--border-rgba)', color: item.monitor===n ? '#fff' : 'var(--text-dim)' }}>{n}</span>
-                    모니터 {n}{n===1 ? ' (주)' : ''}
-                  </button>
-                ))}
+                <MonitorPicker
+                  monitors={monitors}
+                  value={item.monitor}
+                  onPick={(idx) => { onSetMonitor(idx); setMonitorPickerPos(null); }}
+                  size="compact"
+                />
               </div>
             </>,
             document.body
@@ -1020,83 +1024,46 @@ export function ItemCard({
       </button>
 
       {holdMonitorMode ? (
-        // ── Monitor picker sub-mode ────────────────────────────
-        (() => {
-          // Direction → CSS position constants
-          const DIR_POS: Record<string, React.CSSProperties> = {
-            w: { bottom:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' },
-            d: { left:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
-            a: { right:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
-            s: { top:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' },
-          };
-          const DIR_HINT: Record<string, string> = { w:'W', a:'A', s:'S', d:'D' };
-          const DEFAULT_DIRS: Record<number, string> = { 1:'d', 2:'a', 3:'s' };
-          const effDirs = monitorDirections ?? DEFAULT_DIRS;
-          const usedDirs = new Set(Object.values(effDirs).filter(d => d !== 'c'));
-          const showAuto = !usedDirs.has('w');
-          return (
-            <>
-              {/* Glassmorphism circular backdrop */}
-              <div style={{
-                position:'absolute', left:'50%', top:'50%', transform:'translate(-50%,-50%)',
-                width:190, height:190, borderRadius:'50%',
-                background:'var(--bg-rgba, rgba(18,18,28,0.5))',
-                backdropFilter:'blur(28px) saturate(160%)',
-                WebkitBackdropFilter:'blur(28px) saturate(160%)',
-                border:'1px solid rgba(255,255,255,0.1)',
-                boxShadow:'0 8px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.12)',
-                pointerEvents:'none', zIndex:0,
-              }} />
-
-              {/* Auto (C) button — top, shown only if 'w' not taken by a monitor */}
-              {showAuto && (
-                <MonitorHoldBtn label="C" subLabel="자동" hint="W" active={item.monitor === undefined}
-                  position={DIR_POS.w}
-                  onClick={() => { launchOnMonitorRef.current(undefined); closeHoldPopup(); }} />
-              )}
-
-              {/* Monitor buttons — positioned by configured direction */}
-              {([1, 2, 3] as const).map(n => {
-                const dir = effDirs[n] ?? DEFAULT_DIRS[n] ?? 'd';
-                if (dir === 'c' || !DIR_POS[dir]) return null;
-                return (
-                  <MonitorHoldBtn key={n} label={String(n)} subLabel={n===1?'주 모니터':`모니터 ${n}`}
-                    hint={DIR_HINT[dir] ?? ''} active={item.monitor === n} disabled={n > monitorCount}
-                    position={DIR_POS[dir]}
-                    onClick={() => { launchOnMonitorRef.current(n); closeHoldPopup(); }} />
-                );
-              })}
-
-              {/* Settings icon — 5 o'clock position */}
-              <button
-                data-hold-popup
-                onPointerDown={e => e.stopPropagation()}
-                onClick={() => { closeHoldPopup(); setTimeout(() => onOpenMonitorSettings?.(), 50); }}
-                title="모니터 설정"
-                style={{
-                  position:'absolute',
-                  left:'calc(50% + 45px)', top:'calc(50% + 78px)',
-                  transform:'translate(-50%,-50%)',
-                  width:20, height:20, borderRadius:'50%',
-                  background:'var(--bg-rgba, rgba(18,18,28,0.7))',
-                  backdropFilter:'blur(12px)',
-                  border:'1px solid rgba(255,255,255,0.15)',
-                  display:'flex', alignItems:'center', justifyContent:'center',
-                  cursor:'pointer', pointerEvents:'auto', zIndex:2,
-                  opacity:0.55, transition:'opacity 0.1s',
-                }}
-                onMouseEnter={e => (e.currentTarget.style.opacity='1')}
-                onMouseLeave={e => (e.currentTarget.style.opacity='0.55')}
-              >
-                <Icon name="settings" size={11} color="var(--text-muted)" />
-              </button>
-
-              <div style={{ position:'absolute', left:'50%', bottom:-22, transform:'translateX(-50%)', whiteSpace:'nowrap', fontSize:9, color:'var(--text-dim)', pointerEvents:'none' }}>
-                이번 한 번만 · Esc
-              </div>
-            </>
-          );
-        })()
+        // ── Monitor picker sub-mode (proportional visual) ──────
+        // Replaces the previous WASD-mapped circular wheel. The new
+        // MonitorPicker shows the user's actual monitor layout
+        // scaled to fit, so it stays legible regardless of how
+        // many monitors they have. The circular ring backdrop
+        // stays for visual continuity with the 4-direction primary
+        // mode — we just punch the picker through its centre.
+        <>
+          <div style={{
+            position:'absolute', left:'50%', top:'50%', transform:'translate(-50%,-50%)',
+            width:220, height:220, borderRadius:'50%',
+            background:'var(--bg-rgba, rgba(18,18,28,0.55))',
+            backdropFilter:'blur(28px) saturate(160%)',
+            WebkitBackdropFilter:'blur(28px) saturate(160%)',
+            border:'1px solid rgba(255,255,255,0.1)',
+            boxShadow:'0 8px 40px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.12)',
+            pointerEvents:'none', zIndex:0,
+          }} />
+          <div
+            data-hold-popup
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
+            style={{
+              position:'absolute', left:'50%', top:'50%',
+              transform:'translate(-50%,-50%)',
+              zIndex: 2, pointerEvents: 'auto',
+            }}
+          >
+            <MonitorPicker
+              monitors={monitors}
+              value={item.monitor}
+              size="wheel"
+              onPick={(idx) => { launchOnMonitorRef.current(idx); closeHoldPopup(); }}
+              onOpenSettings={onOpenMonitorSettings ? () => { closeHoldPopup(); setTimeout(() => onOpenMonitorSettings(), 50); } : undefined}
+            />
+          </div>
+          <div style={{ position:'absolute', left:'50%', bottom:-22, transform:'translateX(-50%)', whiteSpace:'nowrap', fontSize:9, color:'var(--text-dim)', pointerEvents:'none' }}>
+            이번 한 번만 · Esc로 취소
+          </div>
+        </>
       ) : (
         // ── 4-direction icon buttons ───────────────────────────
         DIRS.map(dir => {
@@ -1189,13 +1156,21 @@ export function ItemCard({
         <ContextMenuTrigger>
           {/* Widgets and memos skip the Tooltip wrapper — they have no
               `value` to show and their body already communicates what
-              they are. Regular cards keep the tooltip showing target
-              URL / path / container status. */}
+              they are. Regular cards' tooltip teaches the click model:
+              the user sees "짧게: 카드 실행 / 길게: 4방향 액션" at a
+              glance, instead of a cryptic file path. Discoverability
+              of the long-press gesture was effectively zero before;
+              this surfaces it on every hover. */}
           {(isWidget || isMemo) ? cardEl : (
             <Tooltip>
               <TooltipTrigger render={cardEl} />
-              <TooltipContent side="bottom" className="text-xs max-w-[200px] truncate">
-                {item.isContainer ? `컨테이너 · ${filledSlots.length}/${DIRS.length} 슬롯` : item.value}
+              <TooltipContent side="bottom" className="text-xs max-w-[260px]">
+                <CardHoverHint
+                  type={item.type}
+                  isContainer={item.isContainer}
+                  filledSlots={filledSlots.length}
+                  totalSlots={DIRS.length}
+                />
               </TooltipContent>
             </Tooltip>
           )}
@@ -1250,35 +1225,56 @@ export function ItemCard({
   );
 }
 
-// ── Monitor button in hold popup ─────────────────────────────
-function MonitorHoldBtn({ label, subLabel, hint, active, disabled, position, onClick }: {
-  label: string; subLabel: string; hint?: string; active: boolean; disabled?: boolean;
-  position: React.CSSProperties; onClick: () => void;
+// ── Card hover hint — discoverability copy in tooltip ───────────
+//
+// Replaces the old "show path/URL on hover" with a 2-line teaching
+// affordance:
+//   line 1: short-click verb tailored to type (실행 / 열기 / 복사…)
+//   line 2: long-press explanation, surfacing the 4-direction wheel
+//
+// The 4 directions are constants in this file (CARD_ACTIONS) — the
+// hint mirrors them so the user can build muscle memory. For
+// containers we show the slot status instead since the click model
+// is fundamentally different (slot picker, not launch).
+function CardHoverHint({
+  type, isContainer, filledSlots, totalSlots,
+}: {
+  type: LauncherItem['type'];
+  isContainer?: boolean;
+  filledSlots: number;
+  totalSlots: number;
 }) {
+  if (isContainer) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.4 }}>
+        <div style={{ fontWeight: 600 }}>컨테이너 · {filledSlots}/{totalSlots} 슬롯</div>
+        <div style={{ opacity: 0.75, fontSize: 10 }}>
+          짧게: 슬롯 사방으로 카드 발사 · 길게: 슬롯 직접 편집
+        </div>
+      </div>
+    );
+  }
+
+  const shortVerb =
+    type === 'url' || type === 'browser' ? 'URL 열기' :
+    type === 'folder' ? '폴더 열기' :
+    type === 'app' ? '앱 실행' :
+    type === 'window' ? '창 전환' :
+    type === 'cmd' ? '명령어 실행' :
+    type === 'text' ? '텍스트 복사' :
+    '실행';
+
   return (
-    <button
-      data-hold-popup
-      onPointerDown={e => e.stopPropagation()}
-      onClick={disabled ? undefined : onClick}
-      style={{
-        position:'absolute', ...position,
-        width:46, height:46, borderRadius:12,
-        background: disabled ? 'rgba(255,255,255,0.08)' : active ? 'var(--accent)' : 'rgba(255,255,255,0.15)',
-        backdropFilter:'blur(20px)',
-        border:`1.5px solid ${disabled ? 'rgba(255,255,255,0.12)' : active ? 'var(--accent)' : 'rgba(255,255,255,0.35)'}`,
-        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3,
-        cursor: disabled ? 'not-allowed' : 'pointer', pointerEvents:'auto',
-        opacity: disabled ? 0.35 : 1,
-        boxShadow: active && !disabled ? '0 4px 20px rgba(99,102,241,0.4)' : '0 4px 16px rgba(0,0,0,0.25)',
-        transition:'all 0.1s',
-        fontFamily:'inherit',
-      }}
-    >
-      {hint && (
-        <span style={{ position:'absolute', top:3, right:4, fontSize:8, fontWeight:700, lineHeight:1, color: active && !disabled ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.18)', letterSpacing:'0.02em' }}>{hint}</span>
-      )}
-      <span style={{ fontSize:15, fontWeight:800, color:'#fff', lineHeight:1, opacity: disabled ? 0.4 : 1 }}>{label}</span>
-      <span style={{ fontSize:7, color: disabled ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.8)', fontWeight:500, textAlign:'center', maxWidth:42, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{subLabel}</span>
-    </button>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.4 }}>
+      <div style={{ fontWeight: 600 }}>짧게: {shortVerb}</div>
+      <div style={{ opacity: 0.75, fontSize: 10 }}>
+        길게 누르고 사방 — ↑수정 ↓모니터 ←새창 →복사
+      </div>
+    </div>
   );
 }
+
+// MonitorHoldBtn was the per-direction button used by the old WASD-
+// style monitor picker. Replaced by MonitorPicker (proportional
+// visual) so this is dead code. Kept intentionally empty here as a
+// breadcrumb in case anyone greps for the symbol in the history.

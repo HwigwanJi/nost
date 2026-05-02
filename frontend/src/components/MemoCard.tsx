@@ -68,7 +68,12 @@ interface MemoCardProps {
   onOpenEditor: () => void;
   onCopy: () => void;
   onExtend: () => void;
-  onTogglePin?: () => void;
+  /** Export the memo body as a .txt file (= "다른 이름으로 저장").
+   *  Replaces the previous pin button — pinning a memo conceptually
+   *  conflicts with the auto-fade product story; the natural "I want
+   *  to keep this forever" path is to export it to a real file the
+   *  OS owns. */
+  onExportTxt: () => void;
   isJustAdded: boolean;
 }
 
@@ -89,11 +94,11 @@ function ttlStatusColor(daysLeft: number | null, pinned: boolean): string {
 
 export function MemoCard({
   item, space, dragHandle, pinned,
-  onOpenEditor, onCopy, onExtend, onTogglePin, isJustAdded,
+  onOpenEditor, onCopy, onExtend, onExportTxt, isJustAdded,
 }: MemoCardProps) {
   const [hovered, setHovered] = useState(false);
   const [copyFlash, setCopyFlash] = useState(false);
-  const [pinFlash, setPinFlash] = useState(false);
+  const [exportFlash, setExportFlash] = useState(false);
 
   const memo = item.memo;
   const body = memo?.body ?? '';
@@ -106,15 +111,16 @@ export function MemoCard({
   const fraction = memoGaugeFraction(item, now);
   const status = ttlStatusColor(daysLeft, pinned);
 
-  // Refresh-button label: "5일", "12시간", "곧" — short enough to
-  // fit in the cell without ellipsis. Pinned shows nothing (TTL is
-  // meaningless) so the button just says 살리기.
-  const ttlLabel = pinned
-    ? ''
+  // Tooltip-only TTL hint — the bottom button is now just a colored
+  // circle with no label, so the only place to communicate "5일 남음"
+  // is the hover title. Stays out of the way visually but recoverable
+  // for users who want the precise number.
+  const ttlTooltip = pinned
+    ? '영구 보관 (TTL 없음)'
     : daysLeft === null ? ''
     : daysLeft === 0
-      ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간` : '곧')
-      : `${daysLeft}일`;
+      ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간 남음 — 클릭으로 수명 리셋` : '곧 만료 — 클릭으로 살리기')
+      : `${daysLeft}일 남음 — 클릭으로 살리기`;
 
   // ── Marquee setup ────────────────────────────────────────────
   // We measure whether the title overflows its container; only then
@@ -155,12 +161,12 @@ export function MemoCard({
     onExtend();
   }, [onExtend]);
 
-  const handlePin = useCallback((e: React.MouseEvent) => {
+  const handleExport = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    onTogglePin?.();
-    setPinFlash(true);
-    setTimeout(() => setPinFlash(false), 600);
-  }, [onTogglePin]);
+    onExportTxt();
+    setExportFlash(true);
+    setTimeout(() => setExportFlash(false), 700);
+  }, [onExportTxt]);
 
   const { setNodeRef, attributes, listeners, style, isDragging } = dragHandle;
 
@@ -332,37 +338,49 @@ export function MemoCard({
         </div>
 
         {/* ── Action row (3 buttons) ───────────────────────────
-            Equal-width grid so labels align cleanly. Each button's
-            click is bubble-stopped so the outer card click (= editor
-            open) doesn't fire when the user hits an action. */}
+            Layout: ● colored TTL circle (no label, just status hue) /
+            📋 copy / 💾 save-as. Click is bubble-stopped via
+            data-memo-control so the outer card click (open editor)
+            doesn't fire when the user hits an action. */}
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '1.15fr 1fr 1fr',
+            gridTemplateColumns: '1fr 1fr 1fr',
             gap: 0,
             borderTop: '1px solid var(--border-rgba)',
             background: 'var(--surface)',
             flexShrink: 0,
           }}
         >
-          {/* 살리기 (TTL refresh) — color-coded, label shows TTL */}
+          {/* TTL refresh — pure colored circle, no label/icon. The
+              colour itself encodes the urgency (green / amber / red),
+              and the tooltip carries the precise count. Disabled for
+              pinned memos but they shouldn't exist in v2 (pin button
+              removed) — kept as defensive guard for migrated data. */}
           <ActionBtn
             data-memo-control
             onClick={handleExtend}
-            title="살리기 — 수명을 다시 채웁니다"
+            title={ttlTooltip || '살리기 — 수명을 다시 채웁니다'}
             disabled={pinned}
-            color={status}
             divider="right"
           >
-            <Icon name="refresh" size={11} />
-            {ttlLabel ? <span>{ttlLabel}</span> : <span>살리기</span>}
+            <span
+              aria-hidden="true"
+              style={{
+                width: 12, height: 12,
+                borderRadius: '50%',
+                background: status,
+                boxShadow: `0 0 0 2px color-mix(in srgb, ${status} 22%, transparent)`,
+                transition: 'background 0.3s, box-shadow 0.3s',
+              }}
+            />
           </ActionBtn>
 
           {/* 복사 — body to clipboard */}
           <ActionBtn
             data-memo-control
             onClick={handleCopy}
-            title="본문 복사"
+            title="본문을 클립보드에 복사"
             color={copyFlash ? 'var(--accent)' : undefined}
             divider="right"
             flashing={copyFlash}
@@ -370,15 +388,19 @@ export function MemoCard({
             <Icon name={copyFlash ? 'check' : 'content_copy'} size={11} />
           </ActionBtn>
 
-          {/* 핀 — toggle */}
+          {/* 다른 이름으로 저장 — exports the memo body to a real
+              .txt file via main process. Replaces the v1 pin button
+              (영구 보관 was conceptually fighting the auto-fade
+              story; saving to a real file is the natural "I want this
+              forever" exit ramp). */}
           <ActionBtn
             data-memo-control
-            onClick={handlePin}
-            title={pinned ? '핀 해제' : '영구 보관 (TTL 무시)'}
-            color={pinned ? 'var(--accent)' : undefined}
-            flashing={pinFlash}
+            onClick={handleExport}
+            title="다른 이름으로 저장 — txt 파일로 내보내기"
+            color={exportFlash ? 'var(--accent)' : undefined}
+            flashing={exportFlash}
           >
-            <Icon name={pinned ? 'bookmark' : 'bookmark_border'} size={11} />
+            <Icon name={exportFlash ? 'check' : 'save_alt'} size={11} />
           </ActionBtn>
         </div>
 

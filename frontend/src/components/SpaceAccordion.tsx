@@ -68,6 +68,9 @@ interface SpaceAccordionProps {
   onCopyMemoBody?: (itemId: string) => void;
   /** "톡 살리기" — TTL reset on a memo card. */
   onExtendMemoTtl?: (itemId: string) => void;
+  /** Export the memo body as a .txt file (replaces the in-card pin
+   *  button — see MemoCard v3 design notes). */
+  onExportMemoTxt?: (itemId: string) => void;
   onToggleCollapse: () => void;
   onFloatOut?: () => void;
   isFloating?: boolean;
@@ -129,6 +132,7 @@ export function SpaceAccordion({
   onOpenMemoEditor,
   onCopyMemoBody,
   onExtendMemoTtl,
+  onExportMemoTxt,
   onToggleCollapse,
   onFloatOut,
   isFloating = false,
@@ -499,6 +503,7 @@ export function SpaceAccordion({
                   onOpenMemoEditor={onOpenMemoEditor}
                   onCopyMemoBody={onCopyMemoBody}
                   onExtendMemoTtl={onExtendMemoTtl}
+                  onExportMemoTxt={onExportMemoTxt}
                 />
               ))}
 

@@ -1162,11 +1162,26 @@ export default function App() {
   // ── Toast notification — FIFO queue (non-overlapping) ────
 
   // ── Monitor tracking ─────────────────────────────────────
+  // Two derived values from the same source — both surface to the
+  // UI: `monitorCount` (cheap integer, used by every card for
+  // count-based gating) and `monitors` (full layout info, consumed
+  // by the new MonitorPicker for proportional rendering). Keeping
+  // them split lets the cheap consumers skip re-renders when the
+  // (rarely-changing) layout updates.
   const [monitorCount, setMonitorCount] = useState(1);
+  const [monitors, setMonitors] = useState<Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number } }>>([]);
   useEffect(() => {
-    electronAPI.getMonitors().then(ms => { if (ms.length > 0) setMonitorCount(ms.length); });
-    electronAPI.onMonitorsChanged(monitors => {
-      if (monitors.length > 0) setMonitorCount(monitors.length);
+    electronAPI.getMonitors().then(ms => {
+      if (ms.length > 0) {
+        setMonitorCount(ms.length);
+        setMonitors(ms);
+      }
+    });
+    electronAPI.onMonitorsChanged(next => {
+      if (next.length > 0) {
+        setMonitorCount(next.length);
+        setMonitors(next);
+      }
     });
   }, []);
 
@@ -1628,6 +1643,42 @@ export default function App() {
     showToast('수명을 다시 채웠어요');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
+
+  /** Card-level "다른 이름으로 저장" — exports the memo body to a
+   *  real .txt file via main process. Same code path the editor's
+   *  내보내기 button uses, just invokable without opening the editor.
+   *  After successful export the memo is hard-deleted (export = move
+   *  semantics, per the v1 spec). */
+  const handleExportMemoTxt = useCallback(async (spaceId: string, itemId: string) => {
+    const space = data.spaces.find(s => s.id === spaceId);
+    const item = space?.items.find(i => i.id === itemId);
+    const body = item?.memo?.body ?? '';
+    if (!body.trim()) {
+      showToast('빈 메모는 저장할 수 없어요');
+      return;
+    }
+    const title = item?.title || '메모';
+    const slug = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 40) || '메모';
+    const ymd = (() => { const d = new Date(); return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; })();
+    try {
+      const result = await electronAPI.exportMemoTxt({
+        body,
+        slug: `${slug}_${ymd}`,
+        customFolder: data.settings.memo?.exportFolder,
+        openAfter: true,
+      });
+      if (result.success) {
+        showToast(`txt로 저장됨 — ${result.filePath?.split(/[/\\]/).pop()}`);
+        // Memo → file becomes single source of truth (export = move).
+        store.deleteItem(spaceId, itemId);
+      } else {
+        showToast('저장 실패: ' + (result.reason ?? '알 수 없는 오류'));
+      }
+    } catch (e) {
+      showToast('저장 실패: ' + String(e));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.spaces, data.settings.memo, store]);
 
   /**
    * Notification action dispatcher — central switch for all bell-row
@@ -2622,12 +2673,13 @@ export default function App() {
     deckAnchorItemIds,
     inactiveWindowIds,
     monitorCount,
+    monitors,
     allItems,
     monitorDirections: data.settings.monitorDirections as Record<number, string> | undefined,
     closeAfter: data.settings.closeAfterOpen,
     searchQuery: query,
     justAddedItemIds,
-  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, query, justAddedItemIds]);
+  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, monitors, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, query, justAddedItemIds]);
 
   const appActions = useMemo<AppActions>(() => ({
     showToast,
@@ -3254,6 +3306,7 @@ export default function App() {
                             onOpenMemoEditor={(itemId) => setEditingMemoId({ spaceId: space.id, itemId })}
                             onCopyMemoBody={(itemId) => handleCopyMemoBody(space.id, itemId)}
                             onExtendMemoTtl={(itemId) => handleExtendMemoTtl(space.id, itemId)}
+                            onExportMemoTxt={(itemId) => handleExportMemoTxt(space.id, itemId)}
                             defaultOpen={!(data.collapsedSpaceIds ?? []).includes(space.id)}
                             onSetMonitor={(itemId, monitor) => handleSetMonitor(space.id, itemId, monitor)}
                             onConvertToContainer={itemId => { if (quotaChecks.container()) handleConvertToContainer(space.id, itemId); }}
