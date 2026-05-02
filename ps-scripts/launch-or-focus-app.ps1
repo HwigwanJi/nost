@@ -5,6 +5,43 @@ $target  = $env:QL_PATH
 $lnkArgs = ''
 $lnkCwd  = ''
 
+# ── Helper: rebase stale versioned browser exe paths ──────────────────
+# Chromium browsers (Chrome / Edge / Whale) put their version in the
+# install path: `...\Application\134.0.6998.166\chrome.exe`. When the
+# browser auto-updates, the OLD version folder is deleted — so any
+# .lnk or saved exe path captured before the update goes stale and
+# Test-Path fails. We detect that pattern and rebase to the highest-
+# numbered sibling under the same `Application\` parent.
+#
+# This fixes the most common failure mode for PWA shortcuts that
+# point through a versioned browser exe: the user complains "after
+# I close and reopen nost, the Claude card stops working" because
+# the saved Whale-PWA shortcut has a versioned target that's gone.
+function Rebase-VersionedBrowserPath([string]$path) {
+    if (-not $path) { return $path }
+    if ($path -match '^(.+\\Application)\\([\d.]+)\\([^\\]+\.exe)$') {
+        $appRoot = $Matches[1]
+        $exeName = $Matches[3]
+        if (Test-Path -LiteralPath $appRoot) {
+            try {
+                $latest = Get-ChildItem -LiteralPath $appRoot -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^[\d.]+$' } |
+                    Sort-Object { [version]$_.Name } -Descending |
+                    Select-Object -First 1
+                if ($latest) {
+                    $candidate = Join-Path $latest.FullName $exeName
+                    if (Test-Path -LiteralPath $candidate) {
+                        return $candidate
+                    }
+                }
+            } catch {
+                # Malformed version dirs — ignore and fall through to original path.
+            }
+        }
+    }
+    return $path
+}
+
 # ── Sanity check: the stored value must be a rooted absolute path ────
 # nost historically stored drag-dropped files as "Name.ext" (no directory)
 # on Electron 32+ because File.path became undefined. Such items can never
@@ -14,17 +51,18 @@ if (-not [System.IO.Path]::IsPathRooted($target)) {
     Write-Output "ERROR: 경로가 파일명만 저장되어 있습니다 ($target). 카드를 삭제하고 다시 등록하세요."
     exit
 }
-# WindowsApps versioned exe paths go stale when the Store app auto-
-# updates: the cached card points at e.g. `...\OpenAI.ChatGPT-Desktop
-# _1.2026.43.0_x64__...\app\ChatGPT.exe`, but auto-update moves the
-# exe under a new version folder. Test-Path returns false and the
-# script used to bail with "파일이 존재하지 않습니다" before even
-# reaching the WindowsApps fallback section that can resolve the
-# CURRENT install via Get-AppxPackage / parsed PackageFamilyName.
-# Skip the early existence check for those paths and let section (A)
-# below find the live install.
+# Stale-path recovery (run BEFORE early existence bail so a saved
+# exe path that lost its version folder still gets a chance):
+#   - Versioned browser exe (Chrome / Edge / Whale) → rebase to
+#     the highest-numbered sibling under `\Application\`.
+#   - WindowsApps / Store MSIX paths → handled below in section (A)
+#     via Get-AppxPackage by package name; we just SKIP the bail
+#     for those so the fallback can run.
 if (-not (Test-Path -LiteralPath $target)) {
-    if ($target -notmatch '\\WindowsApps\\') {
+    $rebased = Rebase-VersionedBrowserPath $target
+    if ($rebased -ne $target -and (Test-Path -LiteralPath $rebased)) {
+        $target = $rebased
+    } elseif ($target -notmatch '\\WindowsApps\\') {
         Write-Output "ERROR: 파일이 존재하지 않습니다: $target"
         exit
     }
@@ -67,6 +105,17 @@ if ($target -match '\.lnk$') {
     } catch {
         Write-Output "ERROR: .lnk resolve failed: $($_.Exception.Message)"
         exit
+    }
+}
+
+# Rebase versioned browser paths AFTER .lnk resolution (so it covers
+# both directly-saved exe paths AND .lnk-resolved paths). If the
+# stored exe is `whale.exe` under a stale version folder, we hop
+# to the latest version that's actually on disk.
+if (-not (Test-Path -LiteralPath $target)) {
+    $rebased = Rebase-VersionedBrowserPath $target
+    if ($rebased -ne $target -and (Test-Path -LiteralPath $rebased)) {
+        $target = $rebased
     }
 }
 
