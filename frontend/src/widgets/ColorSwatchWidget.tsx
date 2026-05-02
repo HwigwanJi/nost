@@ -1,4 +1,4 @@
-import { memo, useCallback, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { memo, useCallback, useLayoutEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import type { LauncherItem, Space } from '../types';
 
 /**
@@ -91,6 +91,24 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu }: Props) {
   const hasName = !!labelCandidate && labelCandidate.toUpperCase() !== hex;
   const name = hasName ? labelCandidate : '';
 
+  // ── Marquee on hover for long names ───────────────────────────
+  // Same pattern as MemoCard: measure overflow once, only animate
+  // when the label actually doesn't fit. Short names stay calm.
+  const labelOuterRef = useRef<HTMLDivElement | null>(null);
+  const labelInnerRef = useRef<HTMLSpanElement | null>(null);
+  const [marqueeShift, setMarqueeShift] = useState(0);
+  const [hovered, setHovered] = useState(false);
+  useLayoutEffect(() => {
+    const outer = labelOuterRef.current;
+    const inner = labelInnerRef.current;
+    if (!outer || !inner) {
+      setMarqueeShift(0);
+      return;
+    }
+    const overflow = inner.scrollWidth - outer.clientWidth;
+    setMarqueeShift(overflow > 4 ? overflow + 8 : 0);
+  });
+
   // ── Copy-on-click ─────────────────────────────────────────────
   // Clipboard write can fail if the document isn't focused — we
   // surface a tiny "복사됨!" / "복사 실패" overlay either way so the
@@ -151,6 +169,12 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu }: Props) {
           60%  { transform: scale(1.04); opacity: 1; }
           100% { transform: scale(1); opacity: 1; }
         }
+        @keyframes nost-cs-marquee {
+          0%   { transform: translateX(0); }
+          15%  { transform: translateX(0); }
+          85%  { transform: translateX(var(--cs-marquee-shift, 0px)); }
+          100% { transform: translateX(var(--cs-marquee-shift, 0px)); }
+        }
       `}</style>
       <div
         {...handleProps}
@@ -167,11 +191,13 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu }: Props) {
           const el = e.currentTarget as HTMLDivElement;
           el.style.borderColor = 'var(--border-focus)';
           el.style.boxShadow = '0 4px 12px rgba(0,0,0,0.08)';
+          setHovered(true);
         }}
         onMouseLeave={(e) => {
           const el = e.currentTarget as HTMLDivElement;
           el.style.borderColor = 'var(--border-rgba)';
           el.style.boxShadow = 'none';
+          setHovered(false);
         }}
         title={name ? `${hex} · ${name}` : hex}
       >
@@ -225,17 +251,49 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu }: Props) {
         }}>
           {hasName ? (
             <>
-              <div style={{
-                fontSize: 11,
-                lineHeight: '13px',
-                fontWeight: 700,
-                color: 'var(--text-color)',
-                letterSpacing: '-0.01em',
-                whiteSpace: 'nowrap',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}>
-                {name}
+              <div
+                ref={labelOuterRef}
+                style={{
+                  position: 'relative',
+                  fontSize: 11,
+                  lineHeight: '13px',
+                  fontWeight: 700,
+                  color: 'var(--text-color)',
+                  letterSpacing: '-0.01em',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                }}
+              >
+                <span
+                  ref={labelInnerRef}
+                  style={{
+                    display: 'inline-block',
+                    whiteSpace: 'nowrap',
+                    ...((hovered && marqueeShift > 0)
+                      ? {
+                          animation: 'nost-cs-marquee 6s ease-in-out infinite',
+                          ['--cs-marquee-shift' as string]: `-${marqueeShift}px`,
+                        }
+                      : {
+                          textOverflow: 'ellipsis',
+                          maxWidth: '100%',
+                          overflow: 'hidden',
+                        }),
+                  }}
+                >
+                  {name}
+                </span>
+                {!hovered && marqueeShift > 0 && (
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      position: 'absolute', top: 0, right: 0, bottom: 0,
+                      width: 14,
+                      background: 'linear-gradient(to right, transparent, var(--surface))',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                )}
               </div>
               <div style={{
                 fontSize: 9,

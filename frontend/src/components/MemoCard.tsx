@@ -1,28 +1,43 @@
 /**
  * MemoCard — inner body of a `type === 'memo'` LauncherItem.
  *
- * Renders inside ItemCard's wrapper (drag, context menu, pin) — same
- * pattern as MediaWidget / ColorSwatchWidget. ItemCard hands us the
- * drag handle bindings; we own the body markup and click semantics.
+ * v2 redesign — modelled on the MediaWidget's "bounded box, clear
+ * action zones" pattern that the user singled out as the visual
+ * benchmark in the launcher. The previous v1 layout (icon + 3-line
+ * body + thin gauge + dot button) felt undefined: nothing told the
+ * user where to look first or what was clickable.
+ *
+ * Layout (96 px tall):
+ *
+ *   ┌──────────────────────────────────────┐
+ *   │ ━━━━━━━━━━━━━━━━━━━━━ (TTL bar 3px)  │  green / yellow / red
+ *   │  📝  회의 노트 — 9시 백엔드 싱크          │  title (marquee on hover)
+ *   │      그라운드 룰 정리…                  │  body preview 1 line
+ *   │                                        │
+ *   │  [↻ 5일]    [📋]    [📌]               │  3-button action row
+ *   └──────────────────────────────────────┘
  *
  * Click model:
- *   - Click body → onOpenEditor (the inplace sheet — NOT launch)
- *   - Hover top-right copy icon → onCopy (clipboard, with toast feedback)
- *   - Hover bottom-right "톡" dot → onExtend (TTL reset)
+ *   - Click body area  → open editor (unchanged)
+ *   - Click ↻ button   → TTL reset (살리기) + toast
+ *   - Click 📋 button   → copy body to clipboard + toast
+ *   - Click 📌 button   → toggle pin
  *
- * Visual:
- *   - Body preview (3 lines, line-clamp), title is the first non-empty line
- *   - TTL gauge at bottom: 7 pips for ≤7 day TTL, thin progress bar for 14d+
- *   - Pinned: gauge replaced with a small "보관 중" pill
- *   - Soon-to-expire (≤24h): subtle yellow pulse on the gauge
+ * Hover marquee: when the title overflows the available width, hover
+ * starts a translateX animation that scrolls it from end to start
+ * and loops. We measure overflow at mount + on title change rather
+ * than running JS during the animation — pure CSS transition once
+ * the offsets are computed.
  *
- * Why a separate file:
- *   - Memo body has different layout (top-aligned text block vs. centred icon)
- *   - Click intent is different (open editor vs. launch)
- *   - Keeps ItemCard.tsx from growing past 1500 lines for one feature
+ * Status colour ladder (drives both top bar AND ↻ button accent):
+ *   - Pinned        → accent (no TTL)
+ *   - >  3 days     → green-500
+ *   - 1–3 days      → amber-500
+ *   - <  1 day      → red-500
+ *   - Trashed       → muted grey (filtered out of grid; defensive)
  */
 
-import { useState } from 'react';
+import { useState, useRef, useLayoutEffect, useCallback } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { LauncherItem, Space } from '../types';
 import { useSortable } from '@dnd-kit/sortable';
@@ -32,7 +47,6 @@ import {
   memoDaysLeft,
   memoHoursLeft,
   memoGaugeFraction,
-  memoIsExpiringSoon,
 } from '../lib/memoUtils';
 
 interface MemoCardDragHandle {
@@ -51,278 +65,400 @@ interface MemoCardProps {
   onOpenEditor: () => void;
   onCopy: () => void;
   onExtend: () => void;
+  onTogglePin?: () => void;
   isJustAdded: boolean;
 }
 
-const GAUGE_PIPS = 7;
+const CARD_HEIGHT = 96;
+
+/** Status colour from days remaining. Single source of truth — used by
+ *  both the top TTL bar and the ↻ refresh button label. */
+function ttlStatusColor(daysLeft: number | null, pinned: boolean): string {
+  if (pinned) return 'var(--accent)';
+  if (daysLeft === null) return 'var(--text-muted)';
+  if (daysLeft === 0) return '#ef4444';     // red — expiring within 24h
+  if (daysLeft <= 3) return '#f59e0b';      // amber
+  return '#22c55e';                          // green — comfortable
+}
 
 export function MemoCard({
   item, space, dragHandle, pinned,
-  onOpenEditor, onCopy, onExtend, isJustAdded,
+  onOpenEditor, onCopy, onExtend, onTogglePin, isJustAdded,
 }: MemoCardProps) {
   const [hovered, setHovered] = useState(false);
   const [copyFlash, setCopyFlash] = useState(false);
+  const [pinFlash, setPinFlash] = useState(false);
 
   const memo = item.memo;
   const body = memo?.body ?? '';
-  const title = memoTitleFromBody(body);
-  const preview = memoBodyPreview(body, 3);
   const isEmpty = !body.trim();
+  const title = memoTitleFromBody(body);
+  const preview = memoBodyPreview(body, 1);
 
   const now = Date.now();
   const daysLeft = memoDaysLeft(item, now);
   const hoursLeft = memoHoursLeft(item, now);
   const fraction = memoGaugeFraction(item, now);
-  const expiringSoon = memoIsExpiringSoon(item, now);
+  const status = ttlStatusColor(daysLeft, pinned);
 
-  // Total-life heuristic: number of pips reflects the original TTL
-  // bucket. <=7d → individual pips; 14d+ → continuous bar (clearer at
-  // long horizons since 30 separate pips would be illegible).
-  const totalDays = memo ? Math.max(1, Math.round((memo.expiresAt - memo.lastTouchedAt) / (24 * 60 * 60 * 1000))) : 7;
-  const useBarMode = totalDays > 7;
+  // Refresh-button label: "5일", "12시간", "곧" — short enough to
+  // fit in the cell without ellipsis. Pinned shows nothing (TTL is
+  // meaningless) so the button just says 살리기.
+  const ttlLabel = pinned
+    ? ''
+    : daysLeft === null ? ''
+    : daysLeft === 0
+      ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간` : '곧')
+      : `${daysLeft}일`;
 
-  const handleCardClick = (e: React.MouseEvent) => {
-    // Don't open editor if user clicked on a control (copy / dot).
+  // ── Marquee setup ────────────────────────────────────────────
+  // We measure whether the title overflows its container; only then
+  // does the hover animation engage. Static (non-overflowing) titles
+  // stay calm — animating short text feels gimmicky.
+  const titleOuterRef = useRef<HTMLDivElement | null>(null);
+  const titleInnerRef = useRef<HTMLSpanElement | null>(null);
+  const [marqueeShift, setMarqueeShift] = useState<number>(0);
+
+  useLayoutEffect(() => {
+    const outer = titleOuterRef.current;
+    const inner = titleInnerRef.current;
+    if (!outer || !inner) return;
+    const overflow = inner.scrollWidth - outer.clientWidth;
+    setMarqueeShift(overflow > 4 ? overflow + 8 : 0);
+  }, [title]);
+
+  // ── Click router ─────────────────────────────────────────────
+  // Pointer-down inside an action button must NOT propagate to the
+  // outer card click handler — otherwise tapping ↻ would also open
+  // the editor. We mark control elements with data-memo-control and
+  // bail out early on the body click if the target is one.
+  const handleCardClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest('[data-memo-control]')) return;
     onOpenEditor();
-  };
+  }, [onOpenEditor]);
 
-  const handleCopy = (e: React.MouseEvent) => {
+  const handleCopy = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     onCopy();
     setCopyFlash(true);
-    setTimeout(() => setCopyFlash(false), 800);
-  };
+    setTimeout(() => setCopyFlash(false), 700);
+  }, [onCopy]);
 
-  const handleExtend = (e: React.MouseEvent) => {
+  const handleExtend = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     onExtend();
-  };
+  }, [onExtend]);
+
+  const handlePin = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    onTogglePin?.();
+    setPinFlash(true);
+    setTimeout(() => setPinFlash(false), 600);
+  }, [onTogglePin]);
 
   const { setNodeRef, attributes, listeners, style, isDragging } = dragHandle;
 
-  // Subdued color for trashed (shouldn't normally render — caller filters
-  // them out — but defensive in case).
-  const isTrashed = !!memo?.trashedAt;
-
   return (
-    <div
-      ref={setNodeRef}
-      data-card
-      data-card-id={item.id}
-      onClick={handleCardClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      {...attributes}
-      {...listeners}
-      style={{
-        ...style,
-        background: 'var(--surface)',
-        borderColor: hovered ? 'var(--border-focus)' : 'var(--border-rgba)',
-        borderStyle: 'solid',
-        borderWidth: 1,
-        borderRadius: 12,
-        padding: '10px 10px 14px 10px',
-        position: 'relative',
-        cursor: 'pointer',
-        userSelect: 'none',
-        minHeight: 82,
-        display: 'flex', flexDirection: 'column', gap: 4,
-        transition: 'all 0.15s ease-out',
-        opacity: isDragging ? 0.4 : (isTrashed ? 0.5 : 1),
-        ...(isJustAdded && !isDragging
-          ? { animation: 'cardEnter 0.38s cubic-bezier(0.34, 1.56, 0.64, 1) both' }
-          : {}),
-      }}
-      className="group"
-    >
-      {/* Pin badge — same position/style as ItemCard so cards feel uniform */}
-      {pinned && (
-        <Icon
-          name="bookmark"
-          size={11}
-          color="var(--accent)"
-          style={{ position: 'absolute', top: 3, right: 5, opacity: 0.55, transition: 'opacity 0.15s' }}
-          className="group-hover:!opacity-90"
-        />
-      )}
+    <>
+      {/* Local keyframes for marquee + button micro-feedback. Scoped
+          to memo cards so we don't pollute the global keyframe namespace. */}
+      <style>{`
+        @keyframes memoMarquee {
+          0%   { transform: translateX(0); }
+          15%  { transform: translateX(0); }
+          85%  { transform: translateX(var(--memo-marquee-shift, -0px)); }
+          100% { transform: translateX(var(--memo-marquee-shift, -0px)); }
+        }
+        @keyframes memoBtnPop {
+          0%   { transform: scale(1); }
+          40%  { transform: scale(0.9); }
+          100% { transform: scale(1); }
+        }
+      `}</style>
 
-      {/* Hover-only copy icon (top-right, slightly inboard from pin) */}
-      <button
-        data-memo-control
-        onClick={handleCopy}
-        title="본문 복사"
-        style={{
-          position: 'absolute',
-          top: 4,
-          right: pinned ? 22 : 5,
-          width: 18, height: 18, borderRadius: 4,
-          background: copyFlash ? 'var(--accent)' : 'transparent',
-          border: 'none',
-          color: copyFlash ? '#fff' : 'var(--text-muted)',
-          cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          opacity: hovered || copyFlash ? 0.85 : 0,
-          transition: 'opacity 0.12s, background 0.18s, color 0.18s',
-          padding: 0,
-          zIndex: 2,
-        }}
-      >
-        <Icon name={copyFlash ? 'check' : 'content_copy'} size={11} />
-      </button>
-
-      {/* Title (first non-empty line) */}
       <div
+        ref={setNodeRef}
+        data-card
+        data-card-id={item.id}
+        onClick={handleCardClick}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        {...attributes}
+        {...listeners}
         style={{
-          fontSize: 12,
-          fontWeight: 600,
-          lineHeight: 1.25,
-          color: isEmpty ? 'var(--text-dim)' : 'var(--text-color)',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-          paddingRight: 28,  // leave room for copy icon
+          ...style,
+          background: 'var(--surface)',
+          borderColor: hovered ? 'var(--border-focus)' : 'var(--border-rgba)',
+          borderStyle: 'solid',
+          borderWidth: 1,
+          borderRadius: 12,
+          height: CARD_HEIGHT,
+          padding: 0,
+          position: 'relative',
+          cursor: 'pointer',
+          userSelect: 'none',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          transition: 'border-color 0.15s, box-shadow 0.15s, transform 0.15s',
+          opacity: isDragging ? 0.4 : 1,
+          boxShadow: hovered ? '0 4px 12px rgba(0,0,0,0.08)' : 'none',
+          ...(isJustAdded && !isDragging
+            ? { animation: 'cardEnter 0.38s cubic-bezier(0.34, 1.56, 0.64, 1) both' }
+            : {}),
         }}
+        title={isEmpty ? '빈 메모 — 클릭해서 시작' : title}
       >
-        {isEmpty ? '(빈 메모)' : title}
-      </div>
-
-      {/* Body preview (≤3 more lines) */}
-      {preview && (
+        {/* ── Top TTL bar — 3px, full-width status colour ───────
+            Pinned: solid accent (no decay).
+            Active: filled to `fraction`, rest is muted track. */}
         <div
+          aria-hidden="true"
           style={{
-            fontSize: 10.5,
-            lineHeight: 1.35,
-            color: 'var(--text-muted)',
-            overflow: 'hidden',
-            // 3-line clamp via webkit (works in Chrome/Electron)
-            display: '-webkit-box',
-            WebkitLineClamp: 3,
-            WebkitBoxOrient: 'vertical',
-            whiteSpace: 'pre-line',
-            flex: 1,
+            position: 'relative',
+            height: 3,
+            background: 'var(--border-rgba)',
+            flexShrink: 0,
           }}
         >
-          {preview}
-        </div>
-      )}
-
-      {/* Filler so cards without preview still claim the same min-height */}
-      {!preview && <div style={{ flex: 1 }} />}
-
-      {/* TTL gauge / pinned pill — bottom row */}
-      <div
-        style={{
-          display: 'flex', alignItems: 'center', gap: 6,
-          fontSize: 9,
-          color: 'var(--text-dim)',
-          marginTop: 2,
-        }}
-      >
-        {pinned ? (
-          <>
-            <Icon name="bookmark" size={9} color="var(--accent)" />
-            <span style={{ color: 'var(--accent)', fontWeight: 600 }}>보관 중</span>
-          </>
-        ) : isTrashed ? (
-          <>
-            <Icon name="delete" size={9} />
-            <span>휴지통</span>
-          </>
-        ) : useBarMode ? (
-          <>
-            <div
-              style={{
-                flex: 1, height: 3,
-                borderRadius: 2,
-                background: 'var(--border-rgba)',
-                overflow: 'hidden',
-                position: 'relative',
-              }}
-            >
-              <div
-                style={{
-                  width: `${Math.max(2, fraction * 100)}%`,
-                  height: '100%',
-                  background: expiringSoon ? '#f5b800' : 'var(--text-muted)',
-                  transition: 'width 0.3s',
-                }}
-              />
-            </div>
-            <span style={{ flexShrink: 0, color: expiringSoon ? '#f5b800' : 'var(--text-dim)' }}>
-              {daysLeft === 0 ? '곧 만료' : daysLeft === null ? '' : `${daysLeft}일`}
-            </span>
-          </>
-        ) : (
-          <>
-            <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-              {Array.from({ length: GAUGE_PIPS }).map((_, i) => {
-                const litPipCount = Math.max(0, Math.min(GAUGE_PIPS, Math.ceil(fraction * GAUGE_PIPS)));
-                const lit = i < litPipCount;
-                return (
-                  <span
-                    key={i}
-                    style={{
-                      width: 4, height: 4, borderRadius: '50%',
-                      background: lit
-                        ? (expiringSoon && i === litPipCount - 1 ? '#f5b800' : 'var(--text-muted)')
-                        : 'var(--border-rgba)',
-                      transition: 'background 0.3s',
-                    }}
-                  />
-                );
-              })}
-            </div>
-            <span
-              style={{
-                color: expiringSoon ? '#f5b800' : 'var(--text-dim)',
-                fontWeight: expiringSoon ? 600 : 400,
-              }}
-            >
-              {daysLeft === 0
-                ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간` : '곧 만료')
-                : `${daysLeft}일`}
-            </span>
-          </>
-        )}
-
-        {/* "톡" — TTL reset dot. Hidden when pinned (no TTL) or trashed. */}
-        {!pinned && !isTrashed && (
-          <button
-            data-memo-control
-            onClick={handleExtend}
-            title="살리기 — 수명을 다시 가득 채웁니다"
+          <div
             style={{
-              marginLeft: 'auto',
-              width: 14, height: 14, borderRadius: '50%',
-              background: 'transparent',
-              border: '1px solid var(--border-rgba)',
-              color: 'var(--text-muted)',
-              cursor: 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: 0,
-              opacity: hovered ? 1 : 0.5,
-              transition: 'opacity 0.12s, background 0.12s, border-color 0.12s',
+              position: 'absolute',
+              inset: 0,
+              width: pinned ? '100%' : `${Math.max(2, fraction * 100)}%`,
+              background: status,
+              transition: 'width 0.3s, background 0.3s',
+              opacity: pinned ? 0.85 : 1,
             }}
-            onMouseEnter={e => {
-              e.currentTarget.style.background = 'var(--accent-dim)';
-              e.currentTarget.style.borderColor = 'var(--accent)';
-              e.currentTarget.style.color = 'var(--accent)';
-            }}
-            onMouseLeave={e => {
-              e.currentTarget.style.background = 'transparent';
-              e.currentTarget.style.borderColor = 'var(--border-rgba)';
-              e.currentTarget.style.color = 'var(--text-muted)';
+          />
+        </div>
+
+        {/* ── Body (icon + title + preview) ────────────────────
+            Click area for opening the editor. Padding leaves room
+            for the bottom button row to breathe. */}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            gap: 8,
+            padding: '8px 10px 4px 10px',
+            minWidth: 0,
+            overflow: 'hidden',
+          }}
+        >
+          {/* Icon (top-left, fixed). Pinned cards swap to a bookmark
+              glyph so the badge is meaningful at a glance, not just
+              the generic memo sticky icon. */}
+          <div
+            style={{
+              flexShrink: 0,
+              width: 22, height: 22,
+              borderRadius: 6,
+              background: 'var(--surface-hover)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
           >
-            <Icon name="add" size={9} />
-          </button>
+            <Icon
+              name={pinned ? 'bookmark' : 'sticky_note_2'}
+              size={12}
+              color={pinned ? 'var(--accent)' : 'var(--text-muted)'}
+            />
+          </div>
+
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Title with marquee */}
+            <div
+              ref={titleOuterRef}
+              style={{
+                position: 'relative',
+                overflow: 'hidden',
+                whiteSpace: 'nowrap',
+                fontSize: 12,
+                fontWeight: 600,
+                lineHeight: '15px',
+                color: isEmpty ? 'var(--text-dim)' : 'var(--text-color)',
+              }}
+            >
+              <span
+                ref={titleInnerRef}
+                style={{
+                  display: 'inline-block',
+                  whiteSpace: 'nowrap',
+                  // The marquee animation kicks in only when the
+                  // title overflows AND the card is hovered. Otherwise
+                  // the static text shows ellipsis via the parent's
+                  // overflow + textOverflow combo.
+                  ...((hovered && marqueeShift > 0)
+                    ? {
+                        animation: 'memoMarquee 6s ease-in-out infinite',
+                        // Custom prop so the keyframe can read the
+                        // pixel offset without re-creating it per card.
+                        ['--memo-marquee-shift' as string]: `-${marqueeShift}px`,
+                      }
+                    : {
+                        textOverflow: 'ellipsis',
+                        overflow: 'hidden',
+                        maxWidth: '100%',
+                      }),
+                }}
+              >
+                {isEmpty ? '(빈 메모)' : title}
+              </span>
+              {/* Static fallback truncation when not animating —
+                  rendered as a CSS-only fade on the right edge so
+                  long titles still hint at "there's more here". */}
+              {!hovered && marqueeShift > 0 && (
+                <div
+                  aria-hidden="true"
+                  style={{
+                    position: 'absolute',
+                    top: 0, right: 0, bottom: 0,
+                    width: 18,
+                    background: 'linear-gradient(to right, transparent, var(--surface))',
+                    pointerEvents: 'none',
+                  }}
+                />
+              )}
+            </div>
+
+            {/* Preview — single line, faded, ellipsis. Empty when the
+                memo only has a title (e.g. first line shorthand). */}
+            {preview && (
+              <div
+                style={{
+                  fontSize: 10.5,
+                  color: 'var(--text-muted)',
+                  lineHeight: '13px',
+                  marginTop: 2,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {preview}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── Action row (3 buttons) ───────────────────────────
+            Equal-width grid so labels align cleanly. Each button's
+            click is bubble-stopped so the outer card click (= editor
+            open) doesn't fire when the user hits an action. */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1.15fr 1fr 1fr',
+            gap: 0,
+            borderTop: '1px solid var(--border-rgba)',
+            background: 'var(--surface)',
+            flexShrink: 0,
+          }}
+        >
+          {/* 살리기 (TTL refresh) — color-coded, label shows TTL */}
+          <ActionBtn
+            data-memo-control
+            onClick={handleExtend}
+            title="살리기 — 수명을 다시 채웁니다"
+            disabled={pinned}
+            color={status}
+            divider="right"
+          >
+            <Icon name="refresh" size={11} />
+            {ttlLabel ? <span>{ttlLabel}</span> : <span>살리기</span>}
+          </ActionBtn>
+
+          {/* 복사 — body to clipboard */}
+          <ActionBtn
+            data-memo-control
+            onClick={handleCopy}
+            title="본문 복사"
+            color={copyFlash ? 'var(--accent)' : undefined}
+            divider="right"
+            flashing={copyFlash}
+          >
+            <Icon name={copyFlash ? 'check' : 'content_copy'} size={11} />
+          </ActionBtn>
+
+          {/* 핀 — toggle */}
+          <ActionBtn
+            data-memo-control
+            onClick={handlePin}
+            title={pinned ? '핀 해제' : '영구 보관 (TTL 무시)'}
+            color={pinned ? 'var(--accent)' : undefined}
+            flashing={pinFlash}
+          >
+            <Icon name={pinned ? 'bookmark' : 'bookmark_border'} size={11} />
+          </ActionBtn>
+        </div>
+
+        {/* Bottom space-color stripe stays as parity with regular cards
+            — placed AFTER the action row so it sits on the very edge,
+            not bisected by the row's top border. */}
+        {space.color && (
+          <div
+            aria-hidden="true"
+            className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full"
+            style={{ background: space.color, opacity: 0.55 }}
+          />
         )}
       </div>
+    </>
+  );
+}
 
-      {/* Bottom stripe — space color (parity with ItemCard) */}
-      {space.color && (
-        <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: space.color, opacity: 0.55 }} />
-      )}
-    </div>
+/* ── Action button — internal, shared by all 3 bottom slots ───── */
+interface ActionBtnProps {
+  children: React.ReactNode;
+  onClick: (e: React.MouseEvent) => void;
+  title?: string;
+  disabled?: boolean;
+  color?: string;
+  divider?: 'right';
+  flashing?: boolean;
+  'data-memo-control'?: boolean;
+}
+
+function ActionBtn({
+  children, onClick, title, disabled, color, divider, flashing, ...rest
+}: ActionBtnProps) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      data-memo-control
+      {...rest}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+        padding: '6px 4px',
+        background: 'transparent',
+        border: 'none',
+        borderRight: divider === 'right' ? '1px solid var(--border-rgba)' : 'none',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        color: disabled ? 'var(--text-dim)' : (color ?? 'var(--text-muted)'),
+        fontSize: 10,
+        fontWeight: 600,
+        fontFamily: 'inherit',
+        opacity: disabled ? 0.4 : 1,
+        transition: 'background 0.12s, color 0.12s',
+        animation: flashing ? 'memoBtnPop 0.28s ease' : undefined,
+        // Carve a tiny per-button hover affordance — without it the
+        // 3 cells feel like a static strip instead of pressable
+        // buttons.
+        minWidth: 0,
+        whiteSpace: 'nowrap',
+      }}
+      onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = 'var(--surface-hover)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+    >
+      {children}
+    </button>
   );
 }

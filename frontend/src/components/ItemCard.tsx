@@ -609,6 +609,7 @@ export function ItemCard({
         onOpenEditor={() => onOpenMemoEditor(item.id)}
         onCopy={() => onCopyMemoBody?.(item.id)}
         onExtend={() => onExtendMemoTtl?.(item.id)}
+        onTogglePin={onTogglePin}
       />
     );
   }
