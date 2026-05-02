@@ -17,6 +17,11 @@ export interface AppState {
   activeMode: AppMode;
   nodeGroups: NodeGroup[];
   nodeBuilding: string[];
+  /** When set, node mode is editing this existing NodeGroup (B mode).
+   *  Null = building a new group (A mode) or not in node mode at all.
+   *  ItemCard reads this to swap the click intent + display the
+   *  "edit-existing" subset of visual signals (group-name halo, etc.). */
+  editingNodeGroupId: string | null;
   deckItems: string[];
   decks: Deck[];
   deckAnchorItemIds: Set<string>;

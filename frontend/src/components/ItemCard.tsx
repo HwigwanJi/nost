@@ -160,7 +160,21 @@ export function ItemCard({
 
   // ── Derived values from context ──────────────────────────────
   const isNodeLinked = nodeGroups.some(g => g.itemIds.includes(item.id));
+  // isNodeAnchor: card is in the active node staging set (build OR
+  // edit). nodeBuilding mirrors the editing group's itemIds in B mode
+  // (kept in sync by useNodeDeckMode), so a single read covers both.
   const isNodeAnchor = nodeBuilding.includes(item.id);
+  // 1-indexed order within the active node staging set. Drives the
+  // big "1 / 2 / 3" badge on member cards during node mode. Returns 0
+  // when the card isn't a member (or we're not in node mode at all).
+  const nodeOrderIndex = activeMode === 'node'
+    ? (nodeBuilding.indexOf(item.id) + 1)
+    : 0;
+  // True when node staging is full and THIS card isn't a member —
+  // surfaces the "click to slide-replace" affordance via subtle dim.
+  const isNodeFullNonMember = activeMode === 'node'
+    && nodeBuilding.length >= 3
+    && !isNodeAnchor;
   const isDeckAnchor = deckAnchorItemIds?.has(item.id) ?? false;
   const nodeBadges = (() => {
     const arr: number[] = [];
@@ -647,6 +661,7 @@ export function ItemCard({
         rounded-xl p-3 min-h-[82px] cursor-pointer select-none
         border transition-all duration-150 ease-out active:scale-[0.96]
         ${nodeClasses} ${isInactive ? 'opacity-50' : ''}
+        ${isNodeFullNonMember ? 'opacity-60' : ''}
       `}
       onMouseEnter={e => {
         (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-hover)';
@@ -733,6 +748,42 @@ export function ItemCard({
         <Icon name="keyboard_arrow_left"  size={9} color="var(--text-dim)" style={{ position:'absolute', left:2,   top:'50%',   transform:'translateY(-50%)' }} />
         <Icon name="keyboard_arrow_right" size={9} color="var(--text-dim)" style={{ position:'absolute', right:2,  top:'50%',   transform:'translateY(-50%)' }} />
       </div>
+
+      {/* ── Node mode — BIG order badge (top-left) ──────────────────
+          During node mode (build OR edit-existing), member cards show
+          the 1-indexed launch order as a prominent accent badge. Drives
+          the user's mental model of "this is selected AND it's the
+          Nth in the launch sequence" — much louder than the small
+          membership pill that's used in normal mode hover.
+          The membership pill below is suppressed when this badge is
+          rendering (the !isNodeAnchor guard there) so they don't
+          double-render. */}
+      {nodeOrderIndex > 0 && (
+        <div
+          className="absolute top-[5px] left-[5px]"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 18,
+            height: 18,
+            borderRadius: 6,
+            background: 'var(--accent)',
+            color: '#fff',
+            fontSize: 11,
+            fontWeight: 800,
+            lineHeight: 1,
+            boxShadow: '0 2px 8px rgba(99,102,241,0.45)',
+            // Spring-pop entry so the badge reads as a fresh state
+            // change rather than always-there decoration.
+            animation: 'cardEnter 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) both',
+            zIndex: 4,
+          }}
+          title={`노드 순서 ${nodeOrderIndex} — 클릭으로 제거`}
+        >
+          {nodeOrderIndex}
+        </div>
+      )}
 
       {/* ── Workflow membership pill (top-left) ──────────────────────
           Replaces the previous "two separate coloured circles per card"

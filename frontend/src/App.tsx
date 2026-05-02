@@ -1062,14 +1062,30 @@ export default function App() {
     activeMode, setActiveMode,
     nodeEditMode, setNodeEditMode,
     nodeBuilding, setNodeBuilding,
+    editingNodeGroupId,
     deckBuilding, setDeckBuilding,
     deckItems, setDeckItems,
     nodeGroups, decks, allItems, deckAnchorItemIds,
     handleModeChange,
     handleStartNodeEdit, handleCancelNodeEdit,
+    handleStartEditExistingGroup,
+    handleNodeEditClick,
     handleSaveNodeGroup, handleNodeBuildingClick, handleNodeGroupLaunch,
     handleDeckBuildingClick, handleSaveDeck, handleDeckLaunch, handleDeckGroupLaunch,
   } = useNodeDeckMode({ data, store, showToast, dismissToast, showTileOverlay });
+
+  // Click router for `activeMode === 'node'`. The single context action
+  // `onNodeModeClick` doesn't know whether we're building new vs. editing
+  // existing — that decision lives here where all state is in scope.
+  // Without this, B mode would route through handleNodeBuildingClick and
+  // mutate the staging array instead of the live group.
+  const handleNodeModeClick = useCallback((itemId: string) => {
+    if (editingNodeGroupId) {
+      handleNodeEditClick(itemId);
+    } else {
+      handleNodeBuildingClick(itemId);
+    }
+  }, [editingNodeGroupId, handleNodeEditClick, handleNodeBuildingClick]);
 
   // ── Floating badges (Phase 2) — late listeners ─────────────
   //
@@ -1376,10 +1392,18 @@ export default function App() {
       if (e.key !== 'Escape') return;
       // Priority 0: close CommandBar
       if (cmdOpen) { setCmdOpen(false); setCmdInput(''); return; }
-      // Priority 1: save node group if building ≥2
+      // Priority 1: node mode exit
+      // Edit-existing (B mode): live mutations are already saved — just
+      // tear down the mode. Don't fall into the "auto-save if ≥2" path
+      // since that targets the new-build flow.
       if (nodeEditMode) {
-        if (nodeBuilding.length >= 2) handleSaveNodeGroup(undefined);
-        else { setNodeEditMode(false); setNodeBuilding([]); dismissToast(); }
+        if (editingNodeGroupId) {
+          handleCancelNodeEdit();
+        } else if (nodeBuilding.length >= 2) {
+          handleSaveNodeGroup(undefined);
+        } else {
+          setNodeEditMode(false); setNodeBuilding([]); dismissToast();
+        }
         return;
       }
       // Priority 1b: cancel deck build
@@ -1406,7 +1430,7 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dialog, activeMode, tileOverlayGroup, nodeEditMode, nodeBuilding, deckBuilding, cmdOpen]);
+  }, [dialog, activeMode, tileOverlayGroup, nodeEditMode, nodeBuilding, editingNodeGroupId, deckBuilding, cmdOpen]);
 
   // ── Tab key cycles through available presets ─────────────
   //
@@ -2483,6 +2507,7 @@ export default function App() {
     activeMode,
     nodeGroups,
     nodeBuilding,
+    editingNodeGroupId,
     deckItems,
     decks,
     deckAnchorItemIds,
@@ -2493,20 +2518,20 @@ export default function App() {
     closeAfter: data.settings.closeAfterOpen,
     searchQuery: query,
     justAddedItemIds,
-  }), [activeMode, nodeGroups, nodeBuilding, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, query, justAddedItemIds]);
+  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, query, justAddedItemIds]);
 
   const appActions = useMemo<AppActions>(() => ({
     showToast,
     launchAndPosition,
     openMonitorSettings: () => openSettingsTab('monitor'),
     onPinModeClick: handlePinModeClick,
-    onNodeModeClick: handleNodeBuildingClick,
+    onNodeModeClick: handleNodeModeClick,
     onNodeGroupLaunch: handleNodeGroupLaunch,
     onDeckModeClick: handleDeckBuildingClick,
     onDeckGroupLaunch: handleDeckGroupLaunch,
     onWindowInactiveClick: handleWindowInactiveClick,
     onCleanSpace: handleCleanSpace,
-  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeBuildingClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace]);
+  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeModeClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace]);
 
   return (
     <AppStateProvider value={appState}>
@@ -3312,6 +3337,9 @@ export default function App() {
             onRenameGroup={(id, name) => store.updateNodeGroup(id, { name })}
             onReorderGroupItems={(id, itemIds) => store.updateNodeGroup(id, { itemIds })}
             onUpdateGroup={(id, patch) => store.updateNodeGroup(id, patch)}
+            onStartEditExistingGroup={handleStartEditExistingGroup}
+            onEndEditExistingGroup={handleCancelNodeEdit}
+            editingNodeGroupId={editingNodeGroupId}
             monitorCount={monitorCount}
             decks={decks}
             deckBuilding={deckBuilding}

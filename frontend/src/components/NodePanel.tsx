@@ -36,6 +36,16 @@ interface NodePanelProps {
   onRenameGroup: (groupId: string, name: string) => void;
   onReorderGroupItems: (groupId: string, itemIds: string[]) => void;
   onUpdateGroup: (groupId: string, patch: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor'>>) => void;
+  /** Promote this group into the global edit-existing mode (B mode).
+   *  When called, the main grid becomes click-to-toggle for membership;
+   *  see useNodeDeckMode.handleStartEditExistingGroup. */
+  onStartEditExistingGroup: (groupId: string) => void;
+  /** End the global edit-existing mode (called by 완료 button). */
+  onEndEditExistingGroup: () => void;
+  /** The currently-being-edited group's id, mirrored from app state so
+   *  the panel can highlight which group's row is "live". Null = no
+   *  edit-existing mode active. */
+  editingNodeGroupId: string | null;
   // ── Deck ──────────────────────────────────────────────────
   decks: Deck[];
   deckBuilding: boolean;
@@ -70,6 +80,7 @@ export function NodePanel({
   nodeEditMode, nodeBuilding,
   onStartEdit, onCancelEdit, onRemoveFromBuilding, onSaveGroup, onLaunchGroup,
   onDeleteGroup, onRenameGroup, onReorderGroupItems, onUpdateGroup,
+  onStartEditExistingGroup, onEndEditExistingGroup, editingNodeGroupId,
   decks, deckBuilding, deckItems,
   onStartDeckBuild, onCancelDeckBuild, onRemoveFromDeckBuilding,
   onSaveDeck, onLaunchDeck, onDeleteDeck, onUpdateDeck,
@@ -246,6 +257,9 @@ export function NodePanel({
                   onSetMonitor={monitor => onUpdateGroup(group.id, { monitor })}
                   onFloatOut={onFloatOutNode ? () => onFloatOutNode(group.id) : undefined}
                   isFloating={floatingNodeIds?.has(group.id)}
+                  isGlobalEditing={editingNodeGroupId === group.id}
+                  onStartGlobalEdit={() => onStartEditExistingGroup(group.id)}
+                  onEndGlobalEdit={onEndEditExistingGroup}
                 />
               );
             })}
@@ -431,6 +445,7 @@ function NodeGroupCard({
   onLaunch, onDelete, onStartRename, onRenameDraftChange,
   onRenameConfirm, onRenameCancel, onReorderItems, onSetMonitor,
   onFloatOut, isFloating,
+  isGlobalEditing, onStartGlobalEdit, onEndGlobalEdit,
 }: {
   group: NodeGroup; items: LauncherItem[]; allItems: LauncherItem[]; monitorCount: number;
   isRenaming: boolean; renameDraft: string;
@@ -440,8 +455,18 @@ function NodeGroupCard({
   onRenameCancel: () => void; onReorderItems: (itemIds: string[]) => void;
   onSetMonitor: (monitor: number | undefined) => void;
   onFloatOut?: () => void; isFloating?: boolean;
+  /** True when this card is the target of the global B-mode edit. The
+   *  card visually pulses + the main grid becomes click-to-toggle. */
+  isGlobalEditing: boolean;
+  onStartGlobalEdit: () => void;
+  onEndGlobalEdit: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  // Local `editing` is now slaved to the parent's isGlobalEditing flag
+  // so the panel's picker UI lights up exactly when the global B mode
+  // is targeting this group. We keep it as state (not derived) so the
+  // initial transition still triggers the rename/picker effects below.
+  const [editing, setEditing] = useState(isGlobalEditing);
+  useEffect(() => { setEditing(isGlobalEditing); }, [isGlobalEditing]);
   const [showPicker, setShowPicker] = useState(false);
   const [pickerQuery, setPickerQuery] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -585,7 +610,15 @@ function NodeGroupCard({
             <button
               data-rename-done
               onMouseDown={e => e.preventDefault() /* keep input focused so onBlur's relatedTarget test works */}
-              onClick={() => { if (isRenaming) onRenameConfirm(); setEditing(false); setShowPicker(false); }}
+              onClick={() => {
+                if (isRenaming) onRenameConfirm();
+                setShowPicker(false);
+                // Tear down the global edit mode (which clears its
+                // toast + active mode). Local `editing` will follow
+                // via the useEffect that mirrors isGlobalEditing.
+                if (isGlobalEditing) onEndGlobalEdit();
+                else setEditing(false);
+              }}
               style={{
                 padding: '4px 10px', fontSize: 11, fontWeight: 700,
                 background: 'var(--accent)', color: '#fff',
@@ -602,8 +635,8 @@ function NodeGroupCard({
                   <Icon name="open_in_new" size={13} />
                 </button>
               )}
-              <button onClick={e => { e.stopPropagation(); setEditing(true); }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, color: 'var(--text-dim)', borderRadius: 5 }} title="편집">
+              <button onClick={e => { e.stopPropagation(); onStartGlobalEdit(); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, color: 'var(--text-dim)', borderRadius: 5 }} title="편집 — 메인 그리드에서 카드 클릭으로 추가/제거">
                 <Icon name="edit" size={13} />
               </button>
               <button onClick={e => { e.stopPropagation(); onDelete(); }}
