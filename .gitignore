@@ -20,6 +20,10 @@ make-icon.html
 .DS_Store
 Thumbs.db
 
+# Local log files (user copies main.log here for analysis sessions)
+main.log
+*.log
+
 # Claude
 .claude/
 PROJECT_NOTES.md

@@ -478,6 +478,11 @@ function inferItemFromPath(filePath: string): { type: LauncherItem['type']; titl
 
 type DialogMode = 'none' | 'item' | 'scan' | 'settings' | 'wizard' | 'quickadd' | 'container-slots';
 
+// Stable empty dismissal map — referenced by ghostCardsOptions when the
+// user has no dismissals yet. A fresh `{}` per render would make the
+// memoised options change reference every parent render.
+const EMPTY_DISMISSALS: Record<string, { at: number; count: number }> = {};
+
 export default function App() {
   const appLog = useMemo(() => createLogger('App'), []);
   appLog.debug('App() render');
@@ -761,12 +766,18 @@ export default function App() {
   const [prefilledItem, setPrefilledItem] = useState<Partial<LauncherItem> | null>(null);
   const [recommendOpen, setRecommendOpen] = useState(false);
 
-  const ghostCards = useGhostCards({
+  // Memoise the options object — the inner hook reads it via reference
+  // checks, and a fresh `{}` every render forced re-derivation of every
+  // useMemo / useCallback inside the hook on every parent render. The
+  // `dismissals ?? {}` fallback in particular created a new empty object
+  // each render and made the hook think the dismissals map "changed".
+  const ghostCardsOptions = useMemo(() => ({
     spaces: data.spaces,
-    dismissals: data.dismissals ?? {},
+    dismissals: data.dismissals ?? EMPTY_DISMISSALS,
     documentExtensions: data.settings.documentExtensions,
-    onDismiss: (value) => store.dismissSuggestion(value),
-  });
+    onDismiss: (value: string) => store.dismissSuggestion(value),
+  }), [data.spaces, data.dismissals, data.settings.documentExtensions, store]);
+  const ghostCards = useGhostCards(ghostCardsOptions);
 
   const [query, setQuery] = useState('');
   const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
@@ -1218,25 +1229,70 @@ export default function App() {
   };
 
   // ── Inactive window tracking ──────────────────────────────
+  // Stale closures are fine here — we read data.spaces via a ref at tick
+  // time. The OLD pattern had `useCallback([data.spaces])` + `useEffect
+  // ([checkWindowsNow])`, which meant every spaces mutation rebuilt the
+  // function and reset the 15-s interval (and re-fired the check). On a
+  // launcher that mutates `spaces` constantly (drag, click count, etc),
+  // that thrashed the renderer for no benefit. New shape: one mount-time
+  // setInterval, fresh data via ref, bail when there's nothing to check.
   const [inactiveWindowIds, setInactiveWindowIds] = useState<Set<string>>(new Set());
+  const dataRef = useRef(data);
+  dataRef.current = data;
 
+  useEffect(() => {
+    const tick = async () => {
+      const spaces = dataRef.current?.spaces ?? [];
+      const windowItems = spaces.flatMap(s => s.items).filter(i => i.type === 'window');
+      if (!windowItems.length) {
+        // Only fire setState when the dead-set was actually non-empty —
+        // avoids gratuitous re-renders when the user has zero window
+        // cards (the common case).
+        setInactiveWindowIds(prev => prev.size === 0 ? prev : new Set());
+        return;
+      }
+      const titles = [...new Set(windowItems.map(i => i.value))];
+      const aliveMap = await electronAPI.checkWindowsAlive(titles);
+      const deadIds = new Set<string>();
+      for (const item of windowItems) {
+        if (!aliveMap[item.value]) deadIds.add(item.id);
+      }
+      // Same dead set? skip the setState. This is the dominant case in
+      // steady state — without this the 15-s tick produces a render every
+      // tick even when nothing changed.
+      setInactiveWindowIds(prev => {
+        if (prev.size !== deadIds.size) return deadIds;
+        for (const id of deadIds) if (!prev.has(id)) return deadIds;
+        return prev;
+      });
+    };
+    tick();
+    const timer = setInterval(tick, 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Manual refresh callable used by the inactive-window toast's
+  // "새로고침" action. Kept as a useCallback so changing
+  // identity doesn't matter for any effect (no effect depends on it).
   const checkWindowsNow = useCallback(async () => {
-    const windowItems = data.spaces.flatMap(s => s.items).filter(i => i.type === 'window');
-    if (!windowItems.length) { setInactiveWindowIds(new Set()); return; }
+    const spaces = dataRef.current?.spaces ?? [];
+    const windowItems = spaces.flatMap(s => s.items).filter(i => i.type === 'window');
+    if (!windowItems.length) {
+      setInactiveWindowIds(prev => prev.size === 0 ? prev : new Set());
+      return;
+    }
     const titles = [...new Set(windowItems.map(i => i.value))];
     const aliveMap = await electronAPI.checkWindowsAlive(titles);
     const deadIds = new Set<string>();
     for (const item of windowItems) {
       if (!aliveMap[item.value]) deadIds.add(item.id);
     }
-    setInactiveWindowIds(deadIds);
-  }, [data.spaces]);
-
-  useEffect(() => {
-    checkWindowsNow();
-    const timer = setInterval(checkWindowsNow, 15000);
-    return () => clearInterval(timer);
-  }, [checkWindowsNow]);
+    setInactiveWindowIds(prev => {
+      if (prev.size !== deadIds.size) return deadIds;
+      for (const id of deadIds) if (!prev.has(id)) return deadIds;
+      return prev;
+    });
+  }, []);
 
   // ── Theme sync to <html> ──────────────────────────────────
   useEffect(() => {
@@ -1530,19 +1586,6 @@ export default function App() {
     setDialog('item');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipSuggestion, data.spaces, handleAddColorSwatch]);
-
-  // ── Kick feature (file dialog detection) ─────────────────
-  const [activeDialog, setActiveDialog] = useState<{ isDialog: boolean; title?: string } | null>(null);
-  useEffect(() => {
-    const timer = setInterval(async () => {
-      const res = await electronAPI.detectDialog();
-      if (res.isDialog && res.title !== activeDialog?.title) setActiveDialog(res);
-      else if (!res.isDialog && activeDialog) setActiveDialog(null);
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [activeDialog]);
-
-  const jumpFolders = data.spaces.flatMap(s => s.items.filter(i => i.type === 'folder'));
 
   // ── Scan select → prefill ItemDialog ─────────────────────
   const handleScanSelect = useCallback((type: string, title: string, value: string, extra?: { exePath?: string; iconType?: 'material' | 'image'; icon?: string }) => {
@@ -2799,41 +2842,6 @@ export default function App() {
               ))}
             </div>
           </div>
-
-          {/* ── Kick Bar ─────────────────────────────── */}
-          {activeDialog && jumpFolders.length > 0 && (
-            <div style={{ flexShrink: 0, padding: '6px 14px', background: 'var(--surface)', borderBottom: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Icon name="radar" size={13} color="var(--text-muted)" className="animate-spin" />
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                '{activeDialog.title?.slice(0, 16)}' 감지
-              </span>
-              <div style={{ flex: 1, overflowX: 'auto', display: 'flex', gap: 5 }}>
-                {jumpFolders.map(folder => (
-                  <button
-                    key={folder.id}
-                    onClick={() => electronAPI.jumpToDialogFolder(folder.value)}
-                    style={{
-                      flexShrink: 0,
-                      padding: '3px 8px',
-                      background: 'var(--bg-rgba)',
-                      border: '1px solid var(--border-rgba)',
-                      borderRadius: 5,
-                      fontSize: 10,
-                      color: 'var(--text-color)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 4,
-                      fontFamily: 'inherit',
-                    }}
-                  >
-                    <Icon name="folder" size={11} />
-                    {folder.title}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* ── Clipboard quick-add suggestion ──────── */}
           {clipSuggestion && (
