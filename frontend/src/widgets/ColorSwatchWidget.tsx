@@ -4,6 +4,7 @@ import { Icon } from '@/components/ui/Icon';
 import { useHorizontalSwipe } from '../hooks/useHorizontalSwipe';
 import { complementary, analogous } from '../lib/colorTheory';
 import { useAppActions } from '../contexts/AppContext';
+import { electronAPI } from '../electronBridge';
 import { WIDGET, WIDGET_TIP } from './widgetTokens';
 
 /**
@@ -144,24 +145,31 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
     ? Math.sign(dragX) * (SWIPE_THRESHOLD + (Math.abs(dragX) - SWIPE_THRESHOLD) * 0.3)
     : dragX;
 
-  // ── Eyedropper (screen colour picker, EyeDropper API) ─────────
+  // ── Eyedropper (screen-capture picker, full desktop) ──────────
+  // The browser EyeDropper API can only sample pixels INSIDE the
+  // launcher's own window — useless for a launcher that wants to
+  // grab colours from anywhere on screen. We delegate to main, which
+  // hides the launcher, captures the desktop, and shows a fullscreen
+  // magnifier overlay (see main.js → 'eyedropper-pick').
   const handleEyedropper = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Ctor = (window as any).EyeDropper as undefined | (new () => { open: () => Promise<{ sRGBHex: string }> });
-    if (!Ctor) {
-      showToast('이 환경에서는 색상 피커를 쓸 수 없어요');
-      return;
-    }
     try {
-      const dropper = new Ctor();
-      const result = await dropper.open();
-      const picked = (result.sRGBHex || '').toUpperCase();
-      if (!picked) return;
-      const ok = await writeClipboard(picked);
-      showToast(ok ? `${picked} 복사됨 (피커)` : '복사 실패');
+      const result = await electronAPI.pickColorFromScreen();
+      if (result.success && result.hex) {
+        const picked = result.hex.toUpperCase();
+        const ok = await writeClipboard(picked);
+        showToast(ok ? `${picked} 복사됨 (피커)` : '복사 실패');
+        return;
+      }
+      if (result.reason === 'canceled') return;            // silent
+      if (result.reason === 'busy') return;                // silent — already picking
+      if (result.reason === 'dev-mode') {
+        showToast('개발 모드에서는 색상 피커를 쓸 수 없어요');
+        return;
+      }
+      showToast(`색상 피커 실패 (${result.reason || 'unknown'})`);
     } catch {
-      // Picker dismissed (Esc) — silent.
+      showToast('색상 피커 실패');
     }
   }, [writeClipboard, showToast]);
 

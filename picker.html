@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>색상 피커</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #000;
+    cursor: crosshair;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #shot {
+    position: fixed; inset: 0;
+    width: 100vw; height: 100vh;
+    display: block;
+  }
+  #magnifier {
+    position: fixed;
+    width: 120px; height: 120px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.9);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5), inset 0 0 0 1px rgba(0,0,0,0.4);
+    pointer-events: none;
+    background: #000;
+    overflow: hidden;
+    display: none;
+    z-index: 10;
+  }
+  #magnifier canvas {
+    width: 100%; height: 100%;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  #magnifier::after {
+    /* center crosshair square showing the exact pixel under the cursor */
+    content: '';
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 10px; height: 10px;
+    margin: -5px 0 0 -5px;
+    border: 1px solid rgba(255,255,255,0.95);
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+    pointer-events: none;
+  }
+  #chip {
+    position: fixed;
+    pointer-events: none;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: rgba(0,0,0,0.78);
+    color: #fff;
+    font: 600 12px ui-monospace, SFMono-Regular, Consolas, monospace;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.2);
+    z-index: 11;
+    letter-spacing: 0.02em;
+  }
+  #chip i {
+    width: 12px; height: 12px; border-radius: 2px;
+    border: 1px solid rgba(255,255,255,0.4);
+    display: inline-block;
+  }
+  #hint {
+    position: fixed;
+    bottom: 16px; left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.85);
+    background: rgba(0,0,0,0.55);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font: 500 12px -apple-system, "Segoe UI", sans-serif;
+    pointer-events: none;
+    z-index: 12;
+  }
+</style>
+</head>
+<body>
+  <canvas id="shot"></canvas>
+  <div id="magnifier"><canvas width="120" height="120"></canvas></div>
+  <div id="chip"><i></i><span>#000000</span></div>
+  <div id="hint">클릭: 선택 · Esc: 취소</div>
+
+<script>
+(function () {
+  const shot   = document.getElementById('shot');
+  const ctx    = shot.getContext('2d', { willReadFrequently: true });
+  const mag    = document.getElementById('magnifier');
+  const magCv  = mag.querySelector('canvas');
+  const magCtx = magCv.getContext('2d');
+  magCtx.imageSmoothingEnabled = false;
+  const chip      = document.getElementById('chip');
+  const chipDot   = chip.querySelector('i');
+  const chipText  = chip.querySelector('span');
+
+  let img = null;          // HTMLImageElement of the screenshot
+  let imgW = 0, imgH = 0;  // intrinsic image size
+  let viewW = 0, viewH = 0;// css size
+  let lastHex = '#000000';
+  let ready = false;
+
+  function toHex(r, g, b) {
+    const h = (n) => n.toString(16).padStart(2, '0');
+    return ('#' + h(r) + h(g) + h(b)).toUpperCase();
+  }
+
+  function resize() {
+    viewW = window.innerWidth;
+    viewH = window.innerHeight;
+    // backing-store size = css size * dpr (we draw the screenshot stretched
+    // to viewport; magnifier samples from this canvas at css coords).
+    const dpr = window.devicePixelRatio || 1;
+    shot.width  = Math.round(viewW * dpr);
+    shot.height = Math.round(viewH * dpr);
+    shot.style.width  = viewW + 'px';
+    shot.style.height = viewH + 'px';
+    if (img) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(img, 0, 0, viewW, viewH);
+    }
+  }
+
+  function pixelAt(cssX, cssY) {
+    const dpr = window.devicePixelRatio || 1;
+    const px = Math.max(0, Math.min(shot.width  - 1, Math.round(cssX * dpr)));
+    const py = Math.max(0, Math.min(shot.height - 1, Math.round(cssY * dpr)));
+    const d = ctx.getImageData(px, py, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2] };
+  }
+
+  function drawMagnifier(cssX, cssY) {
+    // Sample a 15×15 css-pixel square around the cursor and blow up
+    // to 120×120 — pixel-art zoom thanks to imageSmoothingEnabled=false.
+    const SRC = 15;
+    const sx = cssX - SRC / 2;
+    const sy = cssY - SRC / 2;
+    magCtx.fillStyle = '#000';
+    magCtx.fillRect(0, 0, 120, 120);
+    // drawImage clamps source rects that go off-canvas in some browsers
+    // but not all — we don't rely on that. Out-of-image area stays
+    // black (the fillRect above), which reads as "edge of capture".
+    magCtx.drawImage(shot, sx, sy, SRC, SRC, 0, 0, 120, 120);
+  }
+
+  function place(cssX, cssY) {
+    if (!ready) return;
+    const { r, g, b } = pixelAt(cssX, cssY);
+    lastHex = toHex(r, g, b);
+    drawMagnifier(cssX, cssY);
+
+    // Position the magnifier offset from the cursor; flip to the
+    // other side near the right/bottom edges so it stays on-screen.
+    const PAD = 18, MAG = 120, CHIP_H = 24;
+    let mx = cssX + PAD, my = cssY + PAD;
+    if (mx + MAG > viewW - 8) mx = cssX - PAD - MAG;
+    if (my + MAG + CHIP_H + 6 > viewH - 8) my = cssY - PAD - MAG - CHIP_H - 6;
+    if (mx < 8) mx = 8;
+    if (my < 8) my = 8;
+    mag.style.left = mx + 'px';
+    mag.style.top  = my + 'px';
+    mag.style.display = 'block';
+
+    chip.style.left = mx + 'px';
+    chip.style.top  = (my + MAG + 4) + 'px';
+    chip.style.display = 'flex';
+    chipDot.style.background = lastHex;
+    chipText.textContent = lastHex;
+  }
+
+  window.picker.onInit((payload) => {
+    img = new Image();
+    img.onload = () => {
+      imgW = img.naturalWidth;
+      imgH = img.naturalHeight;
+      ready = true;
+      resize();
+    };
+    img.src = payload.dataUrl;
+  });
+
+  window.addEventListener('resize', resize);
+
+  window.addEventListener('mousemove', (e) => place(e.clientX, e.clientY));
+
+  window.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) { window.picker.cancel(); return; }
+    if (!ready) return;
+    const { r, g, b } = pixelAt(e.clientX, e.clientY);
+    window.picker.result(toHex(r, g, b));
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') window.picker.cancel();
+  });
+
+  window.addEventListener('blur', () => {
+    // Hide magnifier when alt-tabbing — feels less stuck.
+    mag.style.display = 'none';
+    chip.style.display = 'none';
+  });
+})();
+</script>
+</body>
+</html>

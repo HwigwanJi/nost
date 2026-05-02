@@ -122,6 +122,8 @@ export interface ElectronAPI {
   // bring the audible browser tab to front when the wrapper is clicked.
   mediaCommand: (action: 'play-pause' | 'next' | 'prev' | 'stop' | 'vol-up' | 'vol-down' | 'mute') => void;
   mediaFocusSource: () => Promise<{ tabId: number; title: string; url: string } | null>;
+  // ── Color picker (screen-capture eyedropper) ────────────────────
+  pickColorFromScreen: () => Promise<{ success: boolean; hex?: string; reason?: string }>;
   // ── Memo (사라지는 메모) ────────────────────────────────────────
   /** Export a memo body to a .txt file. Returns the absolute path on
    *  success. Caller can pass `openAfter: true` to shell-open immediately. */
@@ -215,6 +217,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   // Dev-mode media stubs.
   mediaCommand: noop,
   mediaFocusSource: async () => null,
+  pickColorFromScreen: async () => ({ success: false, reason: 'dev-mode' }),
   // Dev-mode memo stubs — exporting in browser dev makes no sense, so
   // we return a "success" path that won't be opened (caller should
   // gracefully degrade if filePath is empty).

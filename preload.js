@@ -169,4 +169,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  audio. Returns null if no audible tab is known (extension not
    *  installed / no audio playing). */
   mediaFocusSource: () => ipcRenderer.invoke('media-focus-source'),
+
+  // ── Color picker (screen-capture eyedropper) ────────────────────
+  /** Hide launcher → screenshot primary display → open fullscreen picker.
+   *  Resolves with the hex the user clicked, or { success:false, reason }
+   *  on cancel / busy / failure. The launcher is always restored. */
+  pickColorFromScreen: () => ipcRenderer.invoke('eyedropper-pick'),
 });

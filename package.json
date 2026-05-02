@@ -25,6 +25,8 @@
       "preload-floating.js",
       "preload-badges.js",
       "preload-dialog-popup.js",
+      "preload-picker.js",
+      "picker.html",
       "icon.png",
       "frontend/dist/**/*"
     ],

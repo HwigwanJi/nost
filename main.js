@@ -8,7 +8,7 @@
 // ── 1. Requires & Store ──────────────────────────────────────────────
 const {
   app, BrowserWindow, globalShortcut, ipcMain, shell, clipboard,
-  Tray, Menu, nativeImage, dialog, session, net,
+  Tray, Menu, nativeImage, dialog, session, net, desktopCapturer,
 } = require('electron');
 const path            = require('node:path');
 const { exec, spawn } = require('child_process');
@@ -2914,6 +2914,161 @@ function registerIpcHandlers() {
       return list;
     });
     return { success: true, id };
+  });
+
+  // ── Screen-capture color picker ─────────────────────────────────
+  // Replaces the in-renderer EyeDropper API which can only sample
+  // pixels inside the launcher's own window. The flow:
+  //   1) hide the launcher so it's not in the screenshot
+  //   2) capture the primary display via desktopCapturer
+  //   3) open a fullscreen frameless window that renders the shot
+  //   4) user moves cursor (magnifier follows), clicks to commit,
+  //      Esc / OS-close to cancel
+  //   5) always restore the launcher and resolve the renderer's invoke
+  //
+  // TODO(multi-display): v1 captures only the primary display. To
+  // support multi-monitor we'd need either one picker window per
+  // display each fed its own screenshot, or a single virtual-desktop-
+  // sized window that stitches all sources — both require coordinate
+  // translation (Electron screen DIPs ↔ thumbnail pixels) per display.
+  let pickerInFlight = false;
+  ipcMain.handle('eyedropper-pick', async () => {
+    if (pickerInFlight) return { success: false, reason: 'busy' };
+    pickerInFlight = true;
+
+    const wasVisible = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+    const restoreLauncher = () => {
+      try {
+        if (wasVisible && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+        }
+      } catch (e) { log.warn('[picker] restore main failed', e); }
+    };
+
+    try {
+      // 1. Hide the launcher so it doesn't appear in the screenshot.
+      if (wasVisible && mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.hide(); } catch {}
+      }
+      // Wait one frame for the OS compositor to actually drop the window.
+      await new Promise(r => setTimeout(r, 180));
+
+      // 2. Capture the primary display.
+      const screen   = getScreen();
+      const primary  = screen.getPrimaryDisplay();
+      const bounds   = primary.bounds; // DIP
+      const sf       = primary.scaleFactor || 1;
+      const physW    = Math.round(bounds.width  * sf);
+      const physH    = Math.round(bounds.height * sf);
+
+      let sources;
+      try {
+        sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: physW, height: physH },
+        });
+      } catch (e) {
+        log.warn('[picker] desktopCapturer failed', e);
+        restoreLauncher();
+        pickerInFlight = false;
+        return { success: false, reason: 'capture-failed' };
+      }
+
+      // Pick the source that best matches the primary display. Electron
+      // doesn't guarantee ordering; try display_id first then fall back
+      // to the first entry.
+      let src = null;
+      const wantId = String(primary.id);
+      for (const s of sources) {
+        if (s.display_id && String(s.display_id) === wantId) { src = s; break; }
+      }
+      if (!src) src = sources[0];
+      if (!src) {
+        restoreLauncher();
+        pickerInFlight = false;
+        return { success: false, reason: 'no-source' };
+      }
+
+      const dataUrl = src.thumbnail.toDataURL();
+
+      // 3. Open the picker window over the primary display.
+      const win = new BrowserWindow({
+        x: bounds.x, y: bounds.y,
+        width:  bounds.width, height: bounds.height,
+        frame: false,
+        transparent: false,
+        backgroundColor: '#000000',
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        movable: false,
+        fullscreenable: false,
+        hasShadow: false,
+        show: false,
+        webPreferences: {
+          preload: path.join(__dirname, 'preload-picker.js'),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false,
+        },
+      });
+
+      // Lift above OS chrome / taskbar.
+      try { win.setAlwaysOnTop(true, 'screen-saver'); } catch {}
+
+      // 4. Wire result / cancel / close.
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        try { if (!win.isDestroyed()) win.close(); } catch {}
+        restoreLauncher();
+        pickerInFlight = false;
+        resolveOuter(value);
+      };
+
+      let resolveOuter;
+      const promise = new Promise(r => { resolveOuter = r; });
+
+      const onResult = (e, hex) => {
+        if (e.sender !== win.webContents) return;
+        finish({ success: true, hex: String(hex || '').toUpperCase() });
+      };
+      const onCancel = (e) => {
+        if (e.sender !== win.webContents) return;
+        finish({ success: false, reason: 'canceled' });
+      };
+      ipcMain.on('picker-result', onResult);
+      ipcMain.on('picker-cancel', onCancel);
+
+      win.on('closed', () => {
+        ipcMain.removeListener('picker-result', onResult);
+        ipcMain.removeListener('picker-cancel', onCancel);
+        finish({ success: false, reason: 'canceled' });
+      });
+
+      win.webContents.on('did-finish-load', () => {
+        try {
+          win.webContents.send('picker-init', { dataUrl });
+          win.show();
+          win.focus();
+        } catch (e) { log.warn('[picker] init send failed', e); }
+      });
+
+      try {
+        await win.loadFile(path.join(__dirname, 'picker.html'));
+      } catch (e) {
+        log.warn('[picker] loadFile failed', e);
+        finish({ success: false, reason: 'load-failed' });
+      }
+
+      return promise;
+    } catch (e) {
+      log.warn('[picker] unexpected', e);
+      restoreLauncher();
+      pickerInFlight = false;
+      return { success: false, reason: 'error' };
+    }
   });
 
   /** Mini-window → launch a single item. Forwards to the main renderer so
