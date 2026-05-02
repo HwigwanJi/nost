@@ -20,6 +20,7 @@
     "files": [
       "main.js",
       "media-controller.js",
+      "foreground-window.js",
       "preload.js",
       "preload-floating.js",
       "preload-badges.js",

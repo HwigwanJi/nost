@@ -17,6 +17,7 @@ const http            = require('http');
 const Store           = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 const log             = require('electron-log/main');
+const foregroundWindow = require('./foreground-window');
 
 // ── electron-log setup ──────────────────────────────────────────────
 // File:    %APPDATA%\nost\logs\main.log (and renderer.log for renderer)
@@ -946,12 +947,17 @@ function createDialogPopupWindow(rect, dialogTitle) {
  * foreground.
  */
 async function tickDialogPoll() {
-  let detected;
-  try {
-    const { stdout } = await runPsAsync('detect-dialog.ps1', {}, { timeout: 4000 });
-    detected = JSON.parse(stdout.trim());
-  } catch {
-    return; // PS hiccup — skip this tick.
+  // Native koffi-bound user32 call (~10-50 µs) replaces the PowerShell
+  // spawn (~50-200 ms). Falls back to the PS script ONLY if the native
+  // path failed to initialise (e.g. koffi load error on a weird OS).
+  let detected = foregroundWindow.detect();
+  if (!detected) {
+    try {
+      const { stdout } = await runPsAsync('detect-dialog.ps1', {}, { timeout: 4000 });
+      detected = JSON.parse(stdout.trim());
+    } catch {
+      return; // PS fallback also hiccupped — skip tick.
+    }
   }
 
   if (!detected || !detected.isDialog) {
@@ -2934,6 +2940,12 @@ function registerIpcHandlers() {
   // route through `media.command(action)` synchronously.
   const media = require('./media-controller');
   media.init();
+
+  // Initialise the native foreground-window detector so the dialog poll
+  // can use the koffi-bound user32 path instead of PS-spawning every
+  // 600 ms. Failure here is non-fatal — the poll falls back to the PS
+  // script automatically.
+  foregroundWindow.init();
 
   ipcMain.on('media-command', (_e, action) => {
     if (typeof action !== 'string') return;
