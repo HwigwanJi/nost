@@ -624,11 +624,54 @@ export function useAppData() {
   }, [data, save]);
 
   const deleteItem = useCallback((spaceId: string, itemId: string) => {
+    // Cascade cleanup: remove the deleted id from any node groups,
+    // decks, container slots, and pinned-id sets that still
+    // reference it. Without this, node order numbers drift (a node
+    // shows "1, _, 3" with a hole) and the gauge / staging UI counts
+    // a phantom member ("3/3" when only 2 cards exist). Same for
+    // decks. Same write tx as the items[] mutation so we don't
+    // momentarily expose a half-cleaned state to subscribers.
     save({
       ...data,
-      spaces: data.spaces.map(s =>
-        s.id === spaceId ? { ...s, items: s.items.filter(i => i.id !== itemId) } : s
-      ),
+      spaces: data.spaces.map(s => {
+        if (s.id !== spaceId) {
+          // Other spaces: items[] untouched, but pinnedIds may
+          // still reference cross-space (it doesn't, by design,
+          // but be defensive — also strip container-slot refs).
+          const slotsCleaner = (i: LauncherItem): LauncherItem => {
+            if (!i.isContainer || !i.slots) return i;
+            const newSlots: ContainerSlots = { ...i.slots };
+            (['up','down','left','right'] as const).forEach(d => {
+              if (newSlots[d] === itemId) delete newSlots[d];
+            });
+            return { ...i, slots: newSlots };
+          };
+          return { ...s, items: s.items.map(slotsCleaner) };
+        }
+        // The owning space: drop the item, prune pinnedIds, also
+        // clear any container slot refs to it.
+        const slotsCleaner = (i: LauncherItem): LauncherItem => {
+          if (!i.isContainer || !i.slots) return i;
+          const newSlots: ContainerSlots = { ...i.slots };
+          (['up','down','left','right'] as const).forEach(d => {
+            if (newSlots[d] === itemId) delete newSlots[d];
+          });
+          return { ...i, slots: newSlots };
+        };
+        return {
+          ...s,
+          items: s.items.filter(i => i.id !== itemId).map(slotsCleaner),
+          pinnedIds: (s.pinnedIds ?? []).filter(id => id !== itemId),
+        };
+      }),
+      nodeGroups: (data.nodeGroups ?? [])
+        .map(g => ({ ...g, itemIds: g.itemIds.filter(id => id !== itemId) }))
+        // A node with fewer than 2 members can't launch anything —
+        // drop it entirely rather than leave a dead row. Empty decks
+        // we keep (they're just empty buckets).
+        .filter(g => g.itemIds.length >= 2),
+      decks: (data.decks ?? [])
+        .map(d => ({ ...d, itemIds: d.itemIds.filter(id => id !== itemId) })),
     });
   }, [data, save]);
 
@@ -702,11 +745,26 @@ export function useAppData() {
     if (itemIds.length === 0) return;
     const idSet = new Set(itemIds);
     setDataRaw(prev => {
+      // Cascade cleanup mirrors single deleteItem — strip from
+      // nodeGroups / decks / pinnedIds, drop sub-2 nodes.
+      const newNodeGroups = (prev.nodeGroups ?? [])
+        .map(g => ({ ...g, itemIds: g.itemIds.filter(id => !idSet.has(id)) }))
+        .filter(g => g.itemIds.length >= 2);
+      const newDecks = (prev.decks ?? [])
+        .map(d => ({ ...d, itemIds: d.itemIds.filter(id => !idSet.has(id)) }));
       const next: AppData = {
         ...prev,
         spaces: prev.spaces.map(s =>
-          s.id === spaceId ? { ...s, items: s.items.filter(i => !idSet.has(i.id)) } : s
+          s.id === spaceId
+            ? {
+                ...s,
+                items: s.items.filter(i => !idSet.has(i.id)),
+                pinnedIds: (s.pinnedIds ?? []).filter(id => !idSet.has(id)),
+              }
+            : s
         ),
+        nodeGroups: newNodeGroups,
+        decks: newDecks,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
       electronAPI.storeSave(next);

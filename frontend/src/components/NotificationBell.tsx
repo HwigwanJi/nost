@@ -23,6 +23,7 @@ import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
 import type { AppNotification } from '../types';
 import { NotificationPanel } from './NotificationPanel';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface NotificationBellProps {
   notifications: AppNotification[];
@@ -41,6 +42,11 @@ export function NotificationBell({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const active = notifications.filter(n => !n.dismissedAt);
   const hasUnread = active.some(n => !n.readAt);
+
+  // Active only while the popover is open. ESC closes JUST the popover
+  // (not the app, not a tool mode underneath). Stacked behind any
+  // modal that opens on top of us — last-pushed wins.
+  useEscapeKey(onToggle, open);
 
   // Mark all as read when the panel opens. Reading IS opening — same
   // pattern as Slack/GitHub. Dismissing remains a separate explicit

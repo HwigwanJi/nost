@@ -264,8 +264,12 @@ export function NodePanel({
               );
             })}
 
-            {/* Node building UI */}
-            {(filter === 'all' || filter === 'node') && nodeEditMode && (
+            {/* Node building UI — only for the NEW-build path (A mode).
+                When `editingNodeGroupId` is set we're editing an existing
+                group (B mode); the group's own card already shows its
+                items, so this staging panel is redundant + visually
+                duplicates the same data. */}
+            {(filter === 'all' || filter === 'node') && nodeEditMode && !editingNodeGroupId && (
               <NodeDropZone id="drop-node-building" draggingItemId={draggingItemId}>
               <div style={{ margin: '6px 8px', padding: '10px', background: 'var(--accent-dim)', border: '1px solid var(--accent)', borderRadius: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', marginBottom: 8 }}>노드 편집 중 ({nodeBuilding.length}/3)</div>

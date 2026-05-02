@@ -44,6 +44,7 @@ import {
   slugifyTitle,
   todayYmd,
 } from '../lib/memoUtils';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface MemoEditorProps {
   item: LauncherItem;
@@ -115,6 +116,15 @@ export function MemoEditor({
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Global ESC stack registration ──────────────────────────────
+  // Even though we have a textarea-scoped onKeyDown, focus can be on
+  // a header button (살리기, 복사, …) when ESC fires. Registering with
+  // the global escape stack ensures ESC closes the editor regardless
+  // of where focus is — and crucially, BEFORE the App-level ESC
+  // priority chain (which would otherwise hide the app or exit a
+  // tool mode).
+  useEscapeKey(() => handleClose());
 
   // ── Auto-focus on open ─────────────────────────────────────────
   useEffect(() => {
@@ -244,15 +254,20 @@ export function MemoEditor({
     <>
       {/* Backdrop — covers the whole window. Click = close. Subtle blur
           so the user retains spatial sense of where the memo was without
-          the grid distracting underneath. */}
+          the grid distracting underneath. We keep the dim very light
+          (12%) because the sheet itself is fully opaque (var(--bg-rgba)
+          renders at 95–96% alpha) — the backdrop is a *spatial cue*,
+          not a contrast mechanism. The earlier 35% darkened both the
+          backdrop AND visually bled into the sheet, making the memo
+          editor body hard to read. */}
       <div
         onClick={handleClose}
         style={{
           position: 'fixed',
           inset: 0,
-          background: 'rgba(0,0,0,0.35)',
-          backdropFilter: 'blur(4px)',
-          WebkitBackdropFilter: 'blur(4px)',
+          background: 'rgba(0,0,0,0.12)',
+          backdropFilter: 'blur(2px)',
+          WebkitBackdropFilter: 'blur(2px)',
           zIndex: 9000,
           opacity: closing ? 0 : 1,
           transition: 'opacity 0.15s ease-out',
@@ -273,7 +288,11 @@ export function MemoEditor({
           transform: `translate(-50%, -50%) ${closing ? 'scale(0.96)' : 'scale(1)'}`,
           width: 'min(640px, 88vw)',
           height: 'min(560px, 82vh)',
-          background: 'var(--surface)',
+          // var(--surface) is intentionally a 3–5% alpha tint for in-grid
+          // panels; for a modal sheet we need full opacity. var(--bg-rgba)
+          // is the app's "real" surface (95–96% alpha) — same value the
+          // main window uses.
+          background: 'var(--bg-rgba)',
           border: '1px solid var(--border-rgba)',
           borderRadius: 16,
           boxShadow: '0 24px 80px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.04)',

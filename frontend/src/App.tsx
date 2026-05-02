@@ -26,6 +26,7 @@ import { MemoExpiringBanner } from './components/MemoExpiringBanner';
 import { memoIsExpiringSoon } from './lib/memoUtils';
 import { NotificationBell } from './components/NotificationBell';
 import type { AppNotification } from './types';
+import { runTopEscape } from './lib/escapeStack';
 import { ScanDialog } from './components/ScanDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
@@ -1397,6 +1398,17 @@ export default function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      // Priority -1 (TOPMOST): consult the escape stack. Modal/sheet/
+      // popover components push themselves there on mount; the
+      // last-pushed handler runs first. If a stack handler ran, we
+      // stop here — global priorities (CommandBar / mode exit / hide
+      // app) shouldn't compound the action. This is the SSOT for
+      // "what does ESC do right now" in the launcher.
+      if (runTopEscape()) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       // Priority 0: close CommandBar
       if (cmdOpen) { setCmdOpen(false); setCmdInput(''); return; }
       // Priority 1: node mode exit

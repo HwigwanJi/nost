@@ -22,6 +22,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import type { AppData, LauncherItem } from '../types';
 import { memoTitleFromBody, memoBodyPreview, resolveMemoSettings } from '../lib/memoUtils';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface TrashEntry {
   spaceId: string;
@@ -43,6 +44,12 @@ interface MemoTrashDialogProps {
 export function MemoTrashDialog({ open, onClose, data, onRestore, onHardDelete, onEmptyAll }: MemoTrashDialogProps) {
   const settings = resolveMemoSettings(data.settings.memo);
   const retentionMs = settings.trashRetentionHours * 60 * 60 * 1000;
+  // Register with the global ESC stack so when this dialog is on top,
+  // ESC closes IT — not the editor or tool mode beneath. Radix's own
+  // Esc handling still triggers onOpenChange(false) which calls onClose,
+  // but our stack handler runs FIRST (capture phase in App.tsx) and
+  // produces the same outcome — the redundancy is intentional defence.
+  useEscapeKey(onClose, open);
 
   // Collect every trashed memo across every preset (trash is global —
   // a memo trashed in preset 2 still surfaces here even when preset 1
