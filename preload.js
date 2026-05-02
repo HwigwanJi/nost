@@ -148,6 +148,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  default %APPDATA%/nost/memos/. `openAfter` shell-opens the file
    *  after writing. */
   exportMemoTxt: (args) => ipcRenderer.invoke('memo-export-txt', args),
+  /** OS save-as dialog → user picks location + filename. Writes UTF-8
+   *  with BOM so Win10 Notepad reads Korean correctly. Caller should
+   *  NOT delete the memo on success — this is a snapshot, not a move. */
+  saveMemoAs: (args) => ipcRenderer.invoke('memo-save-as', args),
+  /** Write the body to a temp file (userData/memos) and shell-open
+   *  in the user's default editor. The "메모장에서 열기" button. */
+  openMemoExternal: (args) => ipcRenderer.invoke('memo-open-external', args),
   /** Open the memos folder (default or custom) in OS file explorer. */
   openMemoFolder: (customFolder) => ipcRenderer.invoke('memo-open-folder', customFolder),
   /** Resolve the default memo export folder (no custom override). Used

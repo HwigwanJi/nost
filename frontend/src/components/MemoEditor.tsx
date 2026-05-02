@@ -42,9 +42,9 @@ import {
   memoGaugeFraction,
   memoIsExpiringSoon,
   slugifyTitle,
-  todayYmd,
 } from '../lib/memoUtils';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { renderMemoMarkdown } from '../lib/memoMarkdown';
 
 interface MemoEditorProps {
   item: LauncherItem;
@@ -55,9 +55,6 @@ interface MemoEditorProps {
   onExtend: () => void;
   onTogglePin: () => void;
   onTrash: () => void;
-  /** Called after successful txt export. Parent should hard-delete the
-   *  memo (per spec: export = "이동", not copy). */
-  onExportedToTxt: (filePath: string) => void;
   /** Called by the empty-on-close auto-trash logic. */
   onAutoDeleteIfEmpty: () => void;
   showToast?: (msg: string) => void;
@@ -67,10 +64,17 @@ const AUTOSAVE_DEBOUNCE_MS = 500;
 const AUTO_DELETE_GRACE_MS = 3 * 60 * 1000;
 
 export function MemoEditor({
-  item, pinned, exportFolder,
+  item, pinned, exportFolder: _exportFolder,
   onChangeBody, onClose, onExtend, onTogglePin, onTrash,
-  onExportedToTxt, onAutoDeleteIfEmpty, showToast,
+  onAutoDeleteIfEmpty, showToast,
 }: MemoEditorProps) {
+  // ── View mode (edit textarea ↔ preview rendered) ──────────────
+  // The user asked for a markdown editor "based on modern markdown
+  // editors." We keep the lightweight approach: editing stays in the
+  // native textarea (Korean IME just works), preview is a separate
+  // mode rendered by lib/memoMarkdown — no contenteditable hackery.
+  // Toggle with the eye icon in the toolbar or Ctrl+M.
+  const [mode, setMode] = useState<'edit' | 'preview'>('edit');
   // Local body state. We seed from the item once on mount; subsequent
   // re-renders of the parent (because of TTL ticks, autosave commits,
   // etc.) don't clobber unsaved input — only an explicit prop change
@@ -152,8 +156,9 @@ export function MemoEditor({
       handleClose();
       return;
     }
-    // Ctrl+S — 살리기 (TTL reset). Don't let the browser's "save page"
-    // dialog escape into the world.
+    // Ctrl+S — 수명 리셋. Catches the browser's default "save page"
+    // intent and routes it to the TTL reset (the closest analogue
+    // for an in-launcher memo).
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
       cbRef.current.onExtend();
@@ -166,11 +171,18 @@ export function MemoEditor({
       handleCopy();
       return;
     }
-    // Ctrl+P — pin toggle
+    // Ctrl+P — 보호 토글 (renamed from 핀 to 보호 — user said the
+    // "pin" word collided with the card-grid pin feature).
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'p') {
       e.preventDefault();
       cbRef.current.onTogglePin();
-      showToast?.(pinned ? '핀 해제됨' : '영구 보관으로 핀 설정');
+      showToast?.(pinned ? '보호 해제됨' : '메모를 보호함');
+      return;
+    }
+    // Ctrl+M — toggle preview (markdown render). Vim-style mnemonic.
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'm') {
+      e.preventDefault();
+      setMode(m => m === 'edit' ? 'preview' : 'edit');
       return;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -210,29 +222,39 @@ export function MemoEditor({
     showToast?.('본문을 복사했습니다');
   };
 
+  /** 내보내기 = OS save-as dialog. Snapshot to a real file the user
+   *  picks. Memo stays — different from the previous "open in
+   *  notepad + delete card" flow which the user flagged as wrong. */
   const handleExport = async () => {
     const title = memoTitleFromBody(body);
-    const slug = slugifyTitle(title);
+    const slug = slugifyTitle(title) || '메모';
     try {
-      const result = await electronAPI.exportMemoTxt({
-        body,
-        slug: `${slug}_${todayYmd(Date.now())}`,
-        customFolder: exportFolder,
-        openAfter: true,
-      });
+      const result = await electronAPI.saveMemoAs({ body, slug });
       if (result.success && result.filePath) {
-        showToast?.(`파일로 내보냈습니다 — ${result.filePath.split(/[/\\]/).pop()}`);
-        // Parent hard-deletes the memo so the file becomes the single
-        // source of truth (per spec: export = move, not copy).
-        onExportedToTxt(result.filePath);
-        // Skip the close animation — the memo is gone, just unmount.
-        setClosing(true);
-        setTimeout(onClose, 100);
-      } else {
-        showToast?.('내보내기 실패: ' + (result.reason ?? '알 수 없는 오류'));
+        showToast?.(`저장됨 — ${result.filePath.split(/[/\\]/).pop()}`);
+      } else if (result.reason && result.reason !== 'canceled') {
+        showToast?.('저장 실패: ' + result.reason);
       }
     } catch (e) {
-      showToast?.('내보내기 실패: ' + String(e));
+      showToast?.('저장 실패: ' + String(e));
+    }
+  };
+
+  /** 메모장에서 열기 — write to userData/memos and shell-open. The
+   *  memo card stays; this is a *view*, not a move. Separate from
+   *  save-as on the user's explicit request. */
+  const handleOpenExternal = async () => {
+    const title = memoTitleFromBody(body);
+    const slug = slugifyTitle(title) || '메모';
+    try {
+      const result = await electronAPI.openMemoExternal({ body, slug });
+      if (result.success) {
+        showToast?.('기본 편집기에서 열었어요');
+      } else {
+        showToast?.('열기 실패: ' + (result.reason ?? '알 수 없는 오류'));
+      }
+    } catch (e) {
+      showToast?.('열기 실패: ' + String(e));
     }
   };
 
@@ -312,87 +334,164 @@ export function MemoEditor({
             flexShrink: 0,
           }}
         >
-          {/* TTL pill */}
-          <div
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 8,
-              padding: '4px 10px',
-              borderRadius: 12,
-              background: pinned ? 'var(--accent-dim)' : 'var(--surface-hover)',
-              border: '1px solid var(--border-rgba)',
-              fontSize: 11,
-            }}
-          >
-            {pinned ? (
-              <>
-                <Icon name="bookmark" size={11} color="var(--accent)" />
-                <span style={{ color: 'var(--accent)', fontWeight: 600 }}>영구 보관 중</span>
-              </>
-            ) : (
-              <>
+          {/* TTL pill — NOW CLICKABLE. The user dropped the standalone
+              "살리기" button: instead, clicking the time-remaining
+              chip itself fires the refresh + toast. Pinned ("보호")
+              memos show the protected pill (no refresh available).
+              The previous separate button was visual noise for an
+              action that visually belongs ON the time indicator. */}
+          {pinned ? (
+            <div
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '4px 10px',
+                borderRadius: 12,
+                background: 'var(--accent-dim)',
+                border: '1px solid var(--accent)',
+                fontSize: 11,
+              }}
+            >
+              <Icon name="shield" size={11} color="var(--accent)" />
+              <span style={{ color: 'var(--accent)', fontWeight: 600 }}>보호 중</span>
+            </div>
+          ) : (
+            <button
+              onClick={handleExtend}
+              title="클릭으로 수명 리셋 (Ctrl+S)"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                padding: '4px 10px',
+                borderRadius: 12,
+                background: 'var(--surface-hover)',
+                border: '1px solid var(--border-rgba)',
+                fontSize: 11,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                transition: 'background 0.12s, border-color 0.12s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-dim)'; e.currentTarget.style.borderColor = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'var(--surface-hover)'; e.currentTarget.style.borderColor = 'var(--border-rgba)'; }}
+            >
+              <div
+                style={{
+                  width: 40, height: 3,
+                  borderRadius: 2,
+                  background: 'var(--border-rgba)',
+                  overflow: 'hidden',
+                }}
+              >
                 <div
                   style={{
-                    width: 50, height: 3,
-                    borderRadius: 2,
-                    background: 'var(--border-rgba)',
-                    overflow: 'hidden',
+                    width: `${fraction * 100}%`, height: '100%',
+                    background: expiringSoon ? '#f5b800' : 'var(--text-muted)',
+                    transition: 'width 0.3s',
                   }}
-                >
-                  <div
-                    style={{
-                      width: `${fraction * 100}%`, height: '100%',
-                      background: expiringSoon ? '#f5b800' : 'var(--text-muted)',
-                      transition: 'width 0.3s',
-                    }}
-                  />
-                </div>
-                <span style={{ color: expiringSoon ? '#f5b800' : 'var(--text-dim)', fontWeight: expiringSoon ? 600 : 400 }}>
-                  {daysLeft === 0
-                    ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간 남음` : '곧 만료')
-                    : daysLeft != null ? `${daysLeft}일 남음` : ''}
-                </span>
-              </>
-            )}
-          </div>
+                />
+              </div>
+              <span style={{ color: expiringSoon ? '#f5b800' : 'var(--text-dim)', fontWeight: expiringSoon ? 600 : 400 }}>
+                {daysLeft === 0
+                  ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간 남음` : '곧 만료')
+                  : daysLeft != null ? `${daysLeft}일 남음` : ''}
+              </span>
+              <Icon name="refresh" size={10} color="var(--text-dim)" />
+            </button>
+          )}
 
           <div style={{ flex: 1 }} />
 
-          {/* Action buttons */}
-          <HeaderBtn icon="add" label="살리기" title="수명을 다시 채웁니다 (Ctrl+S)" onClick={handleExtend} disabled={pinned} />
+          {/* Action buttons.
+              Order: 보기 토글 (preview) → 복사 → 보호 → 다른이름저장 →
+              메모장에서열기 → 삭제 → 닫기.
+
+              Removed the standalone "살리기" — TTL pill above takes
+              over that role.
+              "핀" → "보호" (label collision with card-grid pin).
+              "내보내기" now means save-as (file picker, no shell-open,
+              no card delete) per the user's explicit redefinition. */}
+          <HeaderBtn
+            icon={mode === 'edit' ? 'visibility' : 'edit'}
+            label={mode === 'edit' ? '미리보기' : '편집'}
+            title="마크다운 미리보기 / 편집 토글 (Ctrl+M)"
+            onClick={() => setMode(m => m === 'edit' ? 'preview' : 'edit')}
+            active={mode === 'preview'}
+          />
           <HeaderBtn icon="content_copy" label="복사" title="본문 클립보드로 (Ctrl+Shift+C)" onClick={handleCopy} />
-          <HeaderBtn icon={pinned ? 'bookmark' : 'bookmark_border'} label={pinned ? '핀 해제' : '핀'} title="핀 토글 (Ctrl+P)" onClick={onTogglePin} active={pinned} />
-          <HeaderBtn icon="upload_file" label="내보내기" title="txt로 저장하고 일반 카드로 변환" onClick={handleExport} />
+          <HeaderBtn
+            icon={pinned ? 'shield' : 'shield_outline'}
+            label={pinned ? '보호 해제' : '보호'}
+            title={pinned ? '보호 해제 (Ctrl+P)' : '메모를 보호 (자동 만료 안 됨, Ctrl+P)'}
+            onClick={onTogglePin}
+            active={pinned}
+          />
+          <HeaderBtn icon="save_alt"   label="다른 이름으로 저장" title="원하는 위치에 .txt로 저장" onClick={handleExport} />
+          <HeaderBtn icon="open_in_new" label="메모장에서 열기"   title="기본 텍스트 편집기로 열기" onClick={handleOpenExternal} />
           <HeaderBtn icon="delete" label="삭제" title="휴지통으로 보내기" onClick={onTrash} destructive />
           <div style={{ width: 1, height: 20, background: 'var(--border-rgba)', margin: '0 4px' }} />
           <HeaderBtn icon="close" label="" title="닫기 (Esc)" onClick={handleClose} />
         </div>
 
-        {/* Editor — pure textarea. No toolbar, no markdown rendering.
-            Korean IME works perfectly with native textarea. */}
-        <textarea
-          ref={textareaRef}
-          value={body}
-          onChange={e => setBody(e.target.value)}
-          onKeyDown={onTextareaKeyDown}
-          placeholder={`메모를 적어주세요. 첫 줄이 제목이 됩니다.
-
-7일 동안 안 만지면 알아서 사라집니다.
-살리고 싶으면 카드의 ⊕ 버튼을 한 번 누르세요.`}
-          spellCheck={false}
-          style={{
-            flex: 1,
-            background: 'transparent',
-            color: 'var(--text-color)',
-            border: 'none',
-            outline: 'none',
-            resize: 'none',
-            padding: '16px 18px',
-            fontFamily: '"Pretendard", "Apple SD Gothic Neo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-            fontSize: 14,
-            lineHeight: 1.55,
-            letterSpacing: '0.005em',
-          }}
-        />
+        {/* Body — edit (textarea) or preview (rendered markdown).
+            Edit mode keeps Korean IME native + autosave debounce.
+            Preview mode uses memoMarkdown to render the same body
+            with structural styling (headings, lists, checkboxes,
+            bold/italic/code). Toggle with the eye icon or Ctrl+M.
+            User said the editor placeholder TMI was noise, so we
+            keep just the first line. */}
+        {mode === 'edit' ? (
+          <textarea
+            ref={textareaRef}
+            value={body}
+            onChange={e => setBody(e.target.value)}
+            onKeyDown={onTextareaKeyDown}
+            placeholder="메모를 적어주세요. 첫 줄이 제목이 됩니다."
+            spellCheck={false}
+            style={{
+              flex: 1,
+              background: 'transparent',
+              color: 'var(--text-color)',
+              border: 'none',
+              outline: 'none',
+              resize: 'none',
+              padding: '16px 18px',
+              fontFamily: '"Pretendard", "Apple SD Gothic Neo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              fontSize: 14,
+              lineHeight: 1.55,
+              letterSpacing: '0.005em',
+            }}
+          />
+        ) : (
+          <div
+            style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '16px 22px',
+              fontFamily: '"Pretendard", "Apple SD Gothic Neo", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+              color: 'var(--text-color)',
+            }}
+          >
+            {body.trim() ? (
+              renderMemoMarkdown(body, {
+                onToggleCheckbox: (lineIdx, checked) => {
+                  // In preview mode the user can still tick boxes —
+                  // we mutate the source body and let autosave catch
+                  // it. The textarea picks up the fresh body via the
+                  // controlled-value path on next mode switch.
+                  const lines = body.split(/\r?\n/);
+                  if (lineIdx < 0 || lineIdx >= lines.length) return;
+                  lines[lineIdx] = lines[lineIdx].replace(
+                    /^(\s*\[)([ xX])(\]\s+)/,
+                    `$1${checked ? 'x' : ' '}$3`
+                  );
+                  setBody(lines.join('\n'));
+                },
+              })
+            ) : (
+              <div style={{ color: 'var(--text-dim)', fontSize: 13, fontStyle: 'italic' }}>
+                메모가 비어있어요.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Footer — char/line count, helper hint */}
         <div

@@ -136,7 +136,13 @@ export function NotificationBell({
               zIndex: 9101,
               width: 320,
               maxHeight: 'min(440px, 70vh)',
-              background: 'var(--surface)',
+              // var(--surface) is a 3–5% alpha tint meant for in-grid
+              // panels; on a popover floating over the main view it
+              // reads as "completely transparent" and the user can't
+              // see the content. var(--bg-rgba) is the app's actual
+              // surface (95–96% alpha) — same fix MemoEditor already
+              // got for the same reason.
+              background: 'var(--bg-rgba)',
               border: '1px solid var(--border-rgba)',
               borderRadius: 12,
               boxShadow: '0 16px 48px rgba(0,0,0,0.32), 0 0 0 1px rgba(255,255,255,0.04)',

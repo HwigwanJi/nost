@@ -2161,6 +2161,75 @@ function registerIpcHandlers() {
     return path.join(app.getPath('userData'), 'memos');
   });
 
+  /**
+   * Save-as dialog flow — pop the OS file picker, write the body to
+   * the chosen path, return the path. This replaces the previous
+   * "write to fixed folder + open external + delete card" behaviour
+   * for both the card 💾 button and the editor 내보내기 button.
+   * "다른 이름으로 저장" is a SNAPSHOT — caller does NOT delete the
+   * memo, we do NOT shell-open the file. User explicitly flagged
+   * the previous flow as wrong.
+   */
+  ipcMain.handle('memo-save-as', async (_e, args) => {
+    try {
+      const { body, slug } = (args && typeof args === 'object') ? args : {};
+      if (typeof body !== 'string') return { success: false, reason: 'invalid-body' };
+      const baseSlug = (typeof slug === 'string' && slug.trim()) ? slug.trim() : '메모';
+      const safeSlug = baseSlug.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 60) || '메모';
+      const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: '메모 저장',
+        defaultPath: `${safeSlug}.txt`,
+        filters: [
+          { name: '텍스트 파일', extensions: ['txt'] },
+          { name: '마크다운',     extensions: ['md', 'markdown'] },
+          { name: '모든 파일',    extensions: ['*'] },
+        ],
+      });
+      if (canceled || !filePath) return { success: false, reason: 'canceled' };
+      // BOM keeps Win10 Notepad happy on Korean .txt; harmless for .md.
+      const BOM = '﻿';
+      fs.writeFileSync(filePath, BOM + body, 'utf-8');
+      return { success: true, filePath };
+    } catch (e) {
+      return { success: false, reason: String(e) };
+    }
+  });
+
+  /**
+   * Open the body in the user's default text editor — writes a
+   * temp file (userData/memos with collision-safe suffix) and
+   * shell-opens. Separate button from save-as; the user wanted
+   * "메모장에서 열기" as a distinct affordance. Doesn't delete the
+   * memo either — external open is a view, not a move.
+   */
+  ipcMain.handle('memo-open-external', async (_e, args) => {
+    try {
+      const { body, slug } = (args && typeof args === 'object') ? args : {};
+      if (typeof body !== 'string') return { success: false, reason: 'invalid-body' };
+      const baseSlug = (typeof slug === 'string' && slug.trim()) ? slug.trim() : '메모';
+      const safeSlug = baseSlug.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 40) || '메모';
+      const folder = path.join(app.getPath('userData'), 'memos');
+      try { fs.mkdirSync(folder, { recursive: true }); }
+      catch (e) { return { success: false, reason: `mkdir: ${String(e)}` }; }
+      const d = new Date();
+      const ymd = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+      let filename = `${safeSlug}_${ymd}.txt`;
+      let candidate = path.join(folder, filename);
+      let n = 2;
+      while (fs.existsSync(candidate) && n < 100) {
+        filename = `${safeSlug}_${ymd}_${n}.txt`;
+        candidate = path.join(folder, filename);
+        n++;
+      }
+      const BOM = '﻿';
+      fs.writeFileSync(candidate, BOM + body, 'utf-8');
+      shell.openPath(candidate).catch(() => {});
+      return { success: true, filePath: candidate };
+    } catch (e) {
+      return { success: false, reason: String(e) };
+    }
+  });
+
   // ── 12d. Clipboard ───────────────────────────────────────────────
 
   ipcMain.handle('read-clipboard', async () => {

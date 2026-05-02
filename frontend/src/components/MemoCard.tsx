@@ -396,10 +396,13 @@ export function MemoCard({
             <span
               aria-hidden="true"
               style={{
-                width: 12, height: 12,
+                // Small is pretty — user mandate. The colour itself
+                // carries the urgency signal; the dot just needs to
+                // be findable, not loud.
+                width: 7, height: 7,
                 borderRadius: '50%',
                 background: status,
-                boxShadow: `0 0 0 2px color-mix(in srgb, ${status} 22%, transparent)`,
+                boxShadow: `0 0 0 1.5px color-mix(in srgb, ${status} 18%, transparent)`,
                 transition: 'background 0.3s, box-shadow 0.3s',
               }}
             />

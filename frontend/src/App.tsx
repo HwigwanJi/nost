@@ -1659,11 +1659,12 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
 
-  /** Card-level "다른 이름으로 저장" — exports the memo body to a
-   *  real .txt file via main process. Same code path the editor's
-   *  내보내기 button uses, just invokable without opening the editor.
-   *  After successful export the memo is hard-deleted (export = move
-   *  semantics, per the v1 spec). */
+  /** Card 💾 button = OS Save-as dialog. The user picks the location
+   *  themselves — different from the previous "auto-write to fixed
+   *  folder + shell-open + delete card" behaviour, which the user
+   *  flagged as wrong. Save-as is a SNAPSHOT: the memo card stays,
+   *  no editor opens. The "I want to convert this to a file card"
+   *  flow lives in the editor's separate "메모장에서 열기" button. */
   const handleExportMemoTxt = useCallback(async (spaceId: string, itemId: string) => {
     const space = data.spaces.find(s => s.id === spaceId);
     const item = space?.items.find(i => i.id === itemId);
@@ -1674,26 +1675,19 @@ export default function App() {
     }
     const title = item?.title || '메모';
     const slug = title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 40) || '메모';
-    const ymd = (() => { const d = new Date(); return `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; })();
     try {
-      const result = await electronAPI.exportMemoTxt({
-        body,
-        slug: `${slug}_${ymd}`,
-        customFolder: data.settings.memo?.exportFolder,
-        openAfter: true,
-      });
+      const result = await electronAPI.saveMemoAs({ body, slug });
       if (result.success) {
-        showToast(`txt로 저장됨 — ${result.filePath?.split(/[/\\]/).pop()}`);
-        // Memo → file becomes single source of truth (export = move).
-        store.deleteItem(spaceId, itemId);
-      } else {
+        showToast(`저장됨 — ${result.filePath?.split(/[/\\]/).pop()}`);
+        // No deleteItem — the memo card stays. Save-as is a snapshot.
+      } else if (result.reason !== 'canceled') {
         showToast('저장 실패: ' + (result.reason ?? '알 수 없는 오류'));
       }
     } catch (e) {
       showToast('저장 실패: ' + String(e));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.spaces, data.settings.memo, store]);
+  }, [data.spaces]);
 
   /**
    * Notification action dispatcher — central switch for all bell-row
@@ -3725,11 +3719,6 @@ export default function App() {
               store.trashMemo(spaceIdForUpdate, item.id);
               setEditingMemoId(null);
               showToast('휴지통으로 이동했어요');
-            }}
-            onExportedToTxt={() => {
-              // Export = move semantics. Hard-delete the memo so the
-              // .txt file is the single source of truth.
-              store.deleteItem(spaceIdForUpdate, item.id);
             }}
             onAutoDeleteIfEmpty={() => {
               store.deleteItem(spaceIdForUpdate, item.id);

@@ -127,6 +127,15 @@ export interface ElectronAPI {
    *  success. Caller can pass `openAfter: true` to shell-open immediately. */
   exportMemoTxt: (args: { body: string; slug: string; customFolder?: string; openAfter?: boolean }) =>
     Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  /** OS save-as dialog flow. User picks the location; we write the
+   *  file. Caller should NOT delete the memo on success — this is a
+   *  snapshot, not a move. */
+  saveMemoAs: (args: { body: string; slug: string }) =>
+    Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  /** Write to temp + shell-open in the user's default text editor.
+   *  Mapped to the editor's "메모장에서 열기" button. */
+  openMemoExternal: (args: { body: string; slug: string }) =>
+    Promise<{ success: boolean; filePath?: string; reason?: string }>;
   openMemoFolder: (customFolder?: string) => Promise<{ success: boolean; filePath?: string; reason?: string }>;
   getMemoDefaultFolder: () => Promise<string>;
 }
@@ -210,6 +219,8 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   // we return a "success" path that won't be opened (caller should
   // gracefully degrade if filePath is empty).
   exportMemoTxt: async () => ({ success: false, reason: 'dev-mode' }),
+  saveMemoAs: async () => ({ success: false, reason: 'dev-mode' }),
+  openMemoExternal: async () => ({ success: false, reason: 'dev-mode' }),
   openMemoFolder: async () => ({ success: false, reason: 'dev-mode' }),
   getMemoDefaultFolder: async () => '',
 };
