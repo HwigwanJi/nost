@@ -796,7 +796,7 @@ export function ItemCard({
             animation: 'cardEnter 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) both',
             zIndex: 4,
           }}
-          title={`노드 순서 ${nodeOrderIndex} — 클릭으로 제거`}
+          title={`노드 ${nodeOrderIndex}번 · 클릭으로 제거`}
         >
           {nodeOrderIndex}
         </div>
@@ -871,7 +871,7 @@ export function ItemCard({
               const rect = monitorBadgeRef.current?.getBoundingClientRect();
               if (rect) setMonitorPickerPos({ x: rect.left, y: rect.bottom + 4 });
             }}
-            title={item.monitor ? `모니터 ${item.monitor}` : '모니터 지정'}
+            title={item.monitor ? `모니터 ${item.monitor} 고정` : '모니터 지정'}
             style={{
               position:'absolute', bottom:5, left:5,
               width:15, height:15, borderRadius:4,
@@ -930,7 +930,7 @@ export function ItemCard({
           on the card-level opacity alone, which is enough to communicate
           "this is dimmed" without the safety-orange. */}
       <div
-        title={isInactive ? '창이 닫혀있습니다' : undefined}
+        title={isInactive ? '창이 닫혀 있어요' : undefined}
         style={{
           width: 36, height: 36, borderRadius: 9, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -980,7 +980,7 @@ export function ItemCard({
         if (Date.now() - last < staleMs) return null;
         return (
           <div
-            title="60일 이상 사용하지 않음 — 정리 후보"
+            title="60일째 안 썼어요 · 정리 후보"
             className="absolute top-1.5 left-1.5 w-1.5 h-1.5 rounded-full"
             style={{ background: 'var(--text-dim)', opacity: 0.5 }}
           />
@@ -1258,13 +1258,19 @@ function CardHoverHint({
   filledSlots: number;
   totalSlots: number;
 }) {
+  // Two-column ledger format — `라벨 : 동작`. Same vocabulary
+  // across every interactive surface in the launcher (see
+  // widgets/widgetTokens.ts → HOVER_HINT). The user explicitly
+  // called out the inconsistency between "짧게:" and "길게 누르고
+  // 어쩌구" — this is the canonical answer.
   if (isContainer) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.4 }}>
-        <div style={{ fontWeight: 600 }}>컨테이너 · {filledSlots}/{totalSlots} 슬롯</div>
-        <div style={{ opacity: 0.75, fontSize: 10 }}>
-          짧게: 슬롯 사방으로 카드 발사 · 길게: 슬롯 직접 편집
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.5 }}>
+        <div style={{ fontWeight: 600, marginBottom: 2 }}>
+          컨테이너 · {filledSlots}/{totalSlots} 슬롯
         </div>
+        <div>짧게 : 슬롯 카드 발사</div>
+        <div>길게 : 슬롯 편집</div>
       </div>
     );
   }
@@ -1279,11 +1285,9 @@ function CardHoverHint({
     '실행';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.4 }}>
-      <div style={{ fontWeight: 600 }}>짧게: {shortVerb}</div>
-      <div style={{ opacity: 0.75, fontSize: 10 }}>
-        길게 누르고 사방 — ↑수정 ↓모니터 ←새창 →복사
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.5 }}>
+      <div>짧게 : {shortVerb}</div>
+      <div>길게 : ↑수정 ↓모니터 ←새창 →복사</div>
     </div>
   );
 }

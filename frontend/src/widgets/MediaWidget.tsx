@@ -514,7 +514,7 @@ function PlayPauseGesturePill({ accent, onPlayPause, onPrev, onNext }: {
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onContextMenu={(e) => e.stopPropagation()}
-      title="탭: 재생/일시정지 · 좌로 드래그: 이전 · 우로 드래그: 다음"
+      title={'짧게 : 재생 / 일시정지\n왼쪽으로 : 이전 트랙\n오른쪽으로 : 다음 트랙'}
       style={{
         width: 60, height: 28,
         borderRadius: 10,

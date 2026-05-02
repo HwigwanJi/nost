@@ -90,17 +90,43 @@ export const WIDGET = {
 } as const;
 
 /**
- * Apply to any "icon-only" affordance for hover-reveal of the label.
- * Keeps the visible chrome calm; tooltip teaches on demand.
+ * Single-action tooltip — for a button or icon with one purpose.
+ * Shortcut appears in parens after the label so the user picks up
+ * the keybinding on second hover.
  *
- * Usage:
- *   <button title={WIDGET_TIP('피커')} onClick={...}>
- *     <Icon name="colorize" size={11} />
- *   </button>
- *
- * The wrapper is a function rather than a string so future variants
- * (e.g. shortcut suffix "피커 (Ctrl+P)") can be appended uniformly.
+ *   WIDGET_TIP('복사', 'Ctrl+Shift+C')  → "복사 (Ctrl+Shift+C)"
+ *   WIDGET_TIP('피커')                  → "피커"
  */
 export function WIDGET_TIP(label: string, shortcut?: string): string {
   return shortcut ? `${label} (${shortcut})` : label;
+}
+
+/**
+ * Multi-action tooltip — for surfaces that respond to several
+ * gestures (tap, hold-popup, swipe, …). Renders as a multi-line
+ * tooltip with one `라벨 : 동작` row per entry.
+ *
+ *   HOVER_HINT({
+ *     '짧게': '앱 실행',
+ *     '길게': '↑수정 ↓모니터 ←새창 →복사',
+ *   })
+ *
+ * Renders to:
+ *   짧게 : 앱 실행
+ *   길게 : ↑수정 ↓모니터 ←새창 →복사
+ *
+ * Falsy values are filtered out so callers can conditionally
+ * include rows without runtime checks. The colon is space-padded
+ * (`라벨 : 값`) — design-system rule per user's directive that
+ * tooltips read as a clean two-column ledger, not a sentence.
+ *
+ * Why multi-line in the `title` attribute: Chromium renders `\n`
+ * as line breaks in native tooltips. Same trick the OS file
+ * picker uses for path + size on hover.
+ */
+export function HOVER_HINT(actions: Record<string, string | null | undefined | false>): string {
+  return Object.entries(actions)
+    .filter((entry): entry is [string, string] => !!entry[1])
+    .map(([label, value]) => `${label} : ${value}`)
+    .join('\n');
 }

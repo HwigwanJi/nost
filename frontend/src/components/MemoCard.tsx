@@ -42,7 +42,7 @@ import {
   memoHoursLeft,
 } from '../lib/memoUtils';
 import { useHorizontalSwipe } from '../hooks/useHorizontalSwipe';
-import { WIDGET, WIDGET_TIP } from '../widgets/widgetTokens';
+import { WIDGET, HOVER_HINT } from '../widgets/widgetTokens';
 
 interface MemoCardDragHandle {
   setNodeRef: ReturnType<typeof useSortable>['setNodeRef'];
@@ -96,12 +96,14 @@ export function MemoCard({
   const hoursLeft = memoHoursLeft(item, now);
   const status = ttlStatusColor(daysLeft, pinned);
 
+  // Status-dot tooltip — single line `상태 · 동작` format. Pinned
+  // items don't get a click action so the · is dropped there.
   const dotTooltip = pinned
-    ? '보호 중 (자동 만료 안 됨)'
+    ? '보호 중 · 자동 만료 안 됨'
     : daysLeft === null ? ''
     : daysLeft === 0
-      ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간 남음 — 클릭으로 살리기` : '곧 만료 — 클릭으로 살리기')
-      : `${daysLeft}일 남음 — 클릭으로 살리기`;
+      ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간 남음 · 클릭으로 살리기` : '곧 만료 · 클릭으로 살리기')
+      : `${daysLeft}일 남음 · 클릭으로 살리기`;
 
   // ── Swipe gesture ────────────────────────────────────────────
   const flashAction = useCallback((kind: 'plain' | 'md') => {
@@ -286,7 +288,13 @@ export function MemoCard({
           {/* Inside card — fixed height, swipeable */}
           <div
             {...swipeHandlers}
-            title={isEmpty ? '빈 메모 — 클릭해서 시작' : `${title}\n\n← 마크다운 복사  ·  텍스트 복사 →`}
+            title={isEmpty
+              ? '짧게 : 메모 시작'
+              : HOVER_HINT({
+                  '짧게': '편집기 열기',
+                  '왼쪽으로': '마크다운으로 복사',
+                  '오른쪽으로': '텍스트로 복사',
+                })}
             style={{
               width: '100%',
               height: WIDGET.insideHeight,
@@ -360,7 +368,10 @@ export function MemoCard({
           <BottomCell
             data-memo-control
             onClick={handleCopyButton}
-            title={WIDGET_TIP('본문 복사', '← 스와이프 = 마크다운')}
+            title={HOVER_HINT({
+              '짧게': '텍스트로 복사',
+              '왼쪽으로 스와이프': '마크다운으로 복사',
+            })}
             color={copyFlash ? 'var(--accent)' : undefined}
             divider="right"
           >
@@ -369,7 +380,7 @@ export function MemoCard({
           <BottomCell
             data-memo-control
             onClick={handleExport}
-            title={WIDGET_TIP('다른 이름으로 저장')}
+            title="다른 이름으로 저장"
             color={exportFlash ? 'var(--accent)' : undefined}
           >
             <Icon name={exportFlash ? 'check' : 'save_alt'} size={13} />

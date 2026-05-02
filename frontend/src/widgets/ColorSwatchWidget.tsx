@@ -5,7 +5,7 @@ import { useHorizontalSwipe } from '../hooks/useHorizontalSwipe';
 import { complementary, analogous } from '../lib/colorTheory';
 import { useAppActions } from '../contexts/AppContext';
 import { electronAPI } from '../electronBridge';
-import { WIDGET, WIDGET_TIP } from './widgetTokens';
+import { WIDGET, HOVER_HINT } from './widgetTokens';
 
 /**
  * ColorSwatchWidget v4 — inside-card silhouette + color blend on swipe.
@@ -249,7 +249,14 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
           (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-rgba)';
           setHovered(false);
         }}
-        title={hasName ? `${name} · ${hex}` : hex}
+        title={[
+          hasName ? `${name} · ${hex}` : hex,
+          HOVER_HINT({
+            '짧게': 'Hex 복사',
+            '왼쪽으로': '보색 복사',
+            '오른쪽으로': '유사색 복사',
+          }),
+        ].join('\n')}
       >
         {/* ── Top wrapper — inside card with side margins ─────── */}
         <div
@@ -348,14 +355,14 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
         >
           <BottomCell
             onClick={handleEyedropper}
-            title={WIDGET_TIP('피커 — 화면에서 색 고르기')}
+            title="피커 · 화면에서 색 고르기"
             divider="right"
           >
             <Icon name="colorize" size={13} />
           </BottomCell>
           <BottomCell
             onClick={handleEditOpen}
-            title={WIDGET_TIP('편집 — 이름·hex 수정')}
+            title="편집 · 이름과 hex 수정"
             disabled={!onEdit}
           >
             <Icon name="edit" size={13} />

@@ -462,7 +462,7 @@ export function MemoEditor({
           ) : (
             <button
               onClick={handleExtend}
-              title="클릭으로 수명 리셋 (Ctrl+S)"
+              title={'클릭으로 수명 리셋 (Ctrl+S)'}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 8,
                 padding: '4px 10px',
@@ -510,6 +510,10 @@ export function MemoEditor({
               label layout caused the bilingual labels to wrap into
               two columns at this dialog width — visual disaster.
               Now: ~28px square buttons, label discovered on hover. */}
+          {/* Tooltip format: `라벨 (단축키)` for buttons with a
+              shortcut, `라벨 · 부연` for buttons that benefit from
+              a one-clause clarifier (정리하여 복사 / 보호). Same
+              design-system rule the cards follow. */}
           <HeaderBtn
             icon={mode === 'edit' ? 'visibility' : 'edit'}
             title={mode === 'edit' ? '미리보기 (Ctrl+M)' : '편집 (Ctrl+M)'}
@@ -521,25 +525,14 @@ export function MemoEditor({
             title="복사 (Ctrl+Shift+C)"
             onClick={handleCopy}
           />
-          {/* 정리하여 복사 — strips markdown + bullet glyphs and
-              copies. Non-destructive: the memo body stays intact.
-              auto_fix_high glyph reads as "magic cleanup" — same
-              vocabulary other apps (Notion, Linear) use for the
-              transform-to-plain action. */}
           <HeaderBtn
             icon="auto_fix_high"
-            title="정리하여 복사 — 말머리표·서식 제거"
+            title="정리하여 복사 · 말머리표와 서식 제거"
             onClick={handleCleanCopy}
           />
-          {/* Material Symbols doesn't have a `shield_outline` —
-              that was rendering as raw text in the toolbar
-              ("♡_OUTLINE" the user spotted). Use `lock_open` /
-              `lock` instead: same "is this protected?" semantics,
-              icons that actually exist, and the open ↔ closed
-              metaphor reads instantly across locales. */}
           <HeaderBtn
             icon={pinned ? 'lock' : 'lock_open'}
-            title={pinned ? '보호 해제 (Ctrl+P)' : '보호 — 자동 만료 안 됨 (Ctrl+P)'}
+            title={pinned ? '보호 해제 (Ctrl+P)' : '보호 · 자동 만료 안 됨 (Ctrl+P)'}
             onClick={onTogglePin}
             active={pinned}
           />
@@ -555,7 +548,7 @@ export function MemoEditor({
           />
           <HeaderBtn
             icon="delete"
-            title="삭제 — 휴지통으로 보내기"
+            title="삭제 · 휴지통으로 이동"
             onClick={onTrash}
             destructive
           />
