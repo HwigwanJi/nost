@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId, MemoData } from '../types';
-import { DEFAULT_MEMO_SETTINGS } from '../types';
+import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId, MemoData, AppNotification } from '../types';
+import { DEFAULT_MEMO_SETTINGS, NOTIFICATION_MAX_AGE_MS } from '../types';
 import { newTrialLicense } from './useEntitlement';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
@@ -129,6 +129,11 @@ function migrateData(parsed: AppData): AppData {
       size: 'normal',
       hideOnFullscreen: true,
     },
+    // Floating badge size — additive global field, no schema bump needed.
+    // We default to 46 (the legacy hardcoded value in Badge.tsx) so any
+    // pre-v1.3.x save file lights up the new slider at exactly the size
+    // its user has been seeing for months.
+    badgeSize: parsed.settings.badgeSize ?? 46,
     memo: parsed.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS },
   };
 

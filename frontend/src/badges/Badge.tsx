@@ -54,12 +54,24 @@ interface Props {
    *  "boing" so Tab-cycling presets doesn't make every badge animate at
    *  once. Defaults to false (= run the landing animation as before). */
   skipLanding?: boolean;
+  /** Pixel diameter of the bubble. Driven by the global
+   *  `settings.badgeSize` slider (see SettingsDialog → "플로팅 뱃지").
+   *  Optional so Storybook / tests / any out-of-overlay caller still
+   *  works; absent value falls back to the historical 46 px so the
+   *  visual matches every install pre-v1.3.17. */
+  size?: number;
 }
 
 // Circular bubble — icon-only, no dangling text label. The click expands a
 // mini-window popover (rendered by BadgeOverlay) that shows the referenced
 // space/node/deck's items; see BadgeOverlay.tsx for that behaviour.
-const BADGE_SIZE = 46;
+//
+// The bubble used to be a hardcoded 46 px. v1.3.17 promoted it to a
+// user-controlled global setting (see AppSettings.badgeSize and the
+// "플로팅 뱃지" section in SettingsDialog). We keep 46 here as the
+// default-prop fallback so any caller that forgets to pass `size`
+// still renders at the historically familiar diameter.
+const DEFAULT_BADGE_SIZE = 46;
 const DRAG_THRESHOLD = 4;
 const DEFAULT_COLOR = '#6366f1';
 
@@ -78,7 +90,13 @@ const TYPE_GLYPH: Record<BadgeData['refType'], string> = {
   deck:  '■',
 };
 
-export function Badge({ data, originX, originY, api, onClick, skipLanding = false }: Props) {
+export function Badge({ data, originX, originY, api, onClick, skipLanding = false, size }: Props) {
+  // Resolve the effective bubble diameter once per render. Pulled out of
+  // the style object so the inner icon/dot sizes (which scale relative
+  // to the bubble) can read the same number without re-doing the
+  // fallback dance. Sizes below ~32 px squeeze the Material glyph; the
+  // settings slider clamps to 28 px which is the practical floor.
+  const BADGE_SIZE = typeof size === 'number' && size > 0 ? size : DEFAULT_BADGE_SIZE;
   // Local position during drag — flips the element from server-authoritative
   // to local-authoritative while the user is moving it, then commits via
   // api.reposition on release.
@@ -280,7 +298,10 @@ export function Badge({ data, originX, originY, api, onClick, skipLanding = fals
     justifyContent: 'center',
     position: 'relative',
     color: '#fff',
-    fontSize: data.iconIsEmoji ? 24 : 22,
+    // Icon font scales with the bubble diameter so a 28 px badge doesn't
+    // look like a 22 px glyph crammed into a small disc. The ratios
+    // (24/46 and 22/46) preserve the original look at the default size.
+    fontSize: data.iconIsEmoji ? Math.round(BADGE_SIZE * (24 / 46)) : Math.round(BADGE_SIZE * (22 / 46)),
     // Font-family for Material Symbols lives on the inner span (see ms-rounded
     // class in badges.html). Emojis inherit the Pretendard-backed body stack
     // so they render with the same kerning as the rest of the overlay.
@@ -291,9 +312,10 @@ export function Badge({ data, originX, originY, api, onClick, skipLanding = fals
   // Color-dot fallback: a lighter pill at the bubble centre when the ref has
   // no icon but has a color. Smaller than the bubble so the tinted gradient
   // backdrop still reads as "this is space X".
+  const colorDotSize = Math.round(BADGE_SIZE * (16 / 46));
   const colorDot: CSSProperties = {
-    width: 16,
-    height: 16,
+    width: colorDotSize,
+    height: colorDotSize,
     borderRadius: '50%',
     background: '#fff',
     opacity: 0.9,
@@ -333,7 +355,7 @@ export function Badge({ data, originX, originY, api, onClick, skipLanding = fals
           {hasIcon ? (
             data.iconIsEmoji
               ? <span>{iconContent}</span>
-              : <span className="ms-rounded" style={{ fontSize: 22 }}>{iconContent}</span>
+              : <span className="ms-rounded" style={{ fontSize: Math.round(BADGE_SIZE * (22 / 46)) }}>{iconContent}</span>
           ) : data.color
               ? <span style={colorDot} />
               : <span>{iconContent}</span>}

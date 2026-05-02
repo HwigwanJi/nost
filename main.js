@@ -1176,10 +1176,19 @@ function pushBadgeStateForDisplay(display, win) {
     return display.id === primaryId;
   });
 
+  // Settings.badgeSize is the user-controlled pixel size of every badge
+  // bubble. Falling back to 46 matches the historical hardcoded constant
+  // in Badge.tsx so freshly migrated stores render unchanged. Pushing it
+  // alongside the badge list (rather than via a separate IPC channel)
+  // keeps the overlay's hydration path single-shot — one `badges-state`
+  // message and the renderer has everything it needs to draw.
+  const badgeSize = (data?.settings?.badgeSize ?? 46);
+
   win.webContents.send('badges-state', {
     badges:        myBadges,
     overlayOrigin: { x: display.bounds.x, y: display.bounds.y },
     overlaySize:   { width: display.bounds.width, height: display.bounds.height },
+    badgeSize,
   });
 }
 
@@ -1793,10 +1802,23 @@ function registerIpcHandlers() {
   ipcMain.handle('store-load', () => store.get('appData', null));
 
   ipcMain.handle('store-save', (_, data) => {
+    // Diff badgeSize BEFORE we overwrite the store so we can detect a
+    // change and live-push it to the overlays. Without this, settings
+    // dialog edits to the badge size slider would only take visual
+    // effect after the next badge mutation (pin/unpin/move) or app
+    // restart — both of which feel broken from the user's perspective.
+    const prevBadgeSize = (store.get('appData') || {})?.settings?.badgeSize ?? 46;
     store.set('appData', data);
     // Keep the Windows startup entry in sync with the autoLaunch toggle
     if (data?.settings) {
       app.setLoginItemSettings({ openAtLogin: !!data.settings.autoLaunch });
+    }
+    const nextBadgeSize = data?.settings?.badgeSize ?? 46;
+    if (nextBadgeSize !== prevBadgeSize) {
+      // Re-push to every existing overlay so the new size lands
+      // immediately. pushBadgeStateAll is a no-op when no overlays
+      // exist (e.g. user has zero badges pinned).
+      pushBadgeStateAll();
     }
     return true;
   });

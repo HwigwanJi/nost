@@ -15,6 +15,11 @@ export interface OverlayState {
   badges: BadgeData[];
   overlayOrigin: { x: number; y: number };
   overlaySize:   { width: number; height: number };
+  /** Global pixel diameter for every badge bubble. Comes from
+   *  AppSettings.badgeSize on the main side; absent in legacy state
+   *  payloads, in which case the renderer falls back to the historic
+   *  46 px so visuals don't shift after upgrade. */
+  badgeSize?: number;
 }
 
 interface BadgeApi {
@@ -51,6 +56,7 @@ export function BadgeOverlay() {
     badges: [],
     overlayOrigin: { x: 0, y: 0 },
     overlaySize:   { width: 0, height: 0 },
+    badgeSize: 46,
   });
   const [hydrated, setHydrated] = useState(false);
   // Track which refs have been mounted at least once during this overlay
@@ -158,6 +164,7 @@ export function BadgeOverlay() {
             api={api}
             onClick={() => handleBadgeClick(b.id)}
             skipLanding={!isFreshMount}
+            size={state.badgeSize ?? 46}
           />
         );
       })}

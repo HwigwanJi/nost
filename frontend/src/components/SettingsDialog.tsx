@@ -523,6 +523,42 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   })()}
                 </Section>
 
+                {/* ── Floating badge size (global) ──────────────────
+                   Distinct from the "플로팅 버튼" section above: this
+                   slider scales the small SPACE/NODE/DECK chips that the
+                   user pins on monitor edges (rendered by the badges
+                   overlay BrowserWindow), NOT the main FAB orb. The two
+                   share a 28..72 px range so users with muscle memory
+                   from one slider read the other intuitively. Changes
+                   are live — see main.js `store-save` which diffs
+                   badgeSize and re-pushes to every overlay. */}
+                <Section>
+                  <SectionLabel icon="bubble_chart" text="플로팅 뱃지" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 12 }}>
+                    화면 가장자리에 핀한 스페이스 / 노드 / 덱 뱃지의 크기를 조절합니다.
+                  </p>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>크기</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)', background: 'var(--border-rgba)', padding: '2px 8px', borderRadius: 5 }}>
+                        {form.badgeSize ?? 46}px
+                      </span>
+                    </div>
+                    <Slider
+                      value={[form.badgeSize ?? 46]}
+                      min={28} max={72} step={2}
+                      onValueChange={val => {
+                        const v = Array.isArray(val) ? (val as number[])[0] : (val as number);
+                        setForm(prev => ({ ...prev, badgeSize: v }));
+                      }}
+                      className="w-full"
+                    />
+                    <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.4 }}>
+                      작게 28 · 보통 46 · 크게 64. 모든 뱃지에 동일하게 적용됩니다.
+                    </p>
+                  </div>
+                </Section>
+
                 <Section>
                   <SectionLabel icon="palette" text="강조색 (Accent)" />
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

@@ -182,9 +182,23 @@ export interface AppSettings {
   documentExtensions?: string[]; // file extensions treated as documents
   monitorDirections?: Record<number, 'w' | 'a' | 's' | 'd' | 'c'>; // Key assigned to each monitor: wasd = direction, c = current
   floatingButton?: FloatingButtonSettings; // Phase 1: main FAB only
+  /**
+   * Global pixel size of the floating SPACE/NODE/DECK badges (the small
+   * round chips pinned on monitor edges — NOT the main FAB orb, which has
+   * its own `floatingButton.size`). One value applies to every badge so
+   * the user gets a consistent visual rhythm across pinned refs; per-badge
+   * sizing was deliberately rejected to keep the overlay legible at a
+   * glance. Range matches the FAB slider (28..72 px) for muscle memory.
+   */
+  badgeSize?: number;
   license?: License;             // Phase 5: paid-tier entitlement cache
   memo?: MemoSettings;           // Memo feature (v1.3.16+)
 }
+
+/** Default pixel size for floating badges — matches the historical
+ *  hardcoded constant in Badge.tsx so users on existing installs see no
+ *  visual change after the upgrade. */
+export const DEFAULT_BADGE_SIZE = 46;
 
 /** Memo defaults — applied at migration time when settings.memo is absent. */
 export const DEFAULT_MEMO_SETTINGS: MemoSettings = {
@@ -195,6 +209,79 @@ export const DEFAULT_MEMO_SETTINGS: MemoSettings = {
 /** Memo TTL configuration limits. */
 export const MEMO_TTL_DAYS_MIN = 1;
 export const MEMO_TTL_DAYS_MAX = 90;
+
+// ── Notifications (v1.3.16+) ─────────────────────────────────────
+//
+// In-app bell-icon + popover, modelled after Slack/GitHub/Notion.
+// Calm-by-default: no auto-popups, no toast duplication, no count
+// badges (only a single 6px dot when there's something unread).
+// The store keeps every notification ever shown until either
+// `dismissedAt` is set or 30 days pass since `createdAt` (whichever
+// comes first) — sweep happens at app start.
+//
+// Why a flat array rather than a stream of events:
+//   - Volume is low (we expect <10 alive at any time)
+//   - Renderer needs random access for dismiss / mark-read
+//   - No need for fan-out subscribers (single panel consumer)
+//
+// Sources writing notifications (v1):
+//   - electron-updater "update available" / "downloaded"
+//   - License sync — trial expiring, period ending
+//   - First-touch discoveries (e.g. first memo created)
+// Future (v2): mission-style billing-day rewards.
+
+export type NotificationKind = 'update' | 'billing' | 'discovery';
+
+export interface NotificationAction {
+  /** Korean label shown on the row's accent button. */
+  label: string;
+  /** What happens on click — handled by App.tsx's central dispatcher
+   *  (see `handleNotificationAction`). Adding a new intent is an O(1)
+   *  switch case there. */
+  intent:
+    | 'check-update'      // re-trigger update check
+    | 'install-update'    // call electronAPI.installUpdate()
+    | 'open-billing'      // open paywall / billing settings
+    | 'open-tour'         // start an onboarding tour
+    | 'open-settings'     // open settings dialog (optional tab in payload)
+    | 'open-trash'        // open memo trash
+    | 'noop';             // dismiss-only (handler still runs)
+  /** Optional payload — e.g. settings tab id, tour id. Free-form so
+   *  individual sources can ride along without expanding NotificationKind. */
+  payload?: string;
+}
+
+export interface AppNotification {
+  /** UUID-ish, generated at creation. */
+  id: string;
+  kind: NotificationKind;
+  /** One-line headline (≤ ~40 chars renders cleanly without ellipsis). */
+  title: string;
+  /** Optional second line — clamped to 2 lines in the panel. */
+  body?: string;
+  action?: NotificationAction;
+  /** Unix ms — used both for relative-time display and 30-day sweep. */
+  createdAt: number;
+  /** Unix ms when the panel was first opened with this notification
+   *  visible. Read state is "have you seen the panel since this
+   *  arrived" — there's no per-row click-to-read affordance. */
+  readAt?: number;
+  /** Unix ms when ✕ was clicked or "모두 비우기" ran. Dismissed
+   *  notifications stay in the array (for audit / undo) but are
+   *  filtered out of the panel. The 30-day sweep eventually purges
+   *  them. */
+  dismissedAt?: number;
+  /** Optional dedup key — sources that fire repeatedly (e.g. update
+   *  available pinging every check) set a stable key so we don't
+   *  pile up identical notifications. Caller is responsible for
+   *  consistency; the store treats it as opaque. */
+  dedupKey?: string;
+}
+
+/** Hard-purge anything older than this even if not dismissed.
+ *  Prevents the array from growing unbounded for users who never
+ *  open the bell. */
+export const NOTIFICATION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // ── Licensing & Entitlement (Phase 5) ─────────────────────────────
 //
@@ -349,6 +436,10 @@ export interface AppData {
   dismissals?: Record<string, { at: number; count: number }>;
   /** Completed-tour ids so we don't auto-start the same one twice. */
   completedTours?: string[];
+  /** Bell-icon notification list. Append-only from sources; dismiss
+   *  flips dismissedAt. 30-day sweep at app start. See `AppNotification`
+   *  for the lifecycle and dedup model. */
+  notifications?: AppNotification[];
 }
 
 // How long a dismissed suggestion stays hidden (ms). After this window elapses,
