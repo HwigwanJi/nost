@@ -60,33 +60,48 @@ export function memoTitleFromBody(body: string): string {
 }
 
 /**
- * Strip the lightweight markdown markers from a memo body, returning
- * a clean plain-text version for "다른 형식 없이 복사" use cases.
+ * Strip lightweight markdown markers + bullet glyphs from a memo
+ * body, returning a clean plain-text version. Targets the user's
+ * two real-world pain points:
+ *
+ *   1. GPT-pasted text → memo. Memo holds the markdown. User wants
+ *      to paste this into PowerPoint as plain text but the OS
+ *      "paste as plain text" loses the line breaks. So they need a
+ *      conversion that strips MARKERS while PRESERVING line breaks.
+ *
+ *   2. Mixed bullet styles. PowerPoint already provides its own
+ *      bullets — pasting a "- item" line ends up with double
+ *      bullets ("• - item"). We need to strip the leading bullet
+ *      glyph before paste.
  *
  * What we strip:
- *   - List markers   (-, *, +, • prefix)
+ *   - List markers   (-, *, +, • → ▪ ▶ ● ○ ■ □ ▸ ※ ▶︎ ‣ prefix)
+ *   - Numbered lists (1. 2. 3.) — most paste destinations re-number
+ *     anyway and the user explicitly mentioned "말머리표 제거".
  *   - Heading hashes (#, ##, … up to ######)
  *   - Checkbox marks ([ ], [x], [X])
  *   - Bold / italic asterisks (`**word**` → `word`, `*word*` → `word`)
  *   - Inline code backticks
  *
  * What we keep:
- *   - Line breaks (so list-style memos stay legible as paragraphs)
- *   - All other characters
- *
- * Defensive: input that's not a string returns ''.
+ *   - Line breaks (so list-style memos stay legible as paragraphs).
+ *   - Indentation (so nested lists keep their hierarchy after the
+ *     leading marker is stripped).
+ *   - All other characters.
  */
+const BULLET_CLASS = '[-*+•→▪▶●○■□▸※‣◦∙·]';
 export function memoBodyToPlain(body: string): string {
   if (!body) return '';
   return body
     .split(/\r?\n/)
     .map(line => line
-      .replace(/^\s*[-*+•]\s+/, '')           // list markers
-      .replace(/^\s*#{1,6}\s+/, '')            // headings
-      .replace(/^\s*\[[ xX]\]\s+/, '')         // checkboxes
-      .replace(/\*\*([^*]+)\*\*/g, '$1')       // bold
-      .replace(/(?<![*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1')  // italic — avoid eating bold's asterisks
-      .replace(/`([^`]+)`/g, '$1')             // inline code
+      .replace(new RegExp(`^(\\s*)${BULLET_CLASS}\\s+`), '$1')   // bullet glyphs
+      .replace(/^(\s*)\d+[.)]\s+/, '$1')        // numbered lists "1. " or "1) "
+      .replace(/^(\s*)#{1,6}\s+/, '$1')         // headings
+      .replace(/^(\s*)\[[ xX]\]\s+/, '$1')      // checkboxes
+      .replace(/\*\*([^*]+)\*\*/g, '$1')        // bold
+      .replace(/(?<![*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1')  // italic
+      .replace(/`([^`]+)`/g, '$1')              // inline code
     )
     .join('\n');
 }

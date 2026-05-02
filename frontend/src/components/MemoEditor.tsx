@@ -42,6 +42,7 @@ import {
   memoGaugeFraction,
   memoIsExpiringSoon,
   slugifyTitle,
+  memoBodyToPlain,
 } from '../lib/memoUtils';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { renderMemoMarkdown } from '../lib/memoMarkdown';
@@ -60,7 +61,7 @@ interface MemoEditorProps {
   showToast?: (msg: string) => void;
 }
 
-const AUTOSAVE_DEBOUNCE_MS = 500;
+const AUTOSAVE_DEBOUNCE_MS = 200;
 const AUTO_DELETE_GRACE_MS = 3 * 60 * 1000;
 
 export function MemoEditor({
@@ -97,53 +98,75 @@ export function MemoEditor({
   const debouncedSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastCommittedRef = useRef(initialBody);
 
-  // Refs to latest callbacks so the keydown handler effect can read them
-  // without re-binding (and dropping events) on every parent re-render.
+  // ── Latest-callback refs ──────────────────────────────────────
+  // Why refs: the parent (App.tsx) recreates `onChangeBody` on every
+  // render via an inline arrow inside the editing-memo IIFE. The
+  // previous implementation captured that prop in two `useEffect`
+  // closures with empty deps — a textbook stale-closure bug. When
+  // the user pressed Esc, the unmount cleanup would run with a
+  // stale `body`/`onChangeBody`, sometimes skipping the flush
+  // entirely (or flushing to the wrong target). The user reported
+  // it as "토스트는 뜨는데 저장은 안 됨" — the visible signal fired
+  // but the data didn't move.
+  //
+  // The ref pattern keeps every consumer pointed at the LATEST
+  // callbacks regardless of when the surrounding closure was
+  // created. The autosave effect now runs with stable deps and
+  // the unmount cleanup always reaches the current callback.
+  const onChangeBodyRef = useRef(onChangeBody);
+  onChangeBodyRef.current = onChangeBody;
   const cbRef = useRef({ onClose, onExtend, onTogglePin });
   cbRef.current = { onClose, onExtend, onTogglePin };
 
   // ── Autosave ───────────────────────────────────────────────────
-  // Drives the visible "저장 중... / 저장됨 ✓" indicator. The user
-  // explicitly flagged that without ANY save signal, the missing
-  // save button reads as "is my typing lost?" — the indicator is
-  // what closes that uncertainty without re-introducing a button.
+  // Two reasons we save aggressively (200ms debounce + immediate
+  // on-blur force-flush + cleanup-on-unmount fallback):
+  //   1. The user just learned not to trust the implicit save when
+  //      it failed silently. We need overlapping guarantees.
+  //   2. 500ms felt too long when the user is typing then
+  //      immediately Esc-ing — the timer would cancel and the
+  //      handleClose flush had to do all the work alone.
+  // 200ms catches normal typing pauses + an Esc-on-quick-close
+  // still has time to flush via handleClose.
   useEffect(() => {
     if (body === lastCommittedRef.current) return;
     setSaveStatus('pending');
     if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
     debouncedSaveRef.current = setTimeout(() => {
-      onChangeBody(body);
+      // Use the ref so the LATEST onChangeBody is invoked, not
+      // whatever closure was alive when this timer was scheduled.
+      onChangeBodyRef.current(body);
       lastCommittedRef.current = body;
       setSaveStatus('saved');
-      // Auto-fade the "saved" indicator after 1.5 s back to idle.
-      // Pending always wins if the user types again before then.
       if (savedClearTimerRef.current) clearTimeout(savedClearTimerRef.current);
       savedClearTimerRef.current = setTimeout(() => setSaveStatus('idle'), 1500);
     }, AUTOSAVE_DEBOUNCE_MS);
     return () => {
       if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
     };
-  }, [body, onChangeBody]);
+  // Deliberately omit onChangeBody from deps — we read it via
+  // onChangeBodyRef. Including it would re-fire this effect on
+  // every parent render and reset the debounce timer mid-typing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body]);
 
   // Clean up save-status timer on unmount.
   useEffect(() => () => {
     if (savedClearTimerRef.current) clearTimeout(savedClearTimerRef.current);
   }, []);
 
-  // Flush pending save on unmount (close fires unmount via parent state).
+  // Flush pending save on unmount. We always read the FRESHEST
+  // textarea value + LATEST callback, regardless of the closure
+  // age — the previous version was capturing a stale `body` here.
   useEffect(() => {
     return () => {
       if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
-      if (lastCommittedRef.current !== body) {
-        // body inside this closure may be stale — capture the textarea's
-        // current value as the truth-of-the-moment.
-        const final = textareaRef.current?.value ?? body;
-        if (final !== lastCommittedRef.current) {
-          onChangeBody(final);
-        }
+      const final = textareaRef.current?.value ?? lastCommittedRef.current;
+      if (final !== lastCommittedRef.current) {
+        onChangeBodyRef.current(final);
+        lastCommittedRef.current = final;
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Global ESC stack registration ──────────────────────────────
@@ -232,11 +255,20 @@ export function MemoEditor({
   const handleClose = () => {
     if (closing) return;
     const finalBody = textareaRef.current?.value ?? body;
-    const wasEmptyOnOpen = !lastCommittedRef.current.trim();
+    // wasEmptyOnOpen reflects whether the EDITOR opened against an
+    // empty memo — captured BEFORE we mutate lastCommittedRef. Used
+    // by the auto-delete guard below.
+    const wasEmptyOnOpen = !initialBody.trim();
     const hasContent = finalBody.trim().length > 0;
-    // Force-flush the latest body. Equality check intentionally
-    // skipped — see comment block above.
-    onChangeBody(finalBody);
+    // Cancel any pending debounce so it can't double-fire AFTER we
+    // commit the final value.
+    if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
+    // Force-flush via the ref — same path autosave uses, so this
+    // call is identical in shape to a successful debounced save.
+    // Equality check skipped intentionally: even if the body looks
+    // unchanged, defending against the stale-closure bug means
+    // always committing on close.
+    onChangeBodyRef.current(finalBody);
     lastCommittedRef.current = finalBody;
     // Auto-delete: empty body AND the memo was just created (3-min
     // grace) AND it WAS empty when the editor opened (i.e. fresh
@@ -265,6 +297,34 @@ export function MemoEditor({
       try { electronAPI.copyText(body, false); } catch { /* dev mode */ }
     }
     showToast?.('본문을 복사했습니다');
+  };
+
+  /**
+   * "정리하여 복사" — strips markdown markers AND bullet glyphs from
+   * the current body, copies the cleaned text to the clipboard.
+   * Body itself is NOT modified — user keeps their formatted memo,
+   * gets a clean snapshot for paste targets that already provide
+   * their own list formatting (PowerPoint, Google Slides, etc).
+   *
+   * Address two real-world frustrations the user described:
+   *   1. GPT/Claude paste → memo holds markdown → "paste as plain
+   *      text" via Ctrl+Shift+V loses line breaks. Our cleaner
+   *      preserves them.
+   *   2. Existing bullet markers double up in PowerPoint
+   *      ("• - item"). Cleaner strips the leading bullet glyph.
+   */
+  const handleCleanCopy = async () => {
+    const cleaned = memoBodyToPlain(body);
+    if (!cleaned.trim()) {
+      showToast?.('정리할 내용이 없어요');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(cleaned);
+    } catch {
+      try { electronAPI.copyText(cleaned, false); } catch { /* dev mode */ }
+    }
+    showToast?.('정리하여 복사했어요 (말머리표·서식 제거)');
   };
 
   /** 내보내기 = OS save-as dialog. Snapshot to a real file the user
@@ -461,8 +521,24 @@ export function MemoEditor({
             title="복사 (Ctrl+Shift+C)"
             onClick={handleCopy}
           />
+          {/* 정리하여 복사 — strips markdown + bullet glyphs and
+              copies. Non-destructive: the memo body stays intact.
+              auto_fix_high glyph reads as "magic cleanup" — same
+              vocabulary other apps (Notion, Linear) use for the
+              transform-to-plain action. */}
           <HeaderBtn
-            icon={pinned ? 'shield' : 'shield_outline'}
+            icon="auto_fix_high"
+            title="정리하여 복사 — 말머리표·서식 제거"
+            onClick={handleCleanCopy}
+          />
+          {/* Material Symbols doesn't have a `shield_outline` —
+              that was rendering as raw text in the toolbar
+              ("♡_OUTLINE" the user spotted). Use `lock_open` /
+              `lock` instead: same "is this protected?" semantics,
+              icons that actually exist, and the open ↔ closed
+              metaphor reads instantly across locales. */}
+          <HeaderBtn
+            icon={pinned ? 'lock' : 'lock_open'}
             title={pinned ? '보호 해제 (Ctrl+P)' : '보호 — 자동 만료 안 됨 (Ctrl+P)'}
             onClick={onTogglePin}
             active={pinned}

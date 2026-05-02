@@ -202,20 +202,18 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
 
   const wrapStyle: CSSProperties = {
     ...(handleProps.style as CSSProperties),
-    // Single grid cell — keeps the widget visually parallel with
-    // every other card in the space. Earlier versions tried span-2
-    // for breathing room but the result drifted away from the grid
-    // rhythm; the controls fit a 1-cell width fine because each
-    // glyph is filled and reads well at small size.
-    minHeight: 82,                      // matches standard card height
+    // Family-look chrome — same outer shell as MemoCard / ColorSwatch
+    // (see widgets/widgetTokens.ts). Padding/gap removed in favour of
+    // explicit inside-card-area + T-split-footer regions so all three
+    // widgets share the same silhouette: bounded primary box up top,
+    // wide region row at the bottom.
+    height: 82,
     background: 'var(--surface)',
     border: '1px solid var(--border-rgba)',
-    borderRadius: 12,                   // matches ItemCard's rounded-xl
-    padding: '8px 12px',
+    borderRadius: 12,
+    padding: 0,
     display: 'flex',
     flexDirection: 'column',
-    justifyContent: 'center',
-    gap: 6,
     cursor: 'grab',
     overflow: 'hidden',
     position: 'relative',
@@ -263,62 +261,82 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
         onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-rgba)'; }}
       >
         {/* Top-left accent dot — silent affordance that this is a
-            tinted thing, leaving the controls plenty of room. */}
+            tinted thing. Same slot used by MemoCard's TTL dot. */}
         <span style={{
           position: 'absolute',
-          top: 8, left: 10,
-          width: 6, height: 6, borderRadius: '50%',
+          top: 7, left: 9,
+          width: 5, height: 5, borderRadius: '50%',
           background: accent,
-          boxShadow: `0 0 5px ${accent}55`,
+          boxShadow: `0 0 4px ${accent}88`,
+          zIndex: 2,
         }} />
 
-        {/* Transport row — primary actions, larger filled glyphs. */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 8,
-        }}>
-          {/* The pill alone now carries all three transport actions
-              via gesture: tap = play/pause, swipe-left release = prev,
-              swipe-right release = next. Removing the dedicated
-              skip buttons regained the horizontal room we needed for
-              the volume slider without losing functionality. */}
-          <PlayPauseGesturePill
-            accent={accent}
-            onPlayPause={() => { fire('play-pause'); showToast('재생 / 일시정지', { duration: 1100 }); }}
-            onPrev={() => { fire('prev'); showToast('이전 트랙', { duration: 1100 }); }}
-            onNext={() => { fire('next'); showToast('다음 트랙', { duration: 1100 }); }}
-          />
+        {/* ── Inside card area (38px) — holds the transport pill ──
+            Same height, same horizontal margin, same vertical
+            alignment as MemoCard / ColorSwatch's inside card. The
+            pill itself stays its natural width (gesture-friendly),
+            centred within the area. */}
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '8px 12px 0 12px',
+            minHeight: 0,
+          }}
+        >
+          <div
+            style={{
+              width: '100%',
+              height: 38,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <PlayPauseGesturePill
+              accent={accent}
+              onPlayPause={() => { fire('play-pause'); showToast('재생 / 일시정지', { duration: 1100 }); }}
+              onPrev={() => { fire('prev'); showToast('이전 트랙', { duration: 1100 }); }}
+              onNext={() => { fire('next'); showToast('다음 트랙', { duration: 1100 }); }}
+            />
+          </div>
         </div>
 
-        {/* Volume row — state-adaptive icon button + slider. The icon
-            occupies a fixed footprint so the slider sizes against the
-            remaining flex space; this stays clean even when the
-            grid column is narrower than typical. */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-        }}>
+        {/* ── Bottom T-split (30px) — mute icon | volume slider ──
+            Edge-to-edge, two cells with a 1px center divider —
+            same vocabulary as MemoCard / ColorSwatch's bottom row.
+            The mute cell is a fixed 36px so the slider takes the
+            remaining width without competing for room. */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '36px 1fr',
+            height: 30,
+            borderTop: '1px solid var(--border-rgba)',
+            background: 'var(--surface)',
+            flexShrink: 0,
+          }}
+        >
           <button
             className="nost-mw-btn"
             onClick={(e) => { e.stopPropagation(); handleMute(); }}
             onPointerDown={(e) => e.stopPropagation()}
             title={muted ? '음소거 해제' : '음소거'}
             style={{
-              width: 22, height: 22,
-              borderRadius: 7,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: 0,
               background: 'transparent',
               border: 'none',
+              borderRight: '1px solid var(--border-rgba)',
               color: muted ? accent : 'var(--text-muted)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
               cursor: 'pointer',
-              flexShrink: 0,
+              fontFamily: 'inherit',
             }}
             onMouseEnter={(e) => {
               const el = e.currentTarget as HTMLButtonElement;
-              el.style.background = 'var(--bg-rgba)';
+              el.style.background = 'var(--surface-hover)';
               if (!muted) el.style.color = 'var(--text-color)';
             }}
             onMouseLeave={(e) => {
@@ -327,14 +345,19 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
               if (!muted) el.style.color = 'var(--text-muted)';
             }}
           >
-            <Icon name={muteIcon} size={16} filled weight={500} />
+            <Icon name={muteIcon} size={14} filled weight={500} />
           </button>
           {/* Slider stops pointer events from bubbling so a drag on
               the track doesn't accidentally start the card-drag. */}
           <div
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
-            style={{ flex: 1, minWidth: 0 }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0 10px',
+              minWidth: 0,
+            }}
           >
             <Slider
               className="nost-mw-slider"
