@@ -59,6 +59,38 @@ export function memoTitleFromBody(body: string): string {
   return '(빈 메모)';
 }
 
+/**
+ * Strip the lightweight markdown markers from a memo body, returning
+ * a clean plain-text version for "다른 형식 없이 복사" use cases.
+ *
+ * What we strip:
+ *   - List markers   (-, *, +, • prefix)
+ *   - Heading hashes (#, ##, … up to ######)
+ *   - Checkbox marks ([ ], [x], [X])
+ *   - Bold / italic asterisks (`**word**` → `word`, `*word*` → `word`)
+ *   - Inline code backticks
+ *
+ * What we keep:
+ *   - Line breaks (so list-style memos stay legible as paragraphs)
+ *   - All other characters
+ *
+ * Defensive: input that's not a string returns ''.
+ */
+export function memoBodyToPlain(body: string): string {
+  if (!body) return '';
+  return body
+    .split(/\r?\n/)
+    .map(line => line
+      .replace(/^\s*[-*+•]\s+/, '')           // list markers
+      .replace(/^\s*#{1,6}\s+/, '')            // headings
+      .replace(/^\s*\[[ xX]\]\s+/, '')         // checkboxes
+      .replace(/\*\*([^*]+)\*\*/g, '$1')       // bold
+      .replace(/(?<![*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1')  // italic — avoid eating bold's asterisks
+      .replace(/`([^`]+)`/g, '$1')             // inline code
+    )
+    .join('\n');
+}
+
 /** Body without the first non-empty line (= preview body for cards). */
 export function memoBodyPreview(body: string, maxLines = 3): string {
   if (!body) return '';

@@ -66,6 +66,8 @@ interface SpaceAccordionProps {
   onOpenMemoEditor?: (itemId: string) => void;
   /** Hover-icon copy: write the memo body to clipboard. */
   onCopyMemoBody?: (itemId: string) => void;
+  /** Swipe-LEFT on the memo card: copy as raw markdown. */
+  onCopyMemoMarkdown?: (itemId: string) => void;
   /** "톡 살리기" — TTL reset on a memo card. */
   onExtendMemoTtl?: (itemId: string) => void;
   /** Export the memo body as a .txt file (replaces the in-card pin
@@ -131,6 +133,7 @@ export function SpaceAccordion({
   onAddMemo,
   onOpenMemoEditor,
   onCopyMemoBody,
+  onCopyMemoMarkdown,
   onExtendMemoTtl,
   onExportMemoTxt,
   onToggleCollapse,
@@ -502,6 +505,7 @@ export function SpaceAccordion({
                   onEditSlots={onEditSlots ? (dir) => onEditSlots(item.id, dir) : undefined}
                   onOpenMemoEditor={onOpenMemoEditor}
                   onCopyMemoBody={onCopyMemoBody}
+                  onCopyMemoMarkdown={onCopyMemoMarkdown}
                   onExtendMemoTtl={onExtendMemoTtl}
                   onExportMemoTxt={onExportMemoTxt}
                 />

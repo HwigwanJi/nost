@@ -37,7 +37,13 @@ interface ItemCardProps {
   // Plumbed in for type === 'memo' items only. Optional so existing
   // call sites that don't render memo yet stay compiling.
   onOpenMemoEditor?: (itemId: string) => void;
+  /** Copy body as plain text (markdown stripped) — bottom 📋 button +
+   *  swipe-right gesture both fire this. */
   onCopyMemoBody?: (itemId: string) => void;
+  /** Copy body as raw markdown — only the swipe-LEFT gesture fires
+   *  this; we don't surface a button because plain is the common
+   *  case and a 4-button row gets cluttered. */
+  onCopyMemoMarkdown?: (itemId: string) => void;
   onExtendMemoTtl?: (itemId: string) => void;
   onExportMemoTxt?: (itemId: string) => void;
 }
@@ -109,7 +115,7 @@ export function ItemCard({
   item, space, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, onSetMonitor,
   onConvertToContainer, onConvertFromContainer, onEditSlots,
-  onOpenMemoEditor, onCopyMemoBody, onExtendMemoTtl, onExportMemoTxt,
+  onOpenMemoEditor, onCopyMemoBody, onCopyMemoMarkdown, onExtendMemoTtl, onExportMemoTxt,
 }: ItemCardProps) {
   const [loading, setLoading] = useState(false);
   const [imageIconFailed, setImageIconFailed] = useState(false);
@@ -594,7 +600,14 @@ export function ItemCard({
     if (item.widget.kind === 'media-control') {
       widgetBody = <MediaWidget item={item} space={space} dragHandle={dragHandle} />;
     } else if (item.widget.kind === 'color-swatch') {
-      widgetBody = <ColorSwatchWidget item={item} space={space} dragHandle={dragHandle} />;
+      widgetBody = (
+        <ColorSwatchWidget
+          item={item}
+          space={space}
+          dragHandle={dragHandle}
+          onEdit={() => onEdit(item)}
+        />
+      );
     }
   }
   // Memo body — uses same dragHandle convention as widgets.
@@ -609,7 +622,8 @@ export function ItemCard({
         pinned={pinned}
         isJustAdded={isJustAdded}
         onOpenEditor={() => onOpenMemoEditor(item.id)}
-        onCopy={() => onCopyMemoBody?.(item.id)}
+        onCopyPlain={() => onCopyMemoBody?.(item.id)}
+        onCopyMarkdown={() => (onCopyMemoMarkdown ?? onCopyMemoBody)?.(item.id)}
         onExtend={() => onExtendMemoTtl?.(item.id)}
         onExportTxt={() => onExportMemoTxt?.(item.id)}
       />

@@ -23,7 +23,7 @@ import { ItemWizard } from './components/ItemWizard';
 import { MemoEditor } from './components/MemoEditor';
 import { MemoTrashDialog } from './components/MemoTrashDialog';
 import { MemoExpiringBanner } from './components/MemoExpiringBanner';
-import { memoIsExpiringSoon } from './lib/memoUtils';
+import { memoIsExpiringSoon, memoBodyToPlain } from './lib/memoUtils';
 import { NotificationBell } from './components/NotificationBell';
 import type { AppNotification } from './types';
 import { runTopEscape } from './lib/escapeStack';
@@ -1619,23 +1619,38 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quotaChecks, store]);
 
-  /** Hover-icon copy: write memo body to clipboard, with toast feedback. */
+  /** Copy memo body — variants for the swipe-right (plain text, the
+   *  common case) and swipe-left (raw markdown, power users).
+   *  Both end up writing to the system clipboard via the renderer's
+   *  navigator.clipboard with a fallback through the main process
+   *  when the document isn't focused. */
+  const copyMemoToClipboard = useCallback(async (text: string, kind: 'plain' | 'markdown') => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      try { electronAPI.copyText(text, false); } catch { /* dev mode */ }
+    }
+    showToast(kind === 'markdown' ? '마크다운으로 복사했어요' : '메모를 복사했어요');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleCopyMemoBody = useCallback(async (spaceId: string, itemId: string) => {
     const space = data.spaces.find(s => s.id === spaceId);
     const item = space?.items.find(i => i.id === itemId);
     const body = item?.memo?.body ?? '';
-    if (!body) {
-      showToast('메모가 비어있어요');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(body);
-    } catch {
-      try { electronAPI.copyText(body, false); } catch { /* dev mode */ }
-    }
-    showToast('메모를 복사했어요');
+    if (!body) { showToast('메모가 비어있어요'); return; }
+    void copyMemoToClipboard(memoBodyToPlain(body), 'plain');
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data.spaces]);
+  }, [data.spaces, copyMemoToClipboard]);
+
+  const handleCopyMemoMarkdown = useCallback(async (spaceId: string, itemId: string) => {
+    const space = data.spaces.find(s => s.id === spaceId);
+    const item = space?.items.find(i => i.id === itemId);
+    const body = item?.memo?.body ?? '';
+    if (!body) { showToast('메모가 비어있어요'); return; }
+    void copyMemoToClipboard(body, 'markdown');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.spaces, copyMemoToClipboard]);
 
   /** "톡 살리기" — TTL reset on the targeted memo. */
   const handleExtendMemoTtl = useCallback((spaceId: string, itemId: string) => {
@@ -2565,13 +2580,36 @@ export default function App() {
     if (isSlashMode) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSlashSelectedIdx(i => Math.min(i + 1, slashSuggestions.length - 1)); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); setSlashSelectedIdx(i => Math.max(i - 1, 0)); return; }
-      if (e.key === 'Escape') { setQuery(''); return; }
+      if (e.key === 'Escape') {
+        // Slash mode: cancel the command, swallow the event so the
+        // global ESC handler doesn't escalate to "hide the app."
+        // The user wanted ESC inside an active text surface to
+        // close THAT surface first, not the window.
+        e.preventDefault();
+        e.stopPropagation();
+        setQuery('');
+        return;
+      }
       if (e.key === 'Enter') {
         e.preventDefault();
         const sg = slashSuggestions[slashSelectedIdx];
         if (sg && !sg.dimmed) { sg.onSelect(); setQuery(''); }
         return;
       }
+      return;
+    }
+    // Non-slash search: ESC steps down — first press clears the
+    // input (if there's content), second press from an empty box
+    // falls through to the global handler. One-press undo for
+    // mistyping, two-press to close the app.
+    if (e.key === 'Escape') {
+      if (query.length > 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        setQuery('');
+        return;
+      }
+      (e.currentTarget as HTMLInputElement).blur();
       return;
     }
     if (e.key !== 'Enter') return;
@@ -2581,7 +2619,7 @@ export default function App() {
     store.incrementClickCount(firstSpace.id, firstItem.id);
     launchAndPosition(firstItem, data.settings.closeAfterOpen);
     setQuery('');
-  }, [isSlashMode, slashSuggestions, slashSelectedIdx, filteredSpaces, data.settings.closeAfterOpen, store, launchAndPosition]);
+  }, [isSlashMode, slashSuggestions, slashSelectedIdx, filteredSpaces, query, data.settings.closeAfterOpen, store, launchAndPosition]);
 
   // ── First-run welcome popup ────────────────────────────────
   const [showWelcome, setShowWelcome] = useState(false);
@@ -3305,6 +3343,7 @@ export default function App() {
                             onAddMemo={() => handleAddMemo(space.id)}
                             onOpenMemoEditor={(itemId) => setEditingMemoId({ spaceId: space.id, itemId })}
                             onCopyMemoBody={(itemId) => handleCopyMemoBody(space.id, itemId)}
+                            onCopyMemoMarkdown={(itemId) => handleCopyMemoMarkdown(space.id, itemId)}
                             onExtendMemoTtl={(itemId) => handleExtendMemoTtl(space.id, itemId)}
                             onExportMemoTxt={(itemId) => handleExportMemoTxt(space.id, itemId)}
                             defaultOpen={!(data.collapsedSpaceIds ?? []).includes(space.id)}
