@@ -34,7 +34,15 @@ const store = new Store({ name: 'nost-data' });
 let mainWindow;
 let loadingWindow    = null;
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
-let badgeOverlay     = null;   // Phase 2 single overlay window hosting every floating badge
+// One BrowserWindow per display — keyed by display.id. The previous
+// single-overlay-spans-all-displays design was broken on cross-DPI
+// multi-monitor setups: Electron renders the window at the home
+// display's DPR, then the OS maps those pixels 1:1 onto the other
+// display, producing the wrong physical size and hence visible
+// clipping/scaling on secondaries. Per-display overlays sidestep the
+// problem entirely — each window's DPR matches its own display, so
+// CSS pixels align with physical pixels exactly on every screen.
+const badgeOverlays  = new Map();
 let dialogPopupWin   = null;   // Save-As dialog companion popup
 let dialogPollTimer  = null;   // setInterval handle for dialog detection
 let dialogTrackedHwnd = 0;     // last seen dialog HWND so we can detect "still the same dialog" vs "different one"
@@ -995,31 +1003,23 @@ function startDialogPoll() {
   dialogPollTimer = setInterval(tickDialogPoll, DIALOG_POLL_MS);
 }
 
-// ── Floating badges overlay (Phase 2) ────────────────────────────────
+// ── Floating badges overlay (Phase 2 → Phase 3 multi-display) ───────
 //
-// A SINGLE transparent always-on-top BrowserWindow that spans the union of
-// all displays and hosts every pinned badge (space / node / deck). The
-// RAM-cheap alternative to spawning one BrowserWindow per badge.
+// PER-DISPLAY transparent always-on-top BrowserWindows hosting pinned
+// badges (space / node / deck). The Phase 2 design used a SINGLE window
+// spanning the union of all displays — RAM-cheap but broken on
+// cross-DPI multi-monitor setups: Electron renders the window at the
+// home display's DPR, then the OS maps those pixels 1:1 onto the other
+// display, producing wrong physical sizes and visible clipping on
+// secondaries. Per-display windows trade a few MB of RAM for correct
+// rendering on every display regardless of DPI.
 //
-// Click-through: the window runs with `setIgnoreMouseEvents(true, {forward: true})`
-// so mouse events pass through empty regions. Renderer flips capture off while
-// the pointer hovers a badge rect (via `badges-set-capture` IPC) and flips it
-// back on when the pointer leaves.
-
-/** Bounding box of the virtual desktop (union of all display bounds). */
-function getVirtualDesktopBounds() {
-  const displays = getScreen().getAllDisplays();
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const d of displays) {
-    const b = d.bounds;
-    if (b.x < minX) minX = b.x;
-    if (b.y < minY) minY = b.y;
-    if (b.x + b.width  > maxX) maxX = b.x + b.width;
-    if (b.y + b.height > maxY) maxY = b.y + b.height;
-  }
-  if (!isFinite(minX)) return { x: 0, y: 0, width: 1920, height: 1080 };
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-}
+// Click-through: each window runs with setIgnoreMouseEvents(true,
+// {forward: true}) so mouse events pass through empty regions.
+// Renderer flips capture off while the pointer hovers a badge rect
+// (via badges-set-capture IPC) and flips it back on when the pointer
+// leaves. Capture toggles are routed by sender so each overlay tracks
+// its own pointer independently.
 
 /**
  * Resolve every FloatingBadge in the store to the display-ready BadgeData
@@ -1125,33 +1125,88 @@ function isEmojiLike(s) {
   return true;
 }
 
-function pushBadgeState() {
-  if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+// ── Per-display badge overlay machinery ────────────────────────────
+//
+// One BrowserWindow per display. Each window is sized and positioned
+// to its host display's bounds, so the rendering DPR matches that
+// display 1:1 — eliminating the cross-DPI "canvas wrongly set" bug
+// where badges on a secondary monitor were being rendered at the
+// primary's DPR and then mapped without scaling onto the secondary's
+// physical pixels (they appeared too big or got clipped).
+
+/** Find the display whose bounds contain the given screen coord, or null. */
+function findDisplayForPoint(x, y) {
+  const displays = getScreen().getAllDisplays();
+  for (const d of displays) {
+    const b = d.bounds;
+    if (x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) return d;
+  }
+  return null;
+}
+
+/** Reanchor a badge's stored position if it's stranded (no longer on any
+ *  visible display — e.g. the user unplugged the monitor it was pinned to).
+ *  Falls back to the bottom-right of the primary display's work area. */
+function sanitizeBadgePosition(badge) {
+  if (findDisplayForPoint(badge.x, badge.y)) return badge;
+  const wa = getScreen().getPrimaryDisplay().workArea;
+  return { ...badge, x: wa.x + wa.width - 120, y: wa.y + wa.height - 120 };
+}
+
+/** Push state to ONE overlay, filtering badges to those on its display. */
+function pushBadgeStateForDisplay(display, win) {
+  if (!win || win.isDestroyed()) return;
   const data = store.get('appData') || {};
-  const bounds = getVirtualDesktopBounds();
-  const badges = buildBadgePayload(data);
-  badgeOverlay.webContents.send('badges-state', {
-    badges,
-    overlayOrigin: { x: bounds.x, y: bounds.y },
-    overlaySize:   { width: bounds.width, height: bounds.height },
+  const allBadges = buildBadgePayload(data);
+
+  // Membership rule:
+  //   - badge whose stored screen-coord lies inside this display → show here
+  //   - badge whose coord is off every display ("stranded") → show on primary
+  //     so the user can still see + drag it back to where they want.
+  const primaryId = getScreen().getPrimaryDisplay().id;
+  const myBadges = allBadges.filter(b => {
+    const home = findDisplayForPoint(b.x, b.y);
+    if (home) return home.id === display.id;
+    return display.id === primaryId;
+  });
+
+  win.webContents.send('badges-state', {
+    badges:        myBadges,
+    overlayOrigin: { x: display.bounds.x, y: display.bounds.y },
+    overlaySize:   { width: display.bounds.width, height: display.bounds.height },
   });
 }
 
-/** Destroy the overlay if it exists (called when no badges remain). */
-function destroyBadgeOverlay() {
-  if (badgeOverlay && !badgeOverlay.isDestroyed()) {
-    badgeOverlay.destroy();
+/** Push state to every overlay. Called whenever the badges store mutates. */
+function pushBadgeStateAll() {
+  if (badgeOverlays.size === 0) return;
+  const displays = getScreen().getAllDisplays();
+  for (const [displayId, win] of badgeOverlays) {
+    const display = displays.find(d => d.id === displayId);
+    if (!display) continue;
+    pushBadgeStateForDisplay(display, win);
   }
-  badgeOverlay = null;
 }
 
-function createBadgeOverlay() {
-  if (badgeOverlay && !badgeOverlay.isDestroyed()) return badgeOverlay;
-  const bounds = getVirtualDesktopBounds();
+/** Re-export under the legacy name so the surrounding mutateBadges /
+ *  display-event hooks don't need to know about the multi-overlay split. */
+function pushBadgeState() { pushBadgeStateAll(); }
 
-  // Dedicated session so Chromium doesn't contend over cache with the main
-  // window (same lesson as floating orb).
-  const badgeSession = session.fromPartition('badge-overlay-memory');
+function destroyAllBadgeOverlays() {
+  for (const win of badgeOverlays.values()) {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+  badgeOverlays.clear();
+}
+
+function createBadgeOverlayForDisplay(display) {
+  if (badgeOverlays.has(display.id)) return badgeOverlays.get(display.id);
+
+  // Per-display session partition — same isolation rationale as the
+  // single-overlay design (avoid cache contention with mainWindow), but
+  // we also key by display.id so the few KB of overlay state doesn't
+  // collide across displays.
+  const badgeSession = session.fromPartition(`badge-overlay-${display.id}`);
   try {
     badgeSession.clearCache();
     badgeSession.clearStorageData({
@@ -1159,27 +1214,19 @@ function createBadgeOverlay() {
     }).catch(() => {});
   } catch (_) {}
 
-  badgeOverlay = new BrowserWindow({
-    x: bounds.x, y: bounds.y,
-    width: bounds.width, height: bounds.height,
+  const win = new BrowserWindow({
+    x: display.bounds.x, y: display.bounds.y,
+    width: display.bounds.width, height: display.bounds.height,
     frame: false, transparent: true, resizable: false,
     // Some Windows configurations briefly composite a solid window
-    // background before the transparent layer engages, especially on
-    // first creation. Setting backgroundColor to a fully-transparent
-    // value (00 alpha) forces the compositor to skip that solid pass,
-    // avoiding the "huge translucent rectangle flashes for a frame"
-    // perception users hit as "BIG initially, then snaps to small".
+    // background before the transparent layer engages. backgroundColor
+    // 00 alpha forces the compositor to skip that solid pass.
     backgroundColor: '#00000000',
     alwaysOnTop: true, skipTaskbar: true,
     hasShadow: false,
     focusable: false,   // never steal focus — badges are gestural only
     minimizable: false, maximizable: false, fullscreenable: false,
     show: false,
-    // Force layout / paint even while hidden so the renderer's
-    // useEffect runs and we can request state BEFORE we make the
-    // window visible. Otherwise some Electron builds defer all
-    // renderer work until the window is shown — and we end up
-    // showing it for one frame of "loading" before content appears.
     paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload-badges.js'),
@@ -1191,69 +1238,105 @@ function createBadgeOverlay() {
   });
 
   // Click-through by default; renderer flips off while hovering a badge.
-  badgeOverlay.setIgnoreMouseEvents(true, { forward: true });
-
-  // Stay above fullscreen apps on every workspace so badges act like a global HUD.
-  badgeOverlay.setAlwaysOnTop(true, 'screen-saver');
-  badgeOverlay.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+  win.setIgnoreMouseEvents(true, { forward: true });
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
   if (rendererUrl) {
-    badgeOverlay.loadURL(`${rendererUrl}/badges.html`);
+    win.loadURL(`${rendererUrl}/badges.html`);
   } else {
-    badgeOverlay.loadFile(path.join(__dirname, 'frontend', 'dist', 'badges.html'));
+    win.loadFile(path.join(__dirname, 'frontend', 'dist', 'badges.html'));
   }
 
-  // Show timing — `ready-to-show` fires once content is painted at
-  // least off-screen. We push state BUT defer the `showInactive()`
-  // until the renderer requests state (which happens inside its
-  // mount effect). That way the visible frame already contains the
-  // hydrated badge layout — no flash of empty overlay or default
-  // placement.
-  let firstShown = false;
-  const revealOnce = () => {
-    if (firstShown) return;
-    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
-    firstShown = true;
-    badgeOverlay.showInactive();
-  };
-  badgeOverlay.once('ready-to-show', () => {
-    pushBadgeState();
-    // Fallback: if the renderer's request never arrives within
-    // 800 ms (older Electron builds, slow disk on cold start),
-    // reveal anyway so the user isn't left wondering.
-    setTimeout(revealOnce, 800);
+  // Reveal pattern: push state in `ready-to-show`, then show after a tiny
+  // delay so React's first render commits with hydrated badge data — no
+  // flash of empty overlay. The previous "wait for renderer's
+  // requestState" handshake was a per-window event we can't easily route
+  // when there are N overlays (ipcMain.once would race the first sender),
+  // so a 250 ms timeout-based reveal is simpler and visually equivalent.
+  win.once('ready-to-show', () => {
+    pushBadgeStateForDisplay(display, win);
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.showInactive();
+    }, 250);
   });
-  // The renderer's mount effect calls badges.requestState(); main's
-  // `badges-request-state` handler calls pushBadgeState() AND we
-  // also reveal here. By the time the user sees the window, the
-  // first state has already been applied to the React tree.
-  ipcMain.once('badges-request-state', revealOnce);
 
-  badgeOverlay.on('closed', () => { badgeOverlay = null; });
-
-  return badgeOverlay;
+  win.on('closed', () => { badgeOverlays.delete(display.id); });
+  badgeOverlays.set(display.id, win);
+  return win;
 }
 
-/** Ensure the overlay reflects current state: alive iff any badges exist. */
+/** Ensure overlays reflect current state: one per display when any badge
+ *  exists, none when there are no badges. Also reanchors stranded badges
+ *  whose stored coords no longer fall on any visible display. */
 function syncBadgeOverlay() {
   const data = store.get('appData') || {};
   const has  = Array.isArray(data.floatingBadges) && data.floatingBadges.length > 0;
-  if (has) {
-    if (!badgeOverlay || badgeOverlay.isDestroyed()) {
-      createBadgeOverlay();
-    } else {
-      // Overlay dimensions may be stale if display config changed.
-      const b = getVirtualDesktopBounds();
-      const cur = badgeOverlay.getBounds();
-      if (cur.x !== b.x || cur.y !== b.y || cur.width !== b.width || cur.height !== b.height) {
-        badgeOverlay.setBounds(b);
-      }
-      pushBadgeState();
-    }
-  } else {
-    destroyBadgeOverlay();
+
+  if (!has) {
+    destroyAllBadgeOverlays();
+    return;
   }
+
+  // Rescue stranded badges before we do anything else, so the first
+  // state push has clean coords.
+  ensureBadgePositionsSane();
+
+  const displays = getScreen().getAllDisplays();
+  const wantedIds = new Set(displays.map(d => d.id));
+
+  // Remove overlays for displays that no longer exist (monitor unplugged).
+  for (const [id, win] of [...badgeOverlays]) {
+    if (!wantedIds.has(id)) {
+      if (!win.isDestroyed()) win.destroy();
+      badgeOverlays.delete(id);
+    }
+  }
+
+  // Create / reposition overlays for every current display.
+  for (const display of displays) {
+    const existing = badgeOverlays.get(display.id);
+    if (!existing || existing.isDestroyed()) {
+      createBadgeOverlayForDisplay(display);
+    } else {
+      const cur = existing.getBounds();
+      const b = display.bounds;
+      if (cur.x !== b.x || cur.y !== b.y || cur.width !== b.width || cur.height !== b.height) {
+        existing.setBounds(b);
+      }
+      pushBadgeStateForDisplay(display, existing);
+    }
+  }
+}
+
+/** Walk the badges list, reanchor any whose coord is on no visible display.
+ *  Persists if anything changed so the next reload keeps the corrected
+ *  positions instead of stranding them again. */
+function ensureBadgePositionsSane() {
+  const data = store.get('appData') || {};
+  const list = Array.isArray(data.floatingBadges) ? data.floatingBadges : [];
+  if (list.length === 0) return;
+
+  let changed = false;
+  const next = list.map(b => {
+    const fixed = sanitizeBadgePosition(b);
+    if (fixed !== b) changed = true;
+    return fixed;
+  });
+  if (!changed) return;
+
+  data.floatingBadges = next;
+  // Also update the active preset's mirror — same dual-write pattern as
+  // mutateBadges (top-level data + presets[active].floatingBadges).
+  const activeId = data.activePresetId;
+  const presets = Array.isArray(data.presets) ? data.presets : [];
+  const activeIdx = presets.findIndex(p => p && p.id === activeId);
+  if (activeIdx >= 0) {
+    data.presets = presets.map((p, i) => i === activeIdx ? { ...p, floatingBadges: next } : p);
+  }
+  store.set('appData', data);
+  sendSafe('badges-updated', next);
 }
 
 /** Mutate the appData blob with a callback, persist, and refresh the overlay.
@@ -2690,17 +2773,31 @@ function registerIpcHandlers() {
    *
    * Cheap to handle multiple times if the renderer over-asks.
    */
-  ipcMain.on('badges-request-state', () => {
-    pushBadgeState();
+  /** Renderer's mount effect calls this; respond with state for THAT
+   *  overlay's display only. (Each overlay sees only its share of the
+   *  badges — see pushBadgeStateForDisplay.) */
+  ipcMain.on('badges-request-state', (e) => {
+    const displays = getScreen().getAllDisplays();
+    for (const [displayId, win] of badgeOverlays) {
+      if (win.webContents === e.sender) {
+        const display = displays.find(d => d.id === displayId);
+        if (display) pushBadgeStateForDisplay(display, win);
+        return;
+      }
+    }
   });
 
-  /** Overlay flips its click-through mode as the pointer enters/leaves badges. */
-  ipcMain.on('badges-set-capture', (_e, capture) => {
-    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
-    if (capture) {
-      badgeOverlay.setIgnoreMouseEvents(false);
-    } else {
-      badgeOverlay.setIgnoreMouseEvents(true, { forward: true });
+  /** Overlay flips its click-through mode as the pointer enters/leaves
+   *  badges. Routed by sender so each overlay's capture toggle is
+   *  independent — we don't enable clicks across all displays just
+   *  because the user is hovering a badge on one of them. */
+  ipcMain.on('badges-set-capture', (e, capture) => {
+    for (const win of badgeOverlays.values()) {
+      if (win.webContents === e.sender) {
+        if (capture) win.setIgnoreMouseEvents(false);
+        else win.setIgnoreMouseEvents(true, { forward: true });
+        return;
+      }
     }
   });
 
@@ -2712,9 +2809,15 @@ function registerIpcHandlers() {
     return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
   });
 
-  /** Overlay right-click → show a native context menu anchored at cursor. */
-  ipcMain.on('badges-context-menu', (_e, badgeId) => {
-    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+  /** Overlay right-click → show a native context menu anchored at cursor.
+   *  Pop the menu on the sending overlay (i.e. the display the badge is
+   *  on) — `menu.popup({ window })` requires a real BrowserWindow ref. */
+  ipcMain.on('badges-context-menu', (e, badgeId) => {
+    let senderWin = null;
+    for (const win of badgeOverlays.values()) {
+      if (win.webContents === e.sender) { senderWin = win; break; }
+    }
+    if (!senderWin) return;
     const menu = Menu.buildFromTemplate([
       {
         label: '실행',
@@ -2743,7 +2846,7 @@ function registerIpcHandlers() {
         click: () => mutateBadges(() => []),
       },
     ]);
-    menu.popup({ window: badgeOverlay });
+    menu.popup({ window: senderWin });
   });
 
   // ── 12k. Extension Bridge ────────────────────────────────────────
@@ -2931,21 +3034,27 @@ app.whenReady().then(() => {
   //   2. skip the sync entirely when the virtual desktop bounds didn't
   //      actually change (most spurious metrics-changed events).
   let _displaySyncTimer = null;
-  let _lastVDB = null;
+  let _lastDisplaysSig = '';
+  const computeDisplaysSig = () => {
+    // Per-display signature: id + bounds + scale. The previous union-only
+    // check missed cases where two displays swapped positions or one
+    // changed DPI without moving — both relevant to per-display overlays
+    // because each window needs to track its own display's bounds.
+    const ds = getScreen().getAllDisplays();
+    return ds.map(d => `${d.id}|${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}|${d.scaleFactor}`).join(';');
+  };
   const scheduleDisplaySync = () => {
     if (_displaySyncTimer) clearTimeout(_displaySyncTimer);
     _displaySyncTimer = setTimeout(() => {
       _displaySyncTimer = null;
-      const vdb = getVirtualDesktopBounds();
-      const same = _lastVDB
-        && _lastVDB.x === vdb.x && _lastVDB.y === vdb.y
-        && _lastVDB.width === vdb.width && _lastVDB.height === vdb.height;
-      _lastVDB = vdb;
-      if (!same) syncBadgeOverlay();
+      const sig = computeDisplaysSig();
+      if (sig === _lastDisplaysSig) return;
+      _lastDisplaysSig = sig;
+      syncBadgeOverlay();
     }, 250);
   };
-  screen.on('display-added',           () => { _lastVDB = null; scheduleDisplaySync(); });
-  screen.on('display-removed',         () => { _lastVDB = null; scheduleDisplaySync(); });
+  screen.on('display-added',           () => { _lastDisplaysSig = ''; scheduleDisplaySync(); });
+  screen.on('display-removed',         () => { _lastDisplaysSig = ''; scheduleDisplaySync(); });
   screen.on('display-metrics-changed', scheduleDisplaySync);
 
   // ── Auto-updater (packaged builds only) ──────────────────────────
