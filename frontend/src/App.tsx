@@ -23,7 +23,7 @@ import { ItemWizard } from './components/ItemWizard';
 import { MemoEditor } from './components/MemoEditor';
 import { MemoTrashDialog } from './components/MemoTrashDialog';
 import { MemoExpiringBanner } from './components/MemoExpiringBanner';
-import { memoIsExpiringSoon, memoBodyToPlain } from './lib/memoUtils';
+import { memoIsExpiringSoon, memoBodyToPlain, htmlToMarkdown, htmlHasStructure } from './lib/memoUtils';
 import { NotificationBell } from './components/NotificationBell';
 import type { AppNotification } from './types';
 import { runTopEscape } from './lib/escapeStack';
@@ -867,7 +867,7 @@ export default function App() {
   // hex) flow through ItemDialog's auto-detect → no banner needed.
   // Only "text" gets the banner because it's the one type with two
   // genuinely different commit paths.
-  const [clipTextPrompt, setClipTextPrompt] = useState<{ value: string; label: string } | null>(null);
+  const [clipTextPrompt, setClipTextPrompt] = useState<{ value: string; label: string; html?: string } | null>(null);
   const lastClipTextRef = useRef('');
   const dismissedTextRef = useRef<Set<string>>(new Set());
   const [itemDialogStartAdvanced, setItemDialogStartAdvanced] = useState(false);
@@ -1247,7 +1247,12 @@ export default function App() {
       if (r.value === lastClipTextRef.current) return;
       if (dismissedTextRef.current.has(r.value)) return;
       lastClipTextRef.current = r.value;
-      setClipTextPrompt({ value: r.value, label: r.label ?? r.value });
+      // Stash the HTML twin (when present) at prompt time — when
+      // the user clicks "메모로" we use it to reconstruct proper
+      // markdown structure (## / ** / -). By the time the click
+      // fires the OS clipboard may have been replaced, so we
+      // capture eagerly.
+      setClipTextPrompt({ value: r.value, label: r.label ?? r.value, html: r.html });
     };
     const onFocus = () => check();
     window.addEventListener('focus', onFocus);
@@ -1280,12 +1285,23 @@ export default function App() {
 
   const handleClipTextToMemo = useCallback(() => {
     if (!clipTextPrompt) return;
-    const { value } = clipTextPrompt;
+    const { value, html } = clipTextPrompt;
     const targetSpaceId = data.spaces[0]?.id;
     setClipTextPrompt(null);
     dismissedTextRef.current.add(value);
     if (!targetSpaceId) return;
-    const newItem = store.addMemo(targetSpaceId, value);
+    // When the source had structural HTML (GPT/Notion paste), use
+    // the html→markdown converter so the resulting memo body
+    // already has proper `## ` / `**...**` / `- ` syntax. The
+    // textarea-paste path can't access html (textarea strips it),
+    // but at clipboard-prompt time we still have it. Plain-text
+    // clipboard falls through to verbatim save.
+    let body = value;
+    if (html && htmlHasStructure(html)) {
+      const converted = htmlToMarkdown(html).trim();
+      if (converted) body = converted;
+    }
+    const newItem = store.addMemo(targetSpaceId, body);
     if (newItem) {
       // Use the in-house toast queue (same chrome as every other
       // app toast) — sonner had a different look + position which

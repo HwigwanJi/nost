@@ -76,7 +76,7 @@ export interface ElectronAPI {
   onMonitorsChanged: (cb: (monitors: Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>) => void) => void;
   getRecentItems: () => Promise<Array<{ title: string; value: string; type: 'folder' | 'app'; lastAccessed: string }>>;
   readClipboard: () => Promise<string>;
-  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'hex' | 'text' | 'none'; value?: string; label?: string }>;
+  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'hex' | 'text' | 'none'; value?: string; label?: string; html?: string }>;
   checkWindowsAlive: (titles: string[]) => Promise<Record<string, boolean>>;
   checkFileExists: (filePath: string) => Promise<boolean>;
   checkItemsForTile: (items: { type: string; value: string; title: string }[]) => Promise<Array<{ idx: number; alive: boolean; note: string }>>;
@@ -132,7 +132,7 @@ export interface ElectronAPI {
   /** OS save-as dialog flow. User picks the location; we write the
    *  file. Caller should NOT delete the memo on success — this is a
    *  snapshot, not a move. */
-  saveMemoAs: (args: { body: string; slug: string }) =>
+  saveMemoAs: (args: { body: string; slug: string; format?: 'txt' | 'md' }) =>
     Promise<{ success: boolean; filePath?: string; reason?: string }>;
   /** Write to temp + shell-open in the user's default text editor.
    *  Mapped to the editor's "메모장에서 열기" button. */

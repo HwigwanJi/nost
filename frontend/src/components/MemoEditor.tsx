@@ -32,7 +32,6 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { toast as sonnerToast } from 'sonner';
 import { Icon } from '@/components/ui/Icon';
 import type { LauncherItem } from '../types';
 import { electronAPI } from '../electronBridge';
@@ -64,7 +63,7 @@ interface MemoEditorProps {
   onTrash: () => void;
   /** Called by the empty-on-close auto-trash logic. */
   onAutoDeleteIfEmpty: () => void;
-  showToast?: (msg: string) => void;
+  showToast?: (msg: string, opts?: { actions?: Array<{ label: string; icon: string; onClick: () => void }>; duration?: number }) => void;
 }
 
 const AUTOSAVE_DEBOUNCE_MS = 200;
@@ -447,7 +446,7 @@ export function MemoEditor({
    *      tool" in Photoshop terms — the slot is now bound to that
    *      tool but you haven't applied it yet.
    *
-   *   2. runActiveCleanupTool — clicking the main toolbar button
+   *   2. runCleanupTool — clicking the main toolbar button
    *      runs whatever tool is currently armed and writes the
    *      cleaned text to the clipboard. This is "stroking the
    *      canvas" in Photoshop terms.
@@ -459,6 +458,10 @@ export function MemoEditor({
    * preview the icon to confirm the right tool is loaded.
    */
   const selectCleanupTool = useCallback((id: CleanupToolId) => {
+    // Arming side-effect: persists which tool sits in the slot
+    // across sessions so muscle memory builds. The actual run is
+    // dispatched from the caller (palette click → arm + run; slot
+    // click → run only).
     setLastCleanupTool(id);
     try { localStorage.setItem(CLEANUP_LS_KEY, id); } catch { /* blocked storage */ }
     setCleanupMenuOpen(false);
@@ -466,8 +469,9 @@ export function MemoEditor({
 
   const activeCleanupTool = cleanupTools.find(t => t.id === lastCleanupTool) ?? cleanupTools[0];
 
-  const runActiveCleanupTool = useCallback(async () => {
-    const tool = activeCleanupTool;
+  const runCleanupTool = useCallback(async (toolId?: CleanupToolId) => {
+    const id = toolId ?? lastCleanupTool;
+    const tool = cleanupTools.find(t => t.id === id) ?? cleanupTools[0];
     const cleaned = tool.run(body);
     if (!cleaned.trim()) {
       showToast?.('정리할 내용이 없어요');
@@ -485,9 +489,15 @@ export function MemoEditor({
       }
       const before = body;
       setBody(cleaned);
-      sonnerToast(`본문에 적용됨 — ${tool.label}`, {
-        description: '되돌리기를 누르면 이전 상태로 복구됩니다',
-        action: { label: '되돌리기', onClick: () => setBody(before) },
+      // Use the in-house toast queue so the visual matches every
+      // other toast in the app (sonner had a different chrome and
+      // bottom-positioned look that the user flagged as off-brand).
+      showToast?.(`본문에 적용됨 — ${tool.label}`, {
+        actions: [{
+          label: '되돌리기',
+          icon: 'undo',
+          onClick: () => setBody(before),
+        }],
         duration: 6000,
       });
     } else {
@@ -499,16 +509,68 @@ export function MemoEditor({
       showToast?.(tool.toast);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, activeCleanupTool, cleanupMode, showToast]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body, lastCleanupTool, cleanupMode, showToast]);
 
-  /** 내보내기 = OS save-as dialog. Snapshot to a real file the user
-   *  picks. Memo stays — different from the previous "open in
-   *  notepad + delete card" flow which the user flagged as wrong. */
-  const handleExport = async () => {
+  /** Palette click handler: arm (icon swap, persisted) + run in
+   *  one gesture. The user explicitly asked for this — pure
+   *  Adobe-style "arm only" felt awkward because the dominant
+   *  case is "use this tool RIGHT NOW". The slot still runs
+   *  with the armed tool on subsequent slot-clicks (no menu). */
+  const armAndRunCleanupTool = useCallback((id: CleanupToolId) => {
+    selectCleanupTool(id);
+    void runCleanupTool(id);
+  }, [selectCleanupTool, runCleanupTool]);
+
+  // ── Save tool palette (mirrors the cleanup palette pattern) ──
+  // Two-tool slot: export the memo as a text file (markdown markers
+  // stripped) or as a markdown file (verbatim body). Last-used tool
+  // persists; palette click arms + runs in one gesture.
+  type SaveToolId = 'txt' | 'md';
+  const SAVE_LS_KEY = 'nost.memo.lastSaveTool';
+  const [lastSaveTool, setLastSaveTool] = useState<SaveToolId>(() => {
+    try {
+      const saved = localStorage.getItem(SAVE_LS_KEY) as SaveToolId | null;
+      if (saved === 'txt' || saved === 'md') return saved;
+    } catch { /* fall through */ }
+    return 'txt'; // safer default — the legacy handler defaulted to txt
+  });
+  const [saveMenuOpen, setSaveMenuOpen] = useState(false);
+  const saveHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const saveTools: Array<{
+    id: SaveToolId;
+    label: string;
+    hint: string;
+    icon: string;
+    transform: (s: string) => string;
+  }> = [
+    {
+      id: 'txt',
+      label: '텍스트로 저장 (.txt)',
+      hint: '마크다운 마커·말머리표 제거 후 plain text',
+      icon: 'description',
+      transform: memoBodyToPlain,
+    },
+    {
+      id: 'md',
+      label: '마크다운으로 저장 (.md)',
+      hint: '본문을 그대로 .md 파일로',
+      icon: 'code',
+      transform: (s: string) => s,
+    },
+  ];
+
+  const activeSaveTool = saveTools.find(t => t.id === lastSaveTool) ?? saveTools[0];
+
+  const runSaveTool = useCallback(async (toolId?: SaveToolId) => {
+    const id = toolId ?? lastSaveTool;
+    const tool = saveTools.find(t => t.id === id) ?? saveTools[0];
     const title = memoTitleFromBody(body);
     const slug = slugifyTitle(title) || '메모';
+    const transformed = tool.transform(body);
     try {
-      const result = await electronAPI.saveMemoAs({ body, slug });
+      const result = await electronAPI.saveMemoAs({ body: transformed, slug, format: tool.id });
       if (result.success && result.filePath) {
         showToast?.(`저장됨 — ${result.filePath.split(/[/\\]/).pop()}`);
       } else if (result.reason && result.reason !== 'canceled') {
@@ -517,7 +579,15 @@ export function MemoEditor({
     } catch (e) {
       showToast?.('저장 실패: ' + String(e));
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body, lastSaveTool, showToast]);
+
+  const armAndRunSaveTool = useCallback((id: SaveToolId) => {
+    setLastSaveTool(id);
+    try { localStorage.setItem(SAVE_LS_KEY, id); } catch { /* blocked */ }
+    setSaveMenuOpen(false);
+    void runSaveTool(id);
+  }, [runSaveTool]);
 
   /** 메모장에서 열기 — write to userData/memos and shell-open. The
    *  memo card stays; this is a *view*, not a move. Separate from
@@ -730,7 +800,7 @@ export function MemoEditor({
               <HeaderBtn
                 icon={activeCleanupTool.icon}
                 title={`정리 — ${activeCleanupTool.label}\n${cleanupMode === 'inPlace' ? '클릭: 본문에 적용 · 호버: 다른 도구 / 모드 선택' : '클릭: 클립보드에 복사 · 호버: 다른 도구 / 모드 선택'}`}
-                onClick={runActiveCleanupTool}
+                onClick={() => runCleanupTool()}
               />
               {cleanupMode === 'inPlace' && (
                 <span
@@ -850,7 +920,7 @@ export function MemoEditor({
                       key={tool.id}
                       type="button"
                       role="menuitem"
-                      onClick={(e) => { e.stopPropagation(); selectCleanupTool(tool.id); }}
+                      onClick={(e) => { e.stopPropagation(); armAndRunCleanupTool(tool.id); }}
                       style={{
                         display: 'flex', alignItems: 'flex-start', gap: 10,
                         padding: '8px 10px',
@@ -891,7 +961,7 @@ export function MemoEditor({
                   marginTop: 2,
                   lineHeight: 1.5,
                 }}>
-                  도구를 누르면 아이콘이 바뀝니다 · 그 다음 버튼을 클릭해 실행
+                  도구를 누르면 즉시 실행 · 슬롯 아이콘은 마지막에 쓴 도구로 바뀝니다
                   {cleanupMode === 'inPlace' && (
                     <div style={{ color: 'var(--color-destructive, #f59e0b)', fontWeight: 600, marginTop: 2 }}>
                       ⚠ 본문에 적용 모드 — 토스트의 '되돌리기'로 복구 가능
@@ -907,11 +977,100 @@ export function MemoEditor({
             onClick={onTogglePin}
             active={pinned}
           />
-          <HeaderBtn
-            icon="save_alt"
-            title="다른 이름으로 저장"
-            onClick={handleExport}
-          />
+          {/* ── Save tool palette ─────────────────────────────
+              Same Adobe-style flow as the cleanup palette: hover
+              opens a menu of save formats, click a menu entry
+              both arms (icon swap + persist) AND runs. The slot
+              icon reflects whichever format was last used. */}
+          <div
+            style={{ position: 'relative', display: 'flex' }}
+            onMouseEnter={() => {
+              if (saveHoverTimerRef.current) clearTimeout(saveHoverTimerRef.current);
+              saveHoverTimerRef.current = setTimeout(() => setSaveMenuOpen(true), 220);
+            }}
+            onMouseLeave={() => {
+              if (saveHoverTimerRef.current) clearTimeout(saveHoverTimerRef.current);
+              saveHoverTimerRef.current = setTimeout(() => setSaveMenuOpen(false), 200);
+            }}
+          >
+            <HeaderBtn
+              icon={activeSaveTool.icon}
+              title={`저장 — ${activeSaveTool.label}\n클릭: 즉시 실행 · 호버: 다른 형식 선택`}
+              onClick={() => runSaveTool()}
+            />
+            {saveMenuOpen && (
+              <div
+                role="menu"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  right: 0,
+                  minWidth: 240,
+                  padding: 4,
+                  background: 'var(--bg-rgba)',
+                  border: '1px solid var(--border-rgba)',
+                  borderRadius: 10,
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.18)',
+                  zIndex: 100,
+                  backdropFilter: 'blur(18px)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 1,
+                  animation: 'memoCleanupMenuIn 0.15s ease',
+                }}
+              >
+                <div style={{
+                  padding: '6px 10px 4px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: 'var(--text-dim)',
+                  letterSpacing: 0.4,
+                  textTransform: 'uppercase',
+                }}>
+                  저장 형식
+                </div>
+                {saveTools.map(tool => {
+                  const isActive = tool.id === lastSaveTool;
+                  return (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => { e.stopPropagation(); armAndRunSaveTool(tool.id); }}
+                      style={{
+                        display: 'flex', alignItems: 'flex-start', gap: 10,
+                        padding: '8px 10px',
+                        background: isActive ? 'var(--accent-dim)' : 'transparent',
+                        border: 'none', borderRadius: 7,
+                        cursor: 'pointer', fontFamily: 'inherit',
+                        textAlign: 'left',
+                        transition: 'background 0.1s',
+                      }}
+                      onMouseEnter={e => {
+                        if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-hover)';
+                      }}
+                      onMouseLeave={e => {
+                        if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+                      }}
+                    >
+                      <Icon name={tool.icon} size={16} color={isActive ? 'var(--accent)' : 'var(--text-muted)'} style={{ marginTop: 1, flexShrink: 0 }} />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: isActive ? 'var(--accent)' : 'var(--text-color)' }}>
+                          {tool.label}
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.4 }}>
+                          {tool.hint}
+                        </span>
+                      </div>
+                      {isActive && (
+                        <Icon name="check" size={13} color="var(--accent)" style={{ marginLeft: 'auto', flexShrink: 0 }} />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
           <HeaderBtn
             icon="open_in_new"
             title="메모장에서 열기"

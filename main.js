@@ -2186,18 +2186,30 @@ function registerIpcHandlers() {
    */
   ipcMain.handle('memo-save-as', async (_e, args) => {
     try {
-      const { body, slug } = (args && typeof args === 'object') ? args : {};
+      const { body, slug, format } = (args && typeof args === 'object') ? args : {};
       if (typeof body !== 'string') return { success: false, reason: 'invalid-body' };
       const baseSlug = (typeof slug === 'string' && slug.trim()) ? slug.trim() : '메모';
       const safeSlug = baseSlug.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 60) || '메모';
+      const isMarkdown = format === 'md';
+      const ext = isMarkdown ? 'md' : 'txt';
+      // Filter order matters: the FIRST filter is the default selection
+      // in the dialog. Reorder by `format` so the user's chosen
+      // tool drives both the default extension and the filter list.
+      const filters = isMarkdown
+        ? [
+            { name: '마크다운',     extensions: ['md', 'markdown'] },
+            { name: '텍스트 파일', extensions: ['txt'] },
+            { name: '모든 파일',    extensions: ['*'] },
+          ]
+        : [
+            { name: '텍스트 파일', extensions: ['txt'] },
+            { name: '마크다운',     extensions: ['md', 'markdown'] },
+            { name: '모든 파일',    extensions: ['*'] },
+          ];
       const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
         title: '메모 저장',
-        defaultPath: `${safeSlug}.txt`,
-        filters: [
-          { name: '텍스트 파일', extensions: ['txt'] },
-          { name: '마크다운',     extensions: ['md', 'markdown'] },
-          { name: '모든 파일',    extensions: ['*'] },
-        ],
+        defaultPath: `${safeSlug}.${ext}`,
+        filters,
       });
       if (canceled || !filePath) return { success: false, reason: 'canceled' };
       // BOM keeps Win10 Notepad happy on Korean .txt; harmless for .md.
@@ -2255,6 +2267,13 @@ function registerIpcHandlers() {
     let text = clipboard.readText().trim();
     if (!text) text = await readClipboardFileDrop();
     if (!text) return { type: 'none' };
+    // The HTML payload (when present) is what gives the renderer
+    // a chance to faithfully reconstruct markdown structure for
+    // pasted GPT/Notion content. We pass it through unchanged
+    // alongside the plain twin; the renderer decides whether to
+    // use it. Empty string when the clipboard has no HTML format.
+    let html = '';
+    try { html = clipboard.readHTML() || ''; } catch { /* some formats throw */ }
 
     // URL
     if (/^https?:\/\//i.test(text)) {
@@ -2310,7 +2329,7 @@ function registerIpcHandlers() {
         const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) ?? text;
         const trimmed = firstLine.trim();
         const label = trimmed.length > 40 ? trimmed.slice(0, 40) + '…' : trimmed;
-        return { type: 'text', value: text, label };
+        return { type: 'text', value: text, label, html };
       }
     }
 
