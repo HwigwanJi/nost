@@ -24,6 +24,8 @@ import { MemoEditor } from './components/MemoEditor';
 import { MemoTrashDialog } from './components/MemoTrashDialog';
 import { MemoExpiringBanner } from './components/MemoExpiringBanner';
 import { memoIsExpiringSoon } from './lib/memoUtils';
+import { NotificationBell } from './components/NotificationBell';
+import type { AppNotification } from './types';
 import { ScanDialog } from './components/ScanDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
@@ -779,6 +781,11 @@ export default function App() {
   // doesn't reappear today). Keyed by date so it auto-resets next day.
   const [bannerDismissedYmd, setBannerDismissedYmd] = useState<string | null>(null);
   const [memoTrashOpen, setMemoTrashOpen] = useState(false);
+  // Bell-icon popover open state. Lives at App level so the bell button
+  // (in the title bar) and the panel (rendered via portal) share the
+  // same toggle. Click anywhere outside the panel closes it via the
+  // backdrop in NotificationBell.
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
 
   // Memoise the options object — the inner hook reads it via reference
   // checks, and a fresh `{}` every render forced re-derivation of every
@@ -1252,7 +1259,7 @@ export default function App() {
   }, [extConnected]);
 
   // ── Settings initial tab ──────────────────────────────────
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'data' | undefined>(undefined);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | undefined>(undefined);
   const openSettingsTab = (tab: 'general' | 'monitor' | 'docs' | 'extension' | 'data') => {
     setSettingsInitialTab(tab);
     setDialog('settings');
@@ -1608,6 +1615,55 @@ export default function App() {
   const handleExtendMemoTtl = useCallback((spaceId: string, itemId: string) => {
     store.extendMemo(spaceId, itemId);
     showToast('수명을 다시 채웠어요');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store]);
+
+  /**
+   * Notification action dispatcher — central switch for all bell-row
+   * action buttons. Adding a new action surface = add an `intent`
+   * literal in types.ts + a case here. Auto-dismisses the notification
+   * after the action fires (the user has acted on it; keeping it in
+   * the panel is just clutter).
+   */
+  const handleNotificationAction = useCallback((n: AppNotification) => {
+    if (!n.action) return;
+    switch (n.action.intent) {
+      case 'install-update':
+        electronAPI.installUpdate();
+        break;
+      case 'check-update':
+        electronAPI.checkForUpdates().catch(() => { /* surface error in toast already */ });
+        break;
+      case 'open-billing':
+        // Reusing the paywall as the billing surface for v1 — when a
+        // dedicated billing page lands, swap this in.
+        openPaywall('generic');
+        break;
+      case 'open-tour':
+        // payload = tour id; falls through to the tour engine.
+        if (n.action.payload) {
+          // Lightweight: we don't have a public start-by-id API, so
+          // signal via a custom event the tour overlay listens for.
+          window.dispatchEvent(new CustomEvent('nost:start-tour', { detail: { id: n.action.payload } }));
+        }
+        break;
+      case 'open-settings': {
+        const tab = (n.action.payload as 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | undefined) ?? 'general';
+        setSettingsInitialTab(tab);
+        setDialog('settings');
+        break;
+      }
+      case 'open-trash':
+        setMemoTrashOpen(true);
+        break;
+      case 'noop':
+      default:
+        break;
+    }
+    // The action consumed the notification — clear it.
+    store.dismissNotification(n.id);
+    // Close panel for actions that navigate elsewhere.
+    setNotifPanelOpen(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
 
@@ -2456,6 +2512,15 @@ export default function App() {
     electronAPI.onUpdateAvailable((info) => {
       setUpdateNewVer(info.version);
       showToast(`v${info.version} 다운로드 시작...`, { duration: 2500 });
+      // Also surface in the bell so the user can find it later. The
+      // toast is transient (2.5s) — the notification persists until
+      // the user dismisses or the install completes.
+      store.addNotification({
+        kind: 'update',
+        title: `새 버전 v${info.version}`,
+        body: '다운로드 중이에요. 끝나면 알려드릴게요.',
+        dedupKey: `update-available-${info.version}`,
+      });
     });
     electronAPI.onUpdateDownloadProgress((info) => {
       setDownloadProgress(info ? info.percent : null);
@@ -2468,6 +2533,16 @@ export default function App() {
       showToast(`v${info.version} 다운로드 완료`, {
         duration: 10000,
         actions: [{ label: '지금 설치', icon: 'restart_alt', onClick: () => electronAPI.installUpdate() }],
+      });
+      // Replace the "downloading" notification with an "install ready"
+      // one. Same dedupKey on the v-pair, so the panel doesn't show
+      // both rows for the same version.
+      store.addNotification({
+        kind: 'update',
+        title: `v${info.version} 설치 준비 완료`,
+        body: '재시작하면 새 버전으로 업데이트됩니다.',
+        action: { label: '지금 설치', intent: 'install-update' },
+        dedupKey: `update-available-${info.version}`,
       });
     });
 
@@ -2911,6 +2986,22 @@ export default function App() {
                 a tool is active (CSS in index.css picks this up). Close
                 stays interactive so the user can always dismiss the window. */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+              {/* Notification bell — placed before the gear so the
+                  visual rhythm reads "things → preferences → close".
+                  data-mode-dim so it's inert during tool modes (the
+                  user shouldn't be opening notifications while in the
+                  middle of a node-build). */}
+              <div data-mode-dim="true">
+                <NotificationBell
+                  notifications={store.notifications}
+                  open={notifPanelOpen}
+                  onToggle={() => setNotifPanelOpen(o => !o)}
+                  onDismiss={(id) => store.dismissNotification(id)}
+                  onDismissAll={() => store.dismissAllNotifications()}
+                  onMarkAllRead={() => store.markAllNotificationsRead()}
+                  onAction={handleNotificationAction}
+                />
+              </div>
               {[
                 { icon: 'add_circle', title: '새 스페이스', fn: () => { if (quotaChecks.space()) store.addSpace(); }, dim: true  },
                 { icon: 'settings',   title: '환경설정',   fn: () => setDialog('settings'),            dim: true  },

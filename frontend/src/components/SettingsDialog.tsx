@@ -240,6 +240,17 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
   useBusyMark('modal:settings', open);
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
   const [form, setForm] = useState<AppSettings>({ ...settings });
+  // Snapshot of settings at the moment this dialog opened — used for
+  // dirty detection and the rollback path. Captured once on open;
+  // form mutations apply LIVE via onSave (modern UX: see immediate
+  // result while sliding/toggling), and we revert to this snapshot
+  // when the user picks "적용 안 함" on the close confirm.
+  const originalRef = useRef<AppSettings>({ ...settings });
+  // 3-button close confirm modal — only appears when the user attempts
+  // to close (Esc / outside-click / 취소 button) AND the live form
+  // diverges from originalRef. The Save button bypasses this entirely
+  // (its whole purpose is "I want this to stick").
+  const [pendingClose, setPendingClose] = useState(false);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
   const [currentVersion, setCurrentVersion] = useState<string>('');
@@ -266,8 +277,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
 
   useEffect(() => {
     if (open) {
+      // Take a fresh snapshot of "what the user will rollback to" at
+      // the moment the dialog opens. Subsequent live-preview writes
+      // mutate `settings` upstream, but originalRef stays pinned to
+      // this moment.
+      originalRef.current = { ...settings };
       setForm({ ...settings });
       setTab(initialTab ?? 'general');
+      setPendingClose(false);
       electronAPI.getMonitors().then(ms => setMonitors(ms as MonitorInfo[]));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -277,8 +294,73 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
     if (open) checkExtStatus();
   }, [open, checkExtStatus]);
 
+  // Live-preview write. Setting locally + propagating upstream on the
+  // same render keeps the form controls "controlled" while letting
+  // every other surface in the app reflect the change immediately
+  // (theme flip, opacity, badge size, etc). The previous "click 저장
+  // to apply" model felt dated — modern apps preview-on-edit and
+  // confirm-on-close.
+  //
+  // Implementation note: rather than wrapping every existing
+  // `setForm(...)` callsite, we use a useEffect-based reflector below
+  // that fires onSave whenever the form diverges from the upstream
+  // settings. That keeps the existing call sites untouched while
+  // guaranteeing live preview from a single point of truth.
   const f = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) =>
     setForm(prev => ({ ...prev, [k]: v }));
+
+  // Reflector — runs whenever form changes. Equality check via
+  // JSON.stringify is fine: the settings blob is small (< 1 KB) and
+  // this runs at most a few times per second under heavy slider use.
+  // Skip while the dialog is closed (we just store-loaded the form
+  // from `settings`, no need to immediately echo it back).
+  useEffect(() => {
+    if (!open) return;
+    const formStr = JSON.stringify(form);
+    if (formStr === JSON.stringify(settings)) return;
+    onSave(form);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, open]);
+
+  // Dirty detection — same JSON-string approach but compared against
+  // `originalRef` (the open-time snapshot), not `settings` (which is
+  // already kept up to date by the live reflector above).
+  const isDirty = useCallback(
+    () => JSON.stringify(form) !== JSON.stringify(originalRef.current),
+    [form],
+  );
+
+  /** Close path. Branches:
+   *  - No changes → close immediately (no nag).
+   *  - Changes pending → 3-button confirm. */
+  const handleCloseAttempt = useCallback(() => {
+    if (isDirty()) {
+      setPendingClose(true);
+      return;
+    }
+    onClose();
+  }, [isDirty, onClose]);
+
+  // Confirm modal actions:
+  //   - 저장 (Apply): live writes are already applied; just close. Tell main about
+  //     floating-orb config so the orb window can spawn/respawn with new settings.
+  //   - 적용 안 함 (Discard): rollback to originalRef via onSave, then close.
+  //   - 취소 (Cancel): just dismiss the modal — settings dialog stays open.
+  const confirmKeep = useCallback(() => {
+    setPendingClose(false);
+    electronAPI.notifyFloatingSettingsChanged();
+    onClose();
+  }, [onClose]);
+
+  const confirmDiscard = useCallback(() => {
+    onSave(originalRef.current);
+    setPendingClose(false);
+    onClose();
+  }, [onSave, onClose]);
+
+  const confirmCancel = useCallback(() => {
+    setPendingClose(false);
+  }, []);
 
   const docExts = form.documentExtensions && form.documentExtensions.length > 0
     ? form.documentExtensions
@@ -316,7 +398,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
   };
 
   return (
-    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+    <Dialog open={open} onOpenChange={v => { if (!v) handleCloseAttempt(); }}>
       <DialogContent
         style={{
           width: 680,
@@ -1060,21 +1142,86 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
         </div>
 
         {/* ── Footer ─────────────────────────────────────────────── */}
+        {/* The Save button now means "I've decided these stay" — no actual
+            write happens here because every change has already streamed
+            upstream via the live-preview reflector. The 취소 button
+            triggers handleCloseAttempt, which presents the 3-button
+            confirm modal IF (and only if) form differs from openTime
+            snapshot. That gives modern UX (immediate preview) without
+            losing the "rollback" safety net users expect.  */}
         <div style={{
-          display: 'flex', justifyContent: 'flex-end', gap: 8,
+          display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8,
           padding: '12px 20px',
           borderTop: '1px solid var(--border-rgba)',
           flexShrink: 0,
         }}>
-          <Button variant="ghost" onClick={onClose}>취소</Button>
+          {isDirty() && (
+            <span style={{ fontSize: 11, color: 'var(--text-dim)', marginRight: 'auto' }}>
+              변경사항이 즉시 적용되고 있어요
+            </span>
+          )}
+          <Button variant="ghost" onClick={handleCloseAttempt}>취소</Button>
           <Button onClick={() => {
-            onSave(form);
-            // Notify main so it can spawn/destroy the floating orb window
-            // and push updated visual settings into it.
+            // Live writes already happened. Just notify the orb (it
+            // refreshes on a different signal than `setOpacity`/etc.)
+            // and close.
             electronAPI.notifyFloatingSettingsChanged();
             onClose();
           }}>저장</Button>
         </div>
+
+        {/* ── Close-confirm modal ─────────────────────────────────
+            Shown only when the user attempts to close (not Save) and
+            the form differs from the open-time snapshot. Three
+            actions match the OS-standard "save / discard / cancel"
+            pattern — same one used by macOS System Settings, VSCode,
+            Figma, etc.   */}
+        {pendingClose && (
+          <div
+            // Backdrop. Opaque enough to focus attention on the modal
+            // but not as dark as a hard system modal — settings is a
+            // friendly surface, not a destructive operation gate.
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(0,0,0,0.45)',
+              backdropFilter: 'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)',
+              zIndex: 20,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onClick={confirmCancel}
+          >
+            <div
+              role="dialog"
+              aria-label="설정 저장 확인"
+              onClick={e => e.stopPropagation()}
+              style={{
+                width: 'min(380px, 90%)',
+                background: 'var(--surface)',
+                border: '1px solid var(--border-rgba)',
+                borderRadius: 14,
+                padding: '20px 20px 16px',
+                boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-color)', marginBottom: 8 }}>
+                변경사항을 어떻게 할까요?
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.55, marginBottom: 16 }}>
+                지금까지의 변경은 이미 적용되어 있어요. 그대로 유지할까요,
+                아니면 처음 상태로 되돌릴까요?
+              </p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <Button variant="ghost" onClick={confirmCancel}>취소</Button>
+                <Button variant="ghost" onClick={confirmDiscard}>적용 안 함</Button>
+                <Button onClick={confirmKeep}>저장</Button>
+              </div>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

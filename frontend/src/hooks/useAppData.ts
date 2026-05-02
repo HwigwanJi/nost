@@ -1288,6 +1288,123 @@ export function useAppData() {
     return count;
   }, [data.settings.memo, setDataRaw]);
 
+  // ── Notifications (bell-icon panel) ──────────────────────────
+  //
+  // Sources push via `addNotification`; the panel reads via the
+  // returned `notifications` array. Dedup keys collapse repeated
+  // pushes from the same source (electron-updater fires "available"
+  // on every check; we dedupe by `update-available-${version}`).
+  // Mark-all-read fires when the panel opens — this is the entire
+  // "read" model (no per-row click-to-read).
+  const addNotification = useCallback((notif: Omit<AppNotification, 'id' | 'createdAt'> & { id?: string }) => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      // Dedup by key — if we already have a non-dismissed notif with
+      // the same key, refresh its createdAt and bail (no duplicate).
+      if (notif.dedupKey) {
+        const dupIdx = existing.findIndex(n => n.dedupKey === notif.dedupKey && !n.dismissedAt);
+        if (dupIdx >= 0) {
+          const merged: AppNotification = {
+            ...existing[dupIdx],
+            // Refresh fields the source might have updated, but keep id/createdAt.
+            title: notif.title,
+            body: notif.body,
+            action: notif.action,
+            // A repeat push counts as a fresh read prompt — clear readAt.
+            readAt: undefined,
+          };
+          const nextList = existing.slice();
+          nextList[dupIdx] = merged;
+          const next = { ...prev, notifications: nextList };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          electronAPI.storeSave(next);
+          return next;
+        }
+      }
+      const newNotif: AppNotification = {
+        ...notif,
+        id: notif.id ?? generateId(),
+        createdAt: now,
+      };
+      // Newest first — panel renders in order.
+      const nextList = [newNotif, ...existing];
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const dismissNotification = useCallback((id: string) => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      let touched = false;
+      const nextList = existing.map(n => {
+        if (n.id === id && !n.dismissedAt) { touched = true; return { ...n, dismissedAt: now }; }
+        return n;
+      });
+      if (!touched) return prev;
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const dismissAllNotifications = useCallback(() => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      let touched = false;
+      const nextList = existing.map(n => {
+        if (!n.dismissedAt) { touched = true; return { ...n, dismissedAt: now }; }
+        return n;
+      });
+      if (!touched) return prev;
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const markAllNotificationsRead = useCallback(() => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      let touched = false;
+      const nextList = existing.map(n => {
+        if (!n.readAt && !n.dismissedAt) { touched = true; return { ...n, readAt: now }; }
+        return n;
+      });
+      if (!touched) return prev;
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  // 30-day sweep — runs ONCE on mount. Keeps the array bounded for
+  // users who never open the bell. We delete (not just dismiss) since
+  // these have already been ignored for a month.
+  useEffect(() => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      if (existing.length === 0) return prev;
+      const kept = existing.filter(n => now - n.createdAt < NOTIFICATION_MAX_AGE_MS);
+      if (kept.length === existing.length) return prev;
+      const next = { ...prev, notifications: kept };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /** Hard-empty trash across all presets. Returns count purged. */
   const emptyMemoTrash = useCallback((): number => {
     let count = 0;
@@ -1374,5 +1491,11 @@ export function useAppData() {
     trashMemo,
     extendAllMemos,
     emptyMemoTrash,
+    // ── Notifications (bell icon panel) ────────────────────────
+    notifications: raw.notifications ?? [],
+    addNotification,
+    dismissNotification,
+    dismissAllNotifications,
+    markAllNotificationsRead,
   };
 }
