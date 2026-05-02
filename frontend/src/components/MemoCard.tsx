@@ -7,13 +7,17 @@
  * body + thin gauge + dot button) felt undefined: nothing told the
  * user where to look first or what was clickable.
  *
- * Layout (96 px tall):
+ * Layout (82 px tall — STANDARD CARD HEIGHT, do not change. Every
+ * card type in nost shares this exact height so the grid stays a
+ * uniform rhythm regardless of mix. Earlier I extended this to 96 px
+ * for breathing room; reverted on user mandate. The trade-off cost is
+ * the body preview line — we drop it. The title alone (with marquee
+ * on overflow) is sufficient identity, and the editor is one click
+ * away for the full text.):
  *
  *   ┌──────────────────────────────────────┐
  *   │ ━━━━━━━━━━━━━━━━━━━━━ (TTL bar 3px)  │  green / yellow / red
  *   │  📝  회의 노트 — 9시 백엔드 싱크          │  title (marquee on hover)
- *   │      그라운드 룰 정리…                  │  body preview 1 line
- *   │                                        │
  *   │  [↻ 5일]    [📋]    [📌]               │  3-button action row
  *   └──────────────────────────────────────┘
  *
@@ -43,7 +47,6 @@ import type { LauncherItem, Space } from '../types';
 import { useSortable } from '@dnd-kit/sortable';
 import {
   memoTitleFromBody,
-  memoBodyPreview,
   memoDaysLeft,
   memoHoursLeft,
   memoGaugeFraction,
@@ -69,7 +72,10 @@ interface MemoCardProps {
   isJustAdded: boolean;
 }
 
-const CARD_HEIGHT = 96;
+// Hard invariant — every card type in nost is exactly this tall. Don't
+// change without rewriting the rest of the grid system; the user has
+// flagged this as sacred regardless of how cramped a card type feels.
+const CARD_HEIGHT = 82;
 
 /** Status colour from days remaining. Single source of truth — used by
  *  both the top TTL bar and the ↻ refresh button label. */
@@ -93,7 +99,6 @@ export function MemoCard({
   const body = memo?.body ?? '';
   const isEmpty = !body.trim();
   const title = memoTitleFromBody(body);
-  const preview = memoBodyPreview(body, 1);
 
   const now = Date.now();
   const daysLeft = memoDaysLeft(item, now);
@@ -234,20 +239,25 @@ export function MemoCard({
           />
         </div>
 
-        {/* ── Body (icon + title + preview) ────────────────────
-            Click area for opening the editor. Padding leaves room
-            for the bottom button row to breathe. */}
+        {/* ── Body (icon + title only) ─────────────────────────
+            At the 82 px standard height, after subtracting the 3 px
+            TTL bar and ~24 px action row, the body has ~55 px to
+            work with. We give the title the full vertical centre and
+            drop the body-preview line — too cramped, and the editor
+            is one click away. The icon hint plus the title are
+            sufficient identity; the marquee handles long titles. */}
         <div
           style={{
             flex: 1,
             display: 'flex',
+            alignItems: 'center',
             gap: 8,
-            padding: '8px 10px 4px 10px',
+            padding: '0 10px',
             minWidth: 0,
             overflow: 'hidden',
           }}
         >
-          {/* Icon (top-left, fixed). Pinned cards swap to a bookmark
+          {/* Icon (left, fixed). Pinned cards swap to a bookmark
               glyph so the badge is meaningful at a glance, not just
               the generic memo sticky icon. */}
           <div
@@ -268,78 +278,55 @@ export function MemoCard({
             />
           </div>
 
-          <div style={{ flex: 1, minWidth: 0 }}>
-            {/* Title with marquee */}
-            <div
-              ref={titleOuterRef}
+          {/* Title with marquee */}
+          <div
+            ref={titleOuterRef}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              position: 'relative',
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              fontSize: 12,
+              fontWeight: 600,
+              lineHeight: '15px',
+              color: isEmpty ? 'var(--text-dim)' : 'var(--text-color)',
+            }}
+          >
+            <span
+              ref={titleInnerRef}
               style={{
-                position: 'relative',
-                overflow: 'hidden',
+                display: 'inline-block',
                 whiteSpace: 'nowrap',
-                fontSize: 12,
-                fontWeight: 600,
-                lineHeight: '15px',
-                color: isEmpty ? 'var(--text-dim)' : 'var(--text-color)',
+                // The marquee animation kicks in only when the
+                // title overflows AND the card is hovered. Otherwise
+                // the static text shows ellipsis via the parent's
+                // overflow + textOverflow combo.
+                ...((hovered && marqueeShift > 0)
+                  ? {
+                      animation: 'memoMarquee 6s ease-in-out infinite',
+                      ['--memo-marquee-shift' as string]: `-${marqueeShift}px`,
+                    }
+                  : {
+                      textOverflow: 'ellipsis',
+                      overflow: 'hidden',
+                      maxWidth: '100%',
+                    }),
               }}
             >
-              <span
-                ref={titleInnerRef}
-                style={{
-                  display: 'inline-block',
-                  whiteSpace: 'nowrap',
-                  // The marquee animation kicks in only when the
-                  // title overflows AND the card is hovered. Otherwise
-                  // the static text shows ellipsis via the parent's
-                  // overflow + textOverflow combo.
-                  ...((hovered && marqueeShift > 0)
-                    ? {
-                        animation: 'memoMarquee 6s ease-in-out infinite',
-                        // Custom prop so the keyframe can read the
-                        // pixel offset without re-creating it per card.
-                        ['--memo-marquee-shift' as string]: `-${marqueeShift}px`,
-                      }
-                    : {
-                        textOverflow: 'ellipsis',
-                        overflow: 'hidden',
-                        maxWidth: '100%',
-                      }),
-                }}
-              >
-                {isEmpty ? '(빈 메모)' : title}
-              </span>
-              {/* Static fallback truncation when not animating —
-                  rendered as a CSS-only fade on the right edge so
-                  long titles still hint at "there's more here". */}
-              {!hovered && marqueeShift > 0 && (
-                <div
-                  aria-hidden="true"
-                  style={{
-                    position: 'absolute',
-                    top: 0, right: 0, bottom: 0,
-                    width: 18,
-                    background: 'linear-gradient(to right, transparent, var(--surface))',
-                    pointerEvents: 'none',
-                  }}
-                />
-              )}
-            </div>
-
-            {/* Preview — single line, faded, ellipsis. Empty when the
-                memo only has a title (e.g. first line shorthand). */}
-            {preview && (
+              {isEmpty ? '(빈 메모)' : title}
+            </span>
+            {!hovered && marqueeShift > 0 && (
               <div
+                aria-hidden="true"
                 style={{
-                  fontSize: 10.5,
-                  color: 'var(--text-muted)',
-                  lineHeight: '13px',
-                  marginTop: 2,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  position: 'absolute',
+                  top: 0, right: 0, bottom: 0,
+                  width: 18,
+                  background: 'linear-gradient(to right, transparent, var(--surface))',
+                  pointerEvents: 'none',
                 }}
-              >
-                {preview}
-              </div>
+              />
             )}
           </div>
         </div>

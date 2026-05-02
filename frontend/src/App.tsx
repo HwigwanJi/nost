@@ -771,7 +771,6 @@ export default function App() {
   const [editItem, setEditItem] = useState<LauncherItem | null>(null);
   const [editSpaceId, setEditSpaceId] = useState<string>('');
   const [prefilledItem, setPrefilledItem] = useState<Partial<LauncherItem> | null>(null);
-  const [recommendOpen, setRecommendOpen] = useState(false);
   // Memo (사라지는 메모) — currently-open editor target, or null when
   // no memo is being edited. Lives on App-level state so the editor
   // can render as a fixed overlay above the grid (inplace sheet, no
@@ -1637,6 +1636,29 @@ export default function App() {
    * after the action fires (the user has acted on it; keeping it in
    * the panel is just clutter).
    */
+  /**
+   * Lightbulb toggle — same toolbar standard as pin/node/deck/clean
+   * modes: persistent toast on activate, dismiss on deactivate. The
+   * panel itself + ghost cards on spaces both subscribe to
+   * ghostCards.active, so this single toggle drives both surfaces.
+   *
+   * Why we don't fold this into handleModeChange:
+   *   Recommend isn't an exclusive "tool mode" the way pin/node/deck
+   *   are — it shouldn't lock out other interactions. The user can
+   *   keep editing cards / dragging / opening dialogs while the
+   *   panel is up. So it lives outside the activeMode state machine.
+   */
+  const handleToggleRecommend = useCallback(() => {
+    if (ghostCards.active) {
+      ghostCards.toggle();
+      dismissToast();
+    } else {
+      ghostCards.toggle();
+      showToast('💡 스마트 추천 — ESC로 종료', { persistent: true });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ghostCards]);
+
   const handleNotificationAction = useCallback((n: AppNotification) => {
     if (!n.action) return;
     switch (n.action.intent) {
@@ -2693,17 +2715,21 @@ export default function App() {
             activeMode={activeMode}
             onModeChange={handleModeChange}
             recommendOpen={ghostCards.active}
-            onRecommendClick={() => ghostCards.toggle()}
+            onRecommendClick={() => handleToggleRecommend()}
           />
 
+          {/* RecommendPanel — inline 3-column scan view. Bound to the
+              same `ghostCards.active` toggle as the sidebar lightbulb so
+              the panel and the per-space ghost suggestions appear and
+              disappear together (one engine, two surfaces — see
+              lib/scanEngine.ts). */}
           <RecommendPanel
-            open={recommendOpen}
+            open={ghostCards.active}
             spaces={data.spaces}
-            onClose={() => setRecommendOpen(false)}
+            onClose={handleToggleRecommend}
             onAddItems={(spaceId, items) => {
               for (const item of items) store.addItem(spaceId, item);
               showToast(`${items.length}개 항목 추가됨`);
-              setRecommendOpen(false);
             }}
           />
 
