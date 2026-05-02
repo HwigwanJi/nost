@@ -1,46 +1,35 @@
 /**
  * MemoCard — `type === 'memo'` LauncherItem inner body.
  *
- * v4 — family-look pass. The user singled out the music widget as
- * the visual benchmark: bounded primary box up top, calm secondary
- * row underneath, top-left status dot when applicable. Memo + colour
- * + media now share the same outer chrome (see widgetTokens.ts) so
- * three widgets in a row read as ONE family.
+ * v5 — "inside card" silhouette pass.
  *
- * Layout (82 px tall — STANDARD CARD HEIGHT, hard invariant):
+ * The user's mandate: every widget shares one ratio. Inside card has
+ * a unified height (WIDGET.insideHeight = 38, the average between the
+ * music widget's compact pill and the older memo/color full-block
+ * sizes). Below the inside card sits a wide T-split footer — two
+ * region-style cells with a vertical divider in the middle, replacing
+ * the previous "row of compact icon buttons" which read as cheap.
  *
- *   ┌──────────────────────────────────────┐
- *   │ ●                                     │  ← 5 px status dot (clickable
- *   │  ┌────────────────────────────────┐  │     refresh; hover shows TTL)
- *   │  │  회의 노트 9시 백엔드 싱크       │  │  ← swipe box, NO icon
- *   │  └────────────────────────────────┘  │
- *   │       [📋]    [💾]                    │  ← icon-only secondary row
- *   └──────────────────────────────────────┘
+ * Layout (82 px outer, hard invariant):
  *
- * Compared to v3:
- *   - DROPPED the 3 px top TTL bar — the dot now carries the same
- *     signal at a fraction of the visual weight, matching how the
- *     music widget signals "this is a tinted thing" with a single
- *     6 px accent dot.
- *   - DROPPED the per-card sticky-note icon container — user said
- *     the icon container was unnecessary chrome. Title alone reads
- *     "this is a memo" once the user knows the family.
- *   - DROPPED the dedicated TTL refresh button cell — clicking the
- *     status dot itself fires the refresh. Saves a button slot AND
- *     puts the action visually on the indicator it modifies.
- *   - SHRUNK the dot from 7 px to 5 px (user has asked twice).
- *   - Bottom row is now 2 buttons (copy + save-as), icon-only with
- *     hover tooltips — same pattern as ColorSwatch's picker/edit
- *     and the music widget's mute icon.
+ *   ┌──────────────────────────┐
+ *   │ ●                        │   ← top-left status dot (5 px abs)
+ *   │  ┌────────────────────┐  │
+ *   │  │   inside card 38   │  │   ← swipe surface, smaller width
+ *   │  └────────────────────┘  │     than the row → forms the T
+ *   ├────────────┬─────────────┤
+ *   │     📋      │      💾      │   ← T-split footer (2 cells)
+ *   └────────────┴─────────────┘
  *
- * Interaction grammar (matches v3, since the user kept it):
- *   - Tap swipe box      → open editor
- *   - Swipe left ≥ 56 px → copy as MARKDOWN (raw body)
- *   - Swipe right ≥ 56 px → copy as PLAIN TEXT (markers stripped)
- *   - Click status dot   → TTL reset + toast
- *   - 📋 button           → copy as plain text (same as swipe-right)
- *   - 💾 button           → 다른 이름으로 저장 (OS save-as dialog,
- *                          memo card stays — snapshot, not move)
+ * Swipe model (matches the music widget's elastic pill):
+ *   - Tap                 → open editor
+ *   - Swipe LEFT  ≥ 56 px → copy as MARKDOWN
+ *   - Swipe RIGHT ≥ 56 px → copy as PLAIN TEXT
+ *   - Slide is *small* (≤ 10 px) with rubber-band resistance — same
+ *     vocabulary as MediaWidget's play-pause pill. NO reveal panels
+ *     behind the inside card — those caused the visual clipping
+ *     the user flagged. The motion alone, plus a subtle background
+ *     intensification, is the feedback.
  */
 
 import { useState, useRef, useLayoutEffect, useCallback } from 'react';
@@ -77,8 +66,10 @@ interface MemoCardProps {
 }
 
 const SWIPE_THRESHOLD = 56;
+/** Cap on the visual translateX. Keeps the slide elastic-feeling
+ *  without ever clipping past the inside card's L/R margin. */
+const SLIDE_MAX = 10;
 
-/** Status colour — drives the dot. SSOT for all TTL-state visuals. */
 function ttlStatusColor(daysLeft: number | null, pinned: boolean): string {
   if (pinned) return 'var(--accent)';
   if (daysLeft === null) return 'var(--text-muted)';
@@ -105,9 +96,6 @@ export function MemoCard({
   const hoursLeft = memoHoursLeft(item, now);
   const status = ttlStatusColor(daysLeft, pinned);
 
-  // Status-dot tooltip — exposes the precise time on hover.
-  // Following the design system rule: defer values to hover when
-  // the visual signal (here: dot colour) already conveys urgency.
   const dotTooltip = pinned
     ? '보호 중 (자동 만료 안 됨)'
     : daysLeft === null ? ''
@@ -115,7 +103,7 @@ export function MemoCard({
       ? (hoursLeft && hoursLeft > 0 ? `${hoursLeft}시간 남음 — 클릭으로 살리기` : '곧 만료 — 클릭으로 살리기')
       : `${daysLeft}일 남음 — 클릭으로 살리기`;
 
-  // ── Swipe gesture wiring ─────────────────────────────────────
+  // ── Swipe gesture ────────────────────────────────────────────
   const flashAction = useCallback((kind: 'plain' | 'md') => {
     setCopyFlash(true);
     setTimeout(() => setCopyFlash(false), 700);
@@ -130,11 +118,22 @@ export function MemoCard({
     onSwipeRight: () => flashAction('plain'),
   });
 
-  const leftActionOpacity = progress < 0 ? Math.min(1, -progress) : 0;
-  const rightActionOpacity = progress > 0 ? Math.min(1, progress) : 0;
-  const visualDx = Math.abs(dragX) > SWIPE_THRESHOLD
-    ? Math.sign(dragX) * (SWIPE_THRESHOLD + (Math.abs(dragX) - SWIPE_THRESHOLD) * 0.3)
-    : dragX;
+  // Heavy resistance — slide never exceeds ±SLIDE_MAX px so the
+  // inside card stays inside the wrapper margins. Avoids the
+  // "clipping past the parent edge" the user flagged.
+  const visualDx = (() => {
+    const raw = dragX;
+    if (Math.abs(raw) <= SLIDE_MAX) return raw;
+    const overshoot = Math.abs(raw) - SLIDE_MAX;
+    // Asymptotic resistance: every additional dx adds vanishing motion.
+    return Math.sign(raw) * (SLIDE_MAX + overshoot * 0.06);
+  })();
+
+  // Background intensity grows with swipe progress (capped at 100%).
+  // Keeps the visual tied to the gesture without pulling in a reveal
+  // panel.
+  const swipeStrength = Math.min(1, Math.abs(progress));
+  const tintPct = 18 + swipeStrength * 14;
 
   // ── Marquee for long titles ──────────────────────────────────
   const titleOuterRef = useRef<HTMLDivElement | null>(null);
@@ -170,7 +169,37 @@ export function MemoCard({
 
   const { setNodeRef, attributes, listeners, style, isDragging } = dragHandle;
 
-  // Box accent — prefer space colour, fall back to accent var.
+  // ── Right-click drag delegation (matches MediaWidget) ───────
+  const suppressContextMenuRef = useRef(false);
+  const handleRightClickDrag = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 2) return;
+    if (!listeners?.onPointerDown) return;
+    e.stopPropagation();
+    const startX = e.clientX, startY = e.clientY;
+    let dragged = false;
+    const onMove = (ev: PointerEvent) => {
+      if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) dragged = true;
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      if (dragged) {
+        suppressContextMenuRef.current = true;
+        setTimeout(() => { suppressContextMenuRef.current = false; }, 120);
+      }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    (listeners.onPointerDown as (e: React.PointerEvent) => void)(e);
+  }, [listeners]);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    if (suppressContextMenuRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, []);
+
   const boxAccent = space.color || 'var(--accent)';
 
   return (
@@ -182,10 +211,6 @@ export function MemoCard({
           85%  { transform: translateX(var(--memo-marquee-shift, 0px)); }
           100% { transform: translateX(var(--memo-marquee-shift, 0px)); }
         }
-        @keyframes memoFlashPulse {
-          0%   { box-shadow: 0 0 0 0 var(--accent); }
-          100% { box-shadow: 0 0 0 6px transparent; }
-        }
       `}</style>
 
       <div
@@ -195,7 +220,8 @@ export function MemoCard({
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         {...attributes}
-        {...listeners}
+        onPointerDown={handleRightClickDrag}
+        onContextMenu={handleContextMenu}
         style={{
           ...style,
           background: 'var(--surface)',
@@ -204,12 +230,11 @@ export function MemoCard({
           borderWidth: 1,
           borderRadius: WIDGET.cardRadius,
           height: WIDGET.cardHeight,
-          padding: WIDGET.cardPadding,
+          padding: 0,
           position: 'relative',
           userSelect: 'none',
           display: 'flex',
           flexDirection: 'column',
-          gap: WIDGET.cardGap,
           overflow: 'hidden',
           transition: 'border-color 0.15s, box-shadow 0.15s',
           opacity: isDragging ? 0.4 : 1,
@@ -219,10 +244,7 @@ export function MemoCard({
             : {}),
         }}
       >
-        {/* ── Status dot — top-left abs (matches MediaWidget's accent
-            dot position). Clickable refresh; tooltip carries the
-            precise time-remaining. Pinned memos show the dot in
-            accent (no decay) and the click is a no-op. */}
+        {/* Status dot — top-left, abs */}
         <button
           onClick={pinned ? undefined : handleExtend}
           disabled={pinned}
@@ -240,72 +262,50 @@ export function MemoCard({
             border: 'none',
             padding: 0,
             cursor: pinned ? 'default' : 'pointer',
-            // Slight glow so the dot reads as deliberate, not a
-            // stray pixel — same trick MediaWidget uses on its
-            // accent dot.
             boxShadow: `0 0 4px ${status === 'var(--accent)' ? 'var(--accent)' : status}88`,
-            zIndex: 2,
+            zIndex: 3,
             transition: 'transform 0.12s, box-shadow 0.2s',
           }}
           onMouseEnter={e => { if (!pinned) e.currentTarget.style.transform = 'scale(1.5)'; }}
           onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
         />
 
-        {/* ── Primary swipe surface (the family-look "play button" zone)
-            Fills the available vertical space minus the secondary row.
-            Tap = open editor; swipe left/right = markdown / plain copy. */}
+        {/* ── Top wrapper — holds the inside card with side margins
+            so the bottom T-split visually extends BEYOND the inside
+            card, forming the T silhouette. */}
         <div
           style={{
             flex: 1,
-            position: 'relative',
-            overflow: 'hidden',
-            borderRadius: WIDGET.primaryRadius,
-            background: 'var(--surface-hover)',
-            border: `1px solid ${hovered ? boxAccent : 'transparent'}`,
-            transition: 'border-color 0.15s',
-            cursor: 'grab',
-            // Padding-left makes room for the status dot so the
-            // title doesn't run under it.
-            paddingLeft: 4,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px 0 ${WIDGET.insideMarginX}px`,
+            minHeight: 0,
           }}
         >
-          <SwipeActionLabel
-            side="left"
-            icon="text_snippet"
-            label="마크다운"
-            opacity={leftActionOpacity}
-            color="#8b5cf6"
-          />
-          <SwipeActionLabel
-            side="right"
-            icon="content_copy"
-            label="텍스트"
-            opacity={rightActionOpacity}
-            color={boxAccent}
-          />
-
-          {/* Foreground swipe surface */}
+          {/* Inside card — fixed height, swipeable */}
           <div
             {...swipeHandlers}
             title={isEmpty ? '빈 메모 — 클릭해서 시작' : `${title}\n\n← 마크다운 복사  ·  텍스트 복사 →`}
             style={{
-              position: 'absolute',
-              inset: 0,
+              width: '100%',
+              height: WIDGET.insideHeight,
+              borderRadius: WIDGET.primaryRadius,
+              background: `color-mix(in srgb, ${boxAccent} ${tintPct}%, var(--surface))`,
+              border: `1px solid ${hovered ? boxAccent : 'transparent'}`,
+              transform: `translateX(${visualDx}px)`,
+              transition: dragX === 0
+                ? 'transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1), background 0.15s, border-color 0.15s'
+                : 'background 0.08s',
+              cursor: 'pointer',
+              touchAction: 'pan-y',
               display: 'flex',
               alignItems: 'center',
               padding: '0 12px',
-              borderRadius: WIDGET.primaryRadius,
-              background: `color-mix(in srgb, ${boxAccent} 18%, var(--surface))`,
-              transform: `translateX(${visualDx}px)`,
-              transition: dragX === 0 ? 'transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1), background 0.15s' : 'background 0.15s',
-              cursor: 'pointer',
-              touchAction: 'pan-y',
-              ...(copyFlash ? { animation: 'memoFlashPulse 0.6s ease-out' } : {}),
+              boxSizing: 'border-box',
+              overflow: 'hidden',
             }}
           >
-            {/* Title with marquee — no leading icon container, per
-                user mandate. The widget's family identity comes from
-                its outer chrome + status dot, not a per-card glyph. */}
             <div
               ref={titleOuterRef}
               style={{
@@ -339,58 +339,43 @@ export function MemoCard({
               >
                 {isEmpty ? '(빈 메모)' : title}
               </span>
-              {!hovered && marqueeShift > 0 && (
-                <div
-                  aria-hidden="true"
-                  style={{
-                    position: 'absolute',
-                    top: 0, right: 0, bottom: 0,
-                    width: 18,
-                    background: `linear-gradient(to right, transparent, color-mix(in srgb, ${boxAccent} 18%, var(--surface)))`,
-                    pointerEvents: 'none',
-                  }}
-                />
-              )}
             </div>
           </div>
         </div>
 
-        {/* ── Secondary action row — icon-only, hover tooltip ───
-            Family rule: every secondary affordance gets the icon-
-            only treatment. Labels live in `title` for hover reveal.
-            Centred via a flex container; max width keeps the row
-            from getting wider than the primary box. */}
+        {/* ── Bottom T-split footer — edge-to-edge, 2 wide cells
+            with a 1 px center divider. The T-shape is formed by
+            this row's top border (the horizontal stroke) plus the
+            divider between cells (the vertical stroke). */}
         <div
           style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: WIDGET.secondaryGap,
-            height: WIDGET.secondaryHeight,
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            height: WIDGET.bottomRowHeight,
+            borderTop: '1px solid var(--border-rgba)',
+            background: 'var(--surface)',
             flexShrink: 0,
           }}
         >
-          <SecondaryBtn
+          <BottomCell
             data-memo-control
             onClick={handleCopyButton}
             title={WIDGET_TIP('본문 복사', '← 스와이프 = 마크다운')}
             color={copyFlash ? 'var(--accent)' : undefined}
-            flashing={copyFlash}
+            divider="right"
           >
-            <Icon name={copyFlash ? 'check' : 'content_copy'} size={11} />
-          </SecondaryBtn>
-          <SecondaryBtn
+            <Icon name={copyFlash ? 'check' : 'content_copy'} size={13} />
+          </BottomCell>
+          <BottomCell
             data-memo-control
             onClick={handleExport}
             title={WIDGET_TIP('다른 이름으로 저장')}
             color={exportFlash ? 'var(--accent)' : undefined}
-            flashing={exportFlash}
           >
-            <Icon name={exportFlash ? 'check' : 'save_alt'} size={11} />
-          </SecondaryBtn>
+            <Icon name={exportFlash ? 'check' : 'save_alt'} size={13} />
+          </BottomCell>
         </div>
 
-        {/* Bottom space-color stripe — parity with regular cards. */}
         {space.color && (
           <div
             aria-hidden="true"
@@ -403,92 +388,44 @@ export function MemoCard({
   );
 }
 
-/* ── Swipe action label (revealed behind the swipe box) ───────── */
-function SwipeActionLabel({
-  side, icon, label, opacity, color,
-}: {
-  side: 'left' | 'right';
-  icon: string;
-  label: string;
-  opacity: number;
-  color: string;
-}) {
-  return (
-    <div
-      aria-hidden="true"
-      style={{
-        position: 'absolute',
-        top: 0, bottom: 0,
-        [side]: 0,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 4,
-        padding: '0 12px',
-        opacity,
-        color,
-        fontSize: 10,
-        fontWeight: 700,
-        whiteSpace: 'nowrap',
-        pointerEvents: 'none',
-        transform: `scale(${0.85 + opacity * 0.2})`,
-        transition: 'transform 0.05s',
-      }}
-    >
-      {side === 'right' && <Icon name={icon} size={11} />}
-      <span>{label}</span>
-      {side === 'left' && <Icon name={icon} size={11} />}
-    </div>
-  );
-}
-
-/* ── Secondary button — icon-only, family-look ──────────────── */
-interface SecondaryBtnProps {
+/* ── Bottom T-split cell — wide region, icon centered ───────── */
+interface BottomCellProps {
   children: React.ReactNode;
   onClick: (e: React.MouseEvent) => void;
   title?: string;
   disabled?: boolean;
   color?: string;
-  flashing?: boolean;
+  divider?: 'right';
   'data-memo-control'?: boolean;
 }
 
-function SecondaryBtn({
-  children, onClick, title, disabled, color, flashing, ...rest
-}: SecondaryBtnProps) {
+function BottomCell({
+  children, onClick, title, disabled, color, divider, ...rest
+}: BottomCellProps) {
   return (
     <button
       onClick={onClick}
       title={title}
+      aria-label={title}
       disabled={disabled}
       data-memo-control
-      aria-label={title}
       {...rest}
       style={{
-        width: WIDGET.secondaryBtnSize,
-        height: WIDGET.secondaryBtnSize,
-        display: 'inline-flex',
+        display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         padding: 0,
         background: 'transparent',
-        border: '1px solid var(--border-rgba)',
-        borderRadius: 6,
+        border: 'none',
+        borderRight: divider === 'right' ? '1px solid var(--border-rgba)' : 'none',
         cursor: disabled ? 'not-allowed' : 'pointer',
         color: disabled ? 'var(--text-dim)' : (color ?? 'var(--text-muted)'),
         fontFamily: 'inherit',
         opacity: disabled ? 0.4 : 1,
-        transition: 'background 0.12s, color 0.12s, border-color 0.12s',
-        animation: flashing ? 'memoBtnPop 0.28s ease' : undefined,
+        transition: 'background 0.12s, color 0.12s',
       }}
-      onMouseEnter={e => {
-        if (disabled) return;
-        e.currentTarget.style.background = 'var(--surface-hover)';
-        e.currentTarget.style.borderColor = 'var(--border-focus)';
-      }}
-      onMouseLeave={e => {
-        e.currentTarget.style.background = 'transparent';
-        e.currentTarget.style.borderColor = 'var(--border-rgba)';
-      }}
+      onMouseEnter={e => { if (!disabled) e.currentTarget.style.background = 'var(--surface-hover)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
     >
       {children}
     </button>

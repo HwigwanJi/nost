@@ -8,32 +8,33 @@ import { electronAPI } from '../electronBridge';
 import { WIDGET, WIDGET_TIP } from './widgetTokens';
 
 /**
- * ColorSwatchWidget v3 — family-look pass.
+ * ColorSwatchWidget v4 — inside-card silhouette + color blend on swipe.
  *
- * Same shared chrome (height / padding / radius / secondary-row
- * spec) as MemoCard + MediaWidget — see widgetTokens.ts. Two
- * design-system rules surfaced from the user feedback land here
- * for the first time:
+ * Same family chrome as MemoCard / MediaWidget. Shape rule (see
+ * widgetTokens.ts):
+ *   - Inside card: 38 px tall, sits with horizontal margin so the
+ *     bottom row visually extends past it → forms the T silhouette.
+ *   - Bottom T-split: edge-to-edge, two wide cells (피커 / 편집)
+ *     with a 1 px vertical divider in the middle.
  *
- *   1. Secondary buttons are icon-only; the label appears in the
- *      tooltip on hover. The previous "[💧 피커] [✏️ 편집]" with
- *      Korean text crowded the row at the standard card width and
- *      forced the colour block to share space with text labels.
- *      Now: two clean icon squares, labels on hover.
- *
- *   2. The hex code is hover-revealed. The colour block IS the
- *      colour — the precise hex value is *additional* information
- *      that doesn't need to live in the surface by default.
- *      Less chrome, larger colour expressiveness, label discovered
- *      via hover (mirrors how iA Writer / minimalist UIs handle
- *      "everything that's not the content itself").
- *
- * Interaction grammar (kept):
+ * Interaction (modeled on the music-widget elastic pill):
  *   - Tap                 → copy hex
- *   - Swipe left ≥ 56 px  → copy COMPLEMENTARY (hue + 180°)
- *   - Swipe right ≥ 56 px → copy ANALOGOUS    (hue + 30°)
- *   - 💧 (icon)            → screen colour picker (EyeDropper API)
- *   - ✏️ (icon)            → open edit dialog
+ *   - Swipe LEFT  ≥ 56 px → copy COMPLEMENTARY (hue + 180°)
+ *   - Swipe RIGHT ≥ 56 px → copy ANALOGOUS    (hue + 30°)
+ *   - During the drag, the inside card's BACKGROUND COLOR blends
+ *     toward the harmony hue via `color-mix`. The user previews
+ *     exactly the colour they'll commit before they release.
+ *     Released: card's colour springs back to the assigned hex.
+ *   - The slide is small (≤ 10 px, rubber-band) — no clipping
+ *     past the wrapper edge. NO reveal panels behind the card.
+ *
+ * Title display (user mandate):
+ *   - Default: name (e.g. "프라이머리"), centred, ellipsis if long.
+ *     If no name, hex is shown instead.
+ *   - On hover: name swaps to the hex code so the user can see the
+ *     value without clicking. Same iA-Writer principle the design
+ *     system already established: defer values to hover when the
+ *     visual identity (the colour itself) is enough.
  */
 
 interface Props {
@@ -53,11 +54,12 @@ interface Props {
 }
 
 const SWIPE_THRESHOLD = 56;
+const SLIDE_MAX = 10;
 
 function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Props) {
   const { showToast } = useAppActions();
 
-  // ── Right-click drag (matches ItemCard / MediaWidget) ─────────
+  // ── Right-click drag (matches MediaWidget / MemoCard) ─────────
   const suppressContextMenuRef = useRef(false);
   const handlePointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 2) return;
@@ -97,7 +99,6 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
   const hasName = !!labelCandidate && labelCandidate.toUpperCase() !== hex;
   const name = hasName ? labelCandidate : '';
 
-  // ── Hover state — drives the hex-on-hover overlay ─────────────
   const [hovered, setHovered] = useState(false);
 
   // ── Copy / harmony actions ────────────────────────────────────
@@ -139,18 +140,30 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
     onSwipeRight: copyAnalogous,
   });
 
-  const leftActionOpacity = progress < 0 ? Math.min(1, -progress) : 0;
-  const rightActionOpacity = progress > 0 ? Math.min(1, progress) : 0;
-  const visualDx = Math.abs(dragX) > SWIPE_THRESHOLD
-    ? Math.sign(dragX) * (SWIPE_THRESHOLD + (Math.abs(dragX) - SWIPE_THRESHOLD) * 0.3)
-    : dragX;
+  // Slide is small + rubber-banded. Stays within insideMarginX so
+  // there's never any clipping at the wrapper edge.
+  const visualDx = (() => {
+    const raw = dragX;
+    if (Math.abs(raw) <= SLIDE_MAX) return raw;
+    const overshoot = Math.abs(raw) - SLIDE_MAX;
+    return Math.sign(raw) * (SLIDE_MAX + overshoot * 0.06);
+  })();
 
-  // ── Eyedropper (screen-capture picker, full desktop) ──────────
-  // The browser EyeDropper API can only sample pixels INSIDE the
-  // launcher's own window — useless for a launcher that wants to
-  // grab colours from anywhere on screen. We delegate to main, which
-  // hides the launcher, captures the desktop, and shows a fullscreen
-  // magnifier overlay (see main.js → 'eyedropper-pick').
+  // Background blend — the user pulls and the inside card's colour
+  // smoothly transitions to the harmony hue. Provides a true preview
+  // of what they'll copy before they commit. CSS color-mix is
+  // supported in Chromium 111+ (Electron 41 = Chromium 134, fine).
+  const swipeStrength = Math.min(1, Math.abs(progress));
+  const harmonyHex = progress < 0
+    ? complementary(hex)
+    : progress > 0
+      ? analogous(hex)
+      : hex;
+  const renderedColor = swipeStrength > 0.05
+    ? `color-mix(in srgb, ${hex} ${(1 - swipeStrength) * 100}%, ${harmonyHex})`
+    : hex;
+
+  // ── Eyedropper (delegated to main process — full desktop) ────
   const handleEyedropper = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
@@ -161,8 +174,8 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
         showToast(ok ? `${picked} 복사됨 (피커)` : '복사 실패');
         return;
       }
-      if (result.reason === 'canceled') return;            // silent
-      if (result.reason === 'busy') return;                // silent — already picking
+      if (result.reason === 'canceled') return;
+      if (result.reason === 'busy') return;
       if (result.reason === 'dev-mode') {
         showToast('개발 모드에서는 색상 피커를 쓸 수 없어요');
         return;
@@ -185,8 +198,19 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
     ...dragHandle.attributes,
   } : { style: {} };
 
+  // Choose readable text colour against the (possibly transitioning)
+  // background. We use the underlying hex's luminance — the harmony
+  // hex would also be similar enough in most cases, and recomputing
+  // every drag frame for the title contrast isn't worth the cycles.
   const isLight = luminance(hex) > 0.7;
   const onSwatchTextColor = isLight ? 'rgba(0,0,0,0.85)' : '#fff';
+
+  // Title display content: hover swaps the visible label between
+  // the user-given name (default) and the hex code (on hover).
+  // When there's no name, we always show hex (no swap target).
+  const titleContent = !hasName
+    ? hex
+    : (hovered ? hex : name);
 
   return (
     <>
@@ -195,10 +219,6 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
           0%   { transform: scale(0.7); opacity: 0; }
           60%  { transform: scale(1.04); opacity: 1; }
           100% { transform: scale(1); opacity: 1; }
-        }
-        @keyframes nost-cs-overlay-in {
-          from { opacity: 0; }
-          to   { opacity: 1; }
         }
       `}</style>
 
@@ -209,13 +229,12 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
         style={{
           ...(handleProps.style as CSSProperties),
           height: WIDGET.cardHeight,
-          padding: WIDGET.cardPadding,
+          padding: 0,
           background: 'var(--surface)',
           border: '1px solid var(--border-rgba)',
           borderRadius: WIDGET.cardRadius,
           display: 'flex',
           flexDirection: 'column',
-          gap: WIDGET.cardGap,
           position: 'relative',
           overflow: 'hidden',
           transition: 'border-color 150ms ease',
@@ -230,106 +249,73 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
           (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-rgba)';
           setHovered(false);
         }}
-        title={name ? `${hex} · ${name}` : hex}
+        title={hasName ? `${name} · ${hex}` : hex}
       >
-        {/* ── Primary swipe surface — pure colour, hex on hover ── */}
+        {/* ── Top wrapper — inside card with side margins ─────── */}
         <div
           style={{
             flex: 1,
-            position: 'relative',
-            borderRadius: WIDGET.primaryRadius,
-            overflow: 'hidden',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px 0 ${WIDGET.insideMarginX}px`,
+            minHeight: 0,
           }}
         >
-          {/* Reveal panels behind the colour during swipe — show
-              the actual harmony hue so the user previews what
-              they'd be copying. */}
-          <SwipeActionPanel
-            side="left"
-            icon="invert_colors"
-            label="보색"
-            opacity={leftActionOpacity}
-            tintBg={complementary(hex)}
-          />
-          <SwipeActionPanel
-            side="right"
-            icon="palette"
-            label="유사색"
-            opacity={rightActionOpacity}
-            tintBg={analogous(hex)}
-          />
-
-          {/* Foreground colour block — the actual swatch + tap target */}
+          {/* Inside card — colour itself; blends during swipe */}
           <div
             {...swipeHandlers}
             style={{
-              position: 'absolute',
-              inset: 0,
+              width: '100%',
+              height: WIDGET.insideHeight,
               borderRadius: WIDGET.primaryRadius,
-              background: hex,
-              boxShadow: isLight ? 'inset 0 0 0 1px rgba(0,0,0,0.08)' : 'inset 0 1px 0 rgba(255,255,255,0.06)',
+              background: renderedColor,
+              boxShadow: isLight
+                ? 'inset 0 0 0 1px rgba(0,0,0,0.08)'
+                : 'inset 0 1px 0 rgba(255,255,255,0.06)',
               transform: `translateX(${visualDx}px)`,
-              transition: dragX === 0 ? 'transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1)' : undefined,
+              transition: dragX === 0
+                ? 'transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1), background 0.2s'
+                : 'background 0.06s',
               cursor: 'pointer',
               touchAction: 'pan-y',
               display: 'flex',
-              alignItems: 'flex-end',
-              justifyContent: 'flex-start',
-              padding: '6px 10px',
-              color: onSwatchTextColor,
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '0 12px',
+              boxSizing: 'border-box',
               overflow: 'hidden',
+              position: 'relative',
+              color: onSwatchTextColor,
             }}
           >
-            {/* Hex / name overlay — renders only when hovered.
-                Replaces the previous always-visible label. The
-                colour itself is the identity; the textual code is
-                supplementary detail. */}
-            {hovered && !flash && (
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 0,
-                  animation: 'nost-cs-overlay-in 140ms ease-out',
-                  // Subtle scrim ONLY on the bottom strip where the
-                  // text sits, so light colours stay readable
-                  // without graying out the whole swatch.
-                  padding: '2px 6px',
-                  borderRadius: 4,
-                  background: isLight ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.28)',
-                  backdropFilter: 'blur(2px)',
-                  WebkitBackdropFilter: 'blur(2px)',
-                }}
-              >
-                {hasName && (
-                  <span style={{
-                    fontSize: 11,
-                    lineHeight: '13px',
-                    fontWeight: 700,
-                    letterSpacing: '-0.01em',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    maxWidth: 120,
-                  }}>
-                    {name}
-                  </span>
-                )}
-                <span style={{
-                  fontSize: 9,
-                  lineHeight: '11px',
-                  fontWeight: 600,
-                  fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace',
-                  letterSpacing: '0.02em',
-                  opacity: 0.92,
-                }}>
-                  {hex}
-                </span>
-              </div>
-            )}
+            {/* Title — centre-aligned, ellipsis, hover-swap to hex.
+                We render BOTH labels stacked and toggle visibility
+                via opacity so the swap is a smooth fade rather than
+                a layout shift (otherwise width changes would make
+                the text wobble during the swap). */}
+            <span
+              style={{
+                fontSize: hasName ? 12 : 11,
+                fontWeight: 700,
+                fontFamily: hasName && !hovered
+                  ? 'inherit'
+                  : 'ui-monospace, SFMono-Regular, "JetBrains Mono", Consolas, monospace',
+                letterSpacing: hasName && !hovered ? '-0.01em' : '0.02em',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                maxWidth: '100%',
+                textAlign: 'center',
+                textShadow: isLight ? 'none' : '0 1px 2px rgba(0,0,0,0.18)',
+                transition: 'font-family 0.15s, letter-spacing 0.15s, font-size 0.15s',
+              }}
+            >
+              {titleContent}
+            </span>
 
-            {/* Tap-feedback overlay — fills the swatch with a contrast
-                pill announcing what landed on the clipboard. */}
+            {/* Tap-feedback overlay — fills the swatch with a copy
+                confirmation. Same vocabulary as MemoCard's flash. */}
             {flash && (
               <div style={{
                 position: 'absolute', inset: 0,
@@ -349,34 +335,31 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
           </div>
         </div>
 
-        {/* ── Secondary action row — icon-only, hover tooltips ──
-            Family rule (see widgetTokens.ts): label moves to the
-            tooltip; icon alone in the visible chrome. Centred so
-            the row reads as a small "control cluster" sitting under
-            the primary surface, mirroring MediaWidget's volume row. */}
+        {/* ── Bottom T-split — edge-to-edge, 2 cells ──────────── */}
         <div
           style={{
-            display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: WIDGET.secondaryGap,
-            height: WIDGET.secondaryHeight,
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            height: WIDGET.bottomRowHeight,
+            borderTop: '1px solid var(--border-rgba)',
+            background: 'var(--surface)',
             flexShrink: 0,
           }}
         >
-          <SecondaryBtn
+          <BottomCell
             onClick={handleEyedropper}
             title={WIDGET_TIP('피커 — 화면에서 색 고르기')}
+            divider="right"
           >
-            <Icon name="colorize" size={11} />
-          </SecondaryBtn>
-          <SecondaryBtn
+            <Icon name="colorize" size={13} />
+          </BottomCell>
+          <BottomCell
             onClick={handleEditOpen}
             title={WIDGET_TIP('편집 — 이름·hex 수정')}
             disabled={!onEdit}
           >
-            <Icon name="edit" size={11} />
-          </SecondaryBtn>
+            <Icon name="edit" size={13} />
+          </BottomCell>
         </div>
       </div>
     </>
@@ -390,54 +373,15 @@ export const ColorSwatchWidget = memo(ColorSwatchWidgetImpl, (prev, next) =>
   prev.dragHandle?.isDragging === next.dragHandle?.isDragging
 );
 
-/* ── Swipe-reveal panel — shows the harmony colour as a preview ── */
-function SwipeActionPanel({
-  side, icon, label, opacity, tintBg,
-}: {
-  side: 'left' | 'right';
-  icon: string;
-  label: string;
-  opacity: number;
-  tintBg: string;
-}) {
-  return (
-    <div
-      aria-hidden="true"
-      style={{
-        position: 'absolute',
-        top: 0, bottom: 0,
-        [side]: 0,
-        width: '50%',
-        background: `linear-gradient(${side === 'left' ? 'to right' : 'to left'}, ${tintBg} 60%, transparent)`,
-        opacity,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: side === 'left' ? 'flex-start' : 'flex-end',
-        gap: 4,
-        padding: '0 12px',
-        color: '#fff',
-        fontSize: 11,
-        fontWeight: 700,
-        whiteSpace: 'nowrap',
-        pointerEvents: 'none',
-        textShadow: '0 1px 2px rgba(0,0,0,0.4)',
-      }}
-    >
-      {side === 'right' && <Icon name={icon} size={12} />}
-      <span>{label}</span>
-      {side === 'left' && <Icon name={icon} size={12} />}
-    </div>
-  );
-}
-
-/* ── Secondary button — family-look (see widgetTokens.ts) ────── */
-function SecondaryBtn({
-  children, onClick, title, disabled,
+/* ── Bottom T-split cell ──────────────────────────────────────── */
+function BottomCell({
+  children, onClick, title, disabled, divider,
 }: {
   children: React.ReactNode;
   onClick: (e: React.MouseEvent) => void;
   title?: string;
   disabled?: boolean;
+  divider?: 'right';
 }) {
   return (
     <button
@@ -446,30 +390,26 @@ function SecondaryBtn({
       title={title}
       aria-label={title}
       style={{
-        width: WIDGET.secondaryBtnSize,
-        height: WIDGET.secondaryBtnSize,
-        display: 'inline-flex',
+        display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         padding: 0,
         background: 'transparent',
-        border: '1px solid var(--border-rgba)',
-        borderRadius: 6,
+        border: 'none',
+        borderRight: divider === 'right' ? '1px solid var(--border-rgba)' : 'none',
         cursor: disabled ? 'not-allowed' : 'pointer',
         color: disabled ? 'var(--text-dim)' : 'var(--text-muted)',
         fontFamily: 'inherit',
         opacity: disabled ? 0.4 : 1,
-        transition: 'background 0.12s, color 0.12s, border-color 0.12s',
+        transition: 'background 0.12s, color 0.12s',
       }}
       onMouseEnter={e => {
         if (disabled) return;
         e.currentTarget.style.background = 'var(--surface-hover)';
-        e.currentTarget.style.borderColor = 'var(--border-focus)';
         e.currentTarget.style.color = 'var(--text-color)';
       }}
       onMouseLeave={e => {
         e.currentTarget.style.background = 'transparent';
-        e.currentTarget.style.borderColor = 'var(--border-rgba)';
         e.currentTarget.style.color = 'var(--text-muted)';
       }}
     >
@@ -488,7 +428,7 @@ function luminance(hex: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-/* ── Public utility (kept stable) ────────────────────────────── */
+/** Public utility — kept stable across the rewrite. */
 export function normaliseHex(input: string): string | null {
   const s = input.trim().replace(/^#/, '');
   if (/^[0-9a-f]{3}$/i.test(s)) {

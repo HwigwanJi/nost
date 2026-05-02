@@ -52,14 +52,33 @@ export const WIDGET = {
    *  so the inner reads as its own bounded element. */
   primaryRadius: 8,
 
-  /** Secondary action-row height. 22 px is enough for an 11 px icon
-   *  + 4 px padding × 2; tighter feels cramped, looser breaks the
-   *  family vs. the music widget's volume row. */
+  /** "Inside card" — the bounded interactive zone (swipe surface /
+   *  colour block / play-pause pill). Compromise between the music
+   *  widget's compact pill (~30) and the memo/color block (~50);
+   *  the user mandate was "average and unify, don't half-do it." */
+  insideHeight: 38,
+
+  /** Inside card horizontal margin from the outer card edge. Same
+   *  on the L and R; lets the bottom T-split row sit edge-to-edge
+   *  while the inside card hangs above it as a smaller bounded
+   *  shape. The differential width is what makes the T silhouette. */
+  insideMarginX: 12,
+  /** Inside card top offset from the outer card edge. */
+  insideMarginTop: 8,
+
+  /** Bottom T-split row — a SINGLE wide region split into 2 (or 3)
+   *  cells via vertical 1px dividers. Replaces the previous "row of
+   *  small icon buttons" pattern which felt cheap. Each cell is a
+   *  generous tap target filling its grid column. The 1px top
+   *  border + center divider together form the T silhouette
+   *  underneath the inside card. */
+  bottomRowHeight: 30,
+
+  /** Legacy aliases — preserved so MediaWidget and any pre-rewrite
+   *  callers don't break while we migrate. New code uses insideHeight
+   *  / bottomRowHeight. Will be removed in a future cleanup. */
   secondaryHeight: 22,
-  /** Gap between secondary buttons. */
   secondaryGap: 8,
-  /** Secondary button square size — same as the music widget's
-   *  mute button. */
   secondaryBtnSize: 22,
 
   /** Top-left status dot (when applicable — media accent dot,

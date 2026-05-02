@@ -75,6 +75,16 @@ export function MemoEditor({
   // mode rendered by lib/memoMarkdown — no contenteditable hackery.
   // Toggle with the eye icon in the toolbar or Ctrl+M.
   const [mode, setMode] = useState<'edit' | 'preview'>('edit');
+  // Save-status indicator. The user's confusion: "저장 버튼이 없는데
+  // ESC만 눌러도 정말 저장되는 건가?" — autosave WAS working but
+  // there was no visible signal. Three states:
+  //   - 'idle'   : nothing typed since last save / fresh load
+  //   - 'pending': debounce timer in flight
+  //   - 'saved'  : last save completed within the last 1.5 s
+  // Footer renders the state in human-readable Korean so the user
+  // can see exactly what's happening at a glance.
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'pending' | 'saved'>('idle');
+  const savedClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Local body state. We seed from the item once on mount; subsequent
   // re-renders of the parent (because of TTL ticks, autosave commits,
   // etc.) don't clobber unsaved input — only an explicit prop change
@@ -93,17 +103,32 @@ export function MemoEditor({
   cbRef.current = { onClose, onExtend, onTogglePin };
 
   // ── Autosave ───────────────────────────────────────────────────
+  // Drives the visible "저장 중... / 저장됨 ✓" indicator. The user
+  // explicitly flagged that without ANY save signal, the missing
+  // save button reads as "is my typing lost?" — the indicator is
+  // what closes that uncertainty without re-introducing a button.
   useEffect(() => {
     if (body === lastCommittedRef.current) return;
+    setSaveStatus('pending');
     if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
     debouncedSaveRef.current = setTimeout(() => {
       onChangeBody(body);
       lastCommittedRef.current = body;
+      setSaveStatus('saved');
+      // Auto-fade the "saved" indicator after 1.5 s back to idle.
+      // Pending always wins if the user types again before then.
+      if (savedClearTimerRef.current) clearTimeout(savedClearTimerRef.current);
+      savedClearTimerRef.current = setTimeout(() => setSaveStatus('idle'), 1500);
     }, AUTOSAVE_DEBOUNCE_MS);
     return () => {
       if (debouncedSaveRef.current) clearTimeout(debouncedSaveRef.current);
     };
   }, [body, onChangeBody]);
+
+  // Clean up save-status timer on unmount.
+  useEffect(() => () => {
+    if (savedClearTimerRef.current) clearTimeout(savedClearTimerRef.current);
+  }, []);
 
   // Flush pending save on unmount (close fires unmount via parent state).
   useEffect(() => {
@@ -189,24 +214,44 @@ export function MemoEditor({
   }, [pinned, showToast]);
 
   // ── Close path ────────────────────────────────────────────────
-  // Plays the close animation (~150ms) before unmounting via onClose.
+  // Plays the close animation (~150 ms) before unmounting via onClose.
   // Auto-deletes empty newly-created memos to avoid grid pollution.
+  //
+  // Save semantics on close:
+  //   - We FORCE the flush regardless of lastCommittedRef equality.
+  //     Reason: under heavy parent re-renders the autosave debounce
+  //     can get reset before firing, leaving lastCommittedRef behind
+  //     by one or two characters. Forcing the flush guarantees the
+  //     final keystrokes always land. The downstream updateMemoBody
+  //     is idempotent — re-saving the same body is a no-op against
+  //     React state thanks to spread-equality in setDataRaw.
+  //   - We toast "저장됨" so the user has a clear visible confirmation
+  //     that the close-on-Esc didn't lose their typing. The
+  //     bottom-of-editor "저장됨 ✓" indicator covers in-edit feedback;
+  //     the toast covers post-close feedback.
   const handleClose = () => {
     if (closing) return;
-    // Flush latest body BEFORE the empty check (otherwise an in-flight
-    // typed character wouldn't be reflected when we evaluate "empty").
     const finalBody = textareaRef.current?.value ?? body;
-    if (finalBody !== lastCommittedRef.current) {
-      onChangeBody(finalBody);
-      lastCommittedRef.current = finalBody;
-    }
-    // Auto-delete: empty body AND the memo was created in the last 3
-    // minutes (so we know this isn't an old memo the user just emptied).
-    if (item.memo && finalBody.trim().length === 0) {
+    const wasEmptyOnOpen = !lastCommittedRef.current.trim();
+    const hasContent = finalBody.trim().length > 0;
+    // Force-flush the latest body. Equality check intentionally
+    // skipped — see comment block above.
+    onChangeBody(finalBody);
+    lastCommittedRef.current = finalBody;
+    // Auto-delete: empty body AND the memo was just created (3-min
+    // grace) AND it WAS empty when the editor opened (i.e. fresh
+    // create that the user abandoned). The wasEmptyOnOpen guard
+    // protects users who deliberately cleared an existing memo to
+    // re-type — those deserve the chance to re-fill rather than
+    // losing the card mid-edit.
+    if (item.memo && !hasContent && wasEmptyOnOpen) {
       const age = Date.now() - item.memo.createdAt;
       if (age <= AUTO_DELETE_GRACE_MS) {
         onAutoDeleteIfEmpty();
       }
+    } else if (hasContent) {
+      // User typed something — confirm the save landed.
+      showToast?.('저장됨');
     }
     setClosing(true);
     setTimeout(onClose, 160);
@@ -399,35 +444,47 @@ export function MemoEditor({
 
           <div style={{ flex: 1 }} />
 
-          {/* Action buttons.
-              Order: 보기 토글 (preview) → 복사 → 보호 → 다른이름저장 →
-              메모장에서열기 → 삭제 → 닫기.
-
-              Removed the standalone "살리기" — TTL pill above takes
-              over that role.
-              "핀" → "보호" (label collision with card-grid pin).
-              "내보내기" now means save-as (file picker, no shell-open,
-              no card delete) per the user's explicit redefinition. */}
+          {/* Action buttons — ICON ONLY, labels in tooltip.
+              Same family rule as widget secondary rows (see
+              widgets/widgetTokens.ts WIDGET_TIP). The previous icon+
+              label layout caused the bilingual labels to wrap into
+              two columns at this dialog width — visual disaster.
+              Now: ~28px square buttons, label discovered on hover. */}
           <HeaderBtn
             icon={mode === 'edit' ? 'visibility' : 'edit'}
-            label={mode === 'edit' ? '미리보기' : '편집'}
-            title="마크다운 미리보기 / 편집 토글 (Ctrl+M)"
+            title={mode === 'edit' ? '미리보기 (Ctrl+M)' : '편집 (Ctrl+M)'}
             onClick={() => setMode(m => m === 'edit' ? 'preview' : 'edit')}
             active={mode === 'preview'}
           />
-          <HeaderBtn icon="content_copy" label="복사" title="본문 클립보드로 (Ctrl+Shift+C)" onClick={handleCopy} />
+          <HeaderBtn
+            icon="content_copy"
+            title="복사 (Ctrl+Shift+C)"
+            onClick={handleCopy}
+          />
           <HeaderBtn
             icon={pinned ? 'shield' : 'shield_outline'}
-            label={pinned ? '보호 해제' : '보호'}
-            title={pinned ? '보호 해제 (Ctrl+P)' : '메모를 보호 (자동 만료 안 됨, Ctrl+P)'}
+            title={pinned ? '보호 해제 (Ctrl+P)' : '보호 — 자동 만료 안 됨 (Ctrl+P)'}
             onClick={onTogglePin}
             active={pinned}
           />
-          <HeaderBtn icon="save_alt"   label="다른 이름으로 저장" title="원하는 위치에 .txt로 저장" onClick={handleExport} />
-          <HeaderBtn icon="open_in_new" label="메모장에서 열기"   title="기본 텍스트 편집기로 열기" onClick={handleOpenExternal} />
-          <HeaderBtn icon="delete" label="삭제" title="휴지통으로 보내기" onClick={onTrash} destructive />
-          <div style={{ width: 1, height: 20, background: 'var(--border-rgba)', margin: '0 4px' }} />
-          <HeaderBtn icon="close" label="" title="닫기 (Esc)" onClick={handleClose} />
+          <HeaderBtn
+            icon="save_alt"
+            title="다른 이름으로 저장"
+            onClick={handleExport}
+          />
+          <HeaderBtn
+            icon="open_in_new"
+            title="메모장에서 열기"
+            onClick={handleOpenExternal}
+          />
+          <HeaderBtn
+            icon="delete"
+            title="삭제 — 휴지통으로 보내기"
+            onClick={onTrash}
+            destructive
+          />
+          <div style={{ width: 1, height: 18, background: 'var(--border-rgba)', margin: '0 4px' }} />
+          <HeaderBtn icon="close" title="닫기 (Esc)" onClick={handleClose} />
         </div>
 
         {/* Body — edit (textarea) or preview (rendered markdown).
@@ -493,7 +550,13 @@ export function MemoEditor({
           </div>
         )}
 
-        {/* Footer — char/line count, helper hint */}
+        {/* Footer — char/line count + visible save status.
+            The save indicator is the answer to "어, 저장 버튼이 없는데
+            저장된 거 맞나?" — without a button, the user needs SOME
+            signal that their typing actually committed. We keep three
+            states: "저장 중...", "저장됨 ✓", and idle (just the helper
+            hint). The state is driven by the same debounce path as the
+            real save, so what the user sees == what's happening. */}
         <div
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -505,8 +568,22 @@ export function MemoEditor({
           }}
         >
           <span>{charCount}자 · {lineCount}줄</span>
-          <span style={{ opacity: 0.7 }}>
-            저장은 자동으로 — Esc 또는 Ctrl+Enter로 닫기
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            {saveStatus === 'pending' ? (
+              <>
+                <Icon name="cloud_sync" size={11} color="var(--text-dim)" />
+                <span style={{ color: 'var(--text-muted)' }}>저장 중…</span>
+              </>
+            ) : saveStatus === 'saved' ? (
+              <>
+                <Icon name="check_circle" size={11} color="#22c55e" />
+                <span style={{ color: '#22c55e', fontWeight: 600 }}>저장됨</span>
+              </>
+            ) : (
+              <span style={{ opacity: 0.7 }}>
+                자동 저장 · Esc 또는 Ctrl+Enter로 닫기
+              </span>
+            )}
           </span>
         </div>
       </div>
@@ -516,7 +593,6 @@ export function MemoEditor({
 
 interface HeaderBtnProps {
   icon: string;
-  label: string;
   title: string;
   onClick: () => void;
   active?: boolean;
@@ -524,23 +600,29 @@ interface HeaderBtnProps {
   disabled?: boolean;
 }
 
-function HeaderBtn({ icon, label, title, onClick, active, destructive, disabled }: HeaderBtnProps) {
+function HeaderBtn({ icon, title, onClick, active, destructive, disabled }: HeaderBtnProps) {
   return (
     <button
       onClick={onClick}
       title={title}
+      aria-label={title}
       disabled={disabled}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4,
-        padding: label ? '5px 9px' : '5px',
+        // Icon-only — same family rule the widget secondary row
+        // follows. Square 26×26 footprint stays compact at the
+        // typical dialog width even with all 7 buttons rendered.
+        width: 26,
+        height: 26,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 0,
         borderRadius: 7,
         background: active ? 'var(--accent-dim)' : 'transparent',
         color: disabled ? 'var(--text-dim)' :
                destructive ? '#ef4444' :
                active ? 'var(--accent)' : 'var(--text-muted)',
         border: '1px solid ' + (active ? 'var(--accent)' : 'transparent'),
-        fontSize: 11,
-        fontWeight: 500,
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.4 : 1,
         transition: 'background 0.12s, color 0.12s, border-color 0.12s',
@@ -550,7 +632,6 @@ function HeaderBtn({ icon, label, title, onClick, active, destructive, disabled 
       onMouseLeave={e => { e.currentTarget.style.background = active ? 'var(--accent-dim)' : 'transparent'; }}
     >
       <Icon name={icon} size={13} />
-      {label && <span>{label}</span>}
     </button>
   );
 }
