@@ -281,7 +281,7 @@ export function MemoCard({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px 0 ${WIDGET.insideMarginX}px`,
+            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px ${WIDGET.insideMarginBottom}px ${WIDGET.insideMarginX}px`,
             minHeight: 0,
           }}
         >
@@ -335,7 +335,14 @@ export function MemoCard({
                   whiteSpace: 'nowrap',
                   ...((hovered && marqueeShift > 0)
                     ? {
-                        animation: 'memoMarquee 6s ease-in-out infinite',
+                        // Constant slow scroll: linear timing + duration
+                        // scaled by overflow length (≈ 22 px/sec during
+                        // the 70 % of the cycle that's actually moving;
+                        // 0–15 % and 85–100 % are dwell). Shorter titles
+                        // get a 6 s floor so they don't strobe. Earlier
+                        // version was a fixed 6 s ease-in-out which felt
+                        // jerky and too quick for long memos.
+                        animation: `memoMarquee ${Math.max(6, marqueeShift / 15.4).toFixed(1)}s linear infinite`,
                         ['--memo-marquee-shift' as string]: `-${marqueeShift}px`,
                       }
                     : {

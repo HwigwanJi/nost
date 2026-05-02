@@ -265,7 +265,7 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px 0 ${WIDGET.insideMarginX}px`,
+            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px ${WIDGET.insideMarginBottom}px ${WIDGET.insideMarginX}px`,
             minHeight: 0,
           }}
         >

@@ -106,6 +106,187 @@ export function memoBodyToPlain(body: string): string {
     .join('\n');
 }
 
+/**
+ * Strip ONLY bullet glyphs and numbered-list markers — keep all
+ * other markdown intact. Useful when pasting a snippet whose
+ * destination already provides bullets (PowerPoint, Google Slides)
+ * but you still want the bold/italic/headings to survive.
+ */
+export function memoStripBullets(body: string): string {
+  if (!body) return '';
+  return body
+    .split(/\r?\n/)
+    .map(line => line
+      .replace(new RegExp(`^(\\s*)${BULLET_CLASS}\\s+`), '$1')
+      .replace(/^(\s*)\d+[.)]\s+/, '$1')
+      .replace(/^(\s*)\[[ xX]\]\s+/, '$1')
+    )
+    .join('\n');
+}
+
+/**
+ * Strip ONLY inline formatting (**, *, `) and heading hashes —
+ * keep bullets and structure. Useful when the destination already
+ * styles headings + lists differently (Notion, Slack).
+ */
+export function memoStripFormatting(body: string): string {
+  if (!body) return '';
+  return body
+    .split(/\r?\n/)
+    .map(line => line
+      .replace(/^(\s*)#{1,6}\s+/, '$1')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/(?<![*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+    )
+    .join('\n');
+}
+
+/**
+ * Collapse runs of 2+ blank lines to a single blank line, and trim
+ * trailing whitespace per line. Doesn't touch any other content —
+ * just tightens the visual rhythm before paste.
+ */
+export function memoCompactBlankLines(body: string): string {
+  if (!body) return '';
+  return body
+    .split(/\r?\n/)
+    .map(l => l.replace(/[ \t]+$/, ''))   // trailing whitespace
+    .reduce<string[]>((acc, line) => {
+      if (line.trim() === '' && acc.length > 0 && acc[acc.length - 1].trim() === '') return acc;
+      acc.push(line);
+      return acc;
+    }, [])
+    .join('\n')
+    .replace(/^\s*\n/, '')   // drop leading blank
+    .replace(/\n\s*$/, '');  // drop trailing blank
+}
+
+/**
+ * "마크다운으로 정리" — promote ad-hoc plain text into structured
+ * markdown the way StackEdit / Obsidian's "auto-format" do.
+ *
+ * Heuristics (intentionally conservative — we'd rather under-format
+ * than wrongly tag a regular sentence as a heading):
+ *
+ *   1. First non-empty line gets `# ` (= H1) IF it's short (≤ 40
+ *      chars), has no trailing punctuation other than `?`, and has no
+ *      existing markdown markers.
+ *
+ *   2. A line is treated as a heading-2 (`## `) when:
+ *        a. surrounded by blank lines (or BOF/EOF) on both sides,
+ *        b. ≤ 60 chars, no period/exclamation,
+ *        c. followed by at least one non-empty content line.
+ *      This catches "Section name\n\nbody…" patterns common in
+ *      pasted assistant output.
+ *
+ *   3. Lines starting with a non-standard bullet glyph (•, ▪, ▶, etc.)
+ *      get rewritten to canonical `- ` markdown bullets.
+ *
+ *   4. Numbered lists with `1)` or `1.` are normalised to `1. `.
+ *
+ *   5. Existing markdown is preserved verbatim — we never re-format
+ *      a line that already starts with `#`, `-`, `*`, `+`, `>`, or
+ *      a number+period.
+ *
+ *   6. Trailing whitespace is trimmed and 3+ blank lines collapse
+ *      to a single blank line (paragraph breaks stay).
+ *
+ * This is a heuristic. It will sometimes turn a short statement
+ * into a heading by mistake. The user can hit ⌘Z / Ctrl+Z in the
+ * memo editor — we never write back to the body, only return a
+ * cleaned string for clipboard copy.
+ */
+export function memoBodyToMarkdown(body: string): string {
+  if (!body) return '';
+  const rawLines = body.split(/\r?\n/).map(l => l.replace(/[ \t]+$/, ''));
+
+  const isAlreadyMarkdownLine = (line: string) => {
+    const t = line.trimStart();
+    return /^#{1,6}\s/.test(t)
+        || /^[-*+]\s/.test(t)
+        || /^\d+\.\s/.test(t)
+        || /^>\s/.test(t)
+        || /^\[[ xX]\]\s/.test(t);
+  };
+
+  const looksLikeHeading = (line: string, maxLen: number): boolean => {
+    const t = line.trim();
+    if (!t) return false;
+    if (t.length > maxLen) return false;
+    // No sentence-ending punctuation. Question marks are OK
+    // (section titles "Why now?" are common).
+    if (/[.!。!]\s*$/.test(t)) return false;
+    // Avoid promoting lines that contain colons mid-sentence with
+    // long tails — those are usually "Key: value" prose, not titles.
+    if (/:\s+\S{20,}/.test(t)) return false;
+    return true;
+  };
+
+  // Pre-scan: which line is the first non-empty? Treat as H1 candidate.
+  const firstNonEmptyIdx = rawLines.findIndex(l => l.trim().length > 0);
+
+  const out: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) { out.push(''); continue; }
+
+    if (isAlreadyMarkdownLine(line)) {
+      out.push(line);
+      continue;
+    }
+
+    // Bullet glyph normalisation (•, ▪, ▶, ●, etc → "- ")
+    const bulletMatch = line.match(new RegExp(`^(\\s*)${BULLET_CLASS}\\s+(.*)$`));
+    if (bulletMatch) {
+      out.push(`${bulletMatch[1]}- ${bulletMatch[2]}`);
+      continue;
+    }
+
+    // "1)" → "1. "
+    const numbered = line.match(/^(\s*)(\d+)\)\s+(.*)$/);
+    if (numbered) {
+      out.push(`${numbered[1]}${numbered[2]}. ${numbered[3]}`);
+      continue;
+    }
+
+    // H1 — first content line, short, headingy.
+    if (i === firstNonEmptyIdx && looksLikeHeading(line, 40)) {
+      out.push(`# ${trimmed}`);
+      continue;
+    }
+
+    // H2 — surrounded by blank lines (or BOF/EOF) and short.
+    const prev = i > 0 ? rawLines[i - 1].trim() : '';
+    const next = i < rawLines.length - 1 ? rawLines[i + 1].trim() : '';
+    const isolatedAbove = prev === '';
+    const isolatedBelow = next === '';
+    const followedByContent = !isolatedBelow || rawLines.slice(i + 1).some(l => l.trim().length > 0);
+    if (isolatedAbove && isolatedBelow && followedByContent && looksLikeHeading(line, 60)) {
+      out.push(`## ${trimmed}`);
+      continue;
+    }
+
+    // Otherwise, leave the line alone — but trim leading whitespace
+    // that's pure indentation under a non-list context, since
+    // markdown treats that as a code block.
+    out.push(line);
+  }
+
+  // Collapse 3+ blank lines to 1.
+  return out
+    .reduce<string[]>((acc, line) => {
+      if (line.trim() === '' && acc.length >= 2 && acc[acc.length - 1].trim() === '' && acc[acc.length - 2].trim() === '') return acc;
+      acc.push(line);
+      return acc;
+    }, [])
+    .join('\n')
+    .replace(/^\s*\n/, '')
+    .replace(/\n\s*$/, '');
+}
+
 /** Body without the first non-empty line (= preview body for cards). */
 export function memoBodyPreview(body: string, maxLines = 3): string {
   if (!body) return '';

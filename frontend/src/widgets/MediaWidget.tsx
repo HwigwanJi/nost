@@ -203,18 +203,22 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
 
   const wrapStyle: CSSProperties = {
     ...(handleProps.style as CSSProperties),
-    // Family-look chrome — same outer shell as MemoCard / ColorSwatch
-    // (see widgets/widgetTokens.ts). Padding/gap removed in favour of
-    // explicit inside-card-area + T-split-footer regions so all three
-    // widgets share the same silhouette: bounded primary box up top,
-    // wide region row at the bottom.
-    height: 82,
+    // Family-look chrome — same outer shell as MemoCard / ColorSwatch.
+    // v7 (rollback): the T-split bottom row was retired here. The
+    // user pointed out that media's primary action (transport pill)
+    // already feels like a unified panel, and adding a T-split for
+    // mute|slider made the widget visually heavier than its
+    // single-purpose siblings. Now: single content body with the
+    // pill on top and the slider/mute row directly below, no
+    // border between them.
+    height: WIDGET.cardHeight,
     background: 'var(--surface)',
     border: '1px solid var(--border-rgba)',
-    borderRadius: 12,
-    padding: 0,
+    borderRadius: WIDGET.cardRadius,
+    padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px ${WIDGET.insideMarginBottom}px ${WIDGET.insideMarginX}px`,
     display: 'flex',
     flexDirection: 'column',
+    gap: 4,
     cursor: 'grab',
     overflow: 'hidden',
     position: 'relative',
@@ -272,45 +276,32 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
           zIndex: 2,
         }} />
 
-        {/* ── Inside card area — the pill IS the inside card ────
-            Earlier versions wrapped a 60×28 pill inside a 38px
-            transparent flex container — visually the inside card
-            looked smaller than memo/colour because only the pill
-            had a fill. The user spotted this twice. Fix: the pill
-            now fills the inside-card area edge-to-edge (width 100%
-            within the wrapper's WIDGET.insideMarginX padding,
-            height = WIDGET.insideHeight). All three widgets now
-            present a primary box at exactly the same dimensions. */}
+        {/* ── Inside card — transport pill ───────────────────
+            Same height/radius as MemoCard's swipe surface and
+            ColorSwatch's colour block (WIDGET.insideHeight /
+            primaryRadius). Sits in a flex column with the volume
+            row below; no border between them so the widget reads
+            as a single unified panel. */}
+        <PlayPauseGesturePill
+          accent={accent}
+          onPlayPause={() => { fire('play-pause'); showToast('재생 / 일시정지', { duration: 1100 }); }}
+          onPrev={() => { fire('prev'); showToast('이전 트랙', { duration: 1100 }); }}
+          onNext={() => { fire('next'); showToast('다음 트랙', { duration: 1100 }); }}
+        />
+
+        {/* ── Volume row — mute toggle + slider, no T-split.
+            Sits directly below the pill (gap from the wrapper's
+            flex `gap`), no border, so the widget body looks like
+            one continuous panel rather than two separated regions. */}
         <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
           style={{
-            flex: 1,
             display: 'flex',
             alignItems: 'center',
-            padding: `${WIDGET.insideMarginTop}px ${WIDGET.insideMarginX}px 0 ${WIDGET.insideMarginX}px`,
+            gap: 8,
+            flex: 1,
             minHeight: 0,
-          }}
-        >
-          <PlayPauseGesturePill
-            accent={accent}
-            onPlayPause={() => { fire('play-pause'); showToast('재생 / 일시정지', { duration: 1100 }); }}
-            onPrev={() => { fire('prev'); showToast('이전 트랙', { duration: 1100 }); }}
-            onNext={() => { fire('next'); showToast('다음 트랙', { duration: 1100 }); }}
-          />
-        </div>
-
-        {/* ── Bottom T-split (30px) — mute icon | volume slider ──
-            Edge-to-edge, two cells with a 1px center divider —
-            same vocabulary as MemoCard / ColorSwatch's bottom row.
-            The mute cell is a fixed 36px so the slider takes the
-            remaining width without competing for room. */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '36px 1fr',
-            height: 30,
-            borderTop: '1px solid var(--border-rgba)',
-            background: 'var(--surface)',
-            flexShrink: 0,
           }}
         >
           <button
@@ -319,11 +310,13 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
             onPointerDown={(e) => e.stopPropagation()}
             title={muted ? '음소거 해제' : '음소거'}
             style={{
+              flexShrink: 0,
+              width: 22, height: 22,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               padding: 0,
               background: 'transparent',
               border: 'none',
-              borderRight: '1px solid var(--border-rgba)',
+              borderRadius: 6,
               color: muted ? accent : 'var(--text-muted)',
               cursor: 'pointer',
               fontFamily: 'inherit',
@@ -341,27 +334,15 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
           >
             <Icon name={muteIcon} size={14} filled weight={500} />
           </button>
-          {/* Slider stops pointer events from bubbling so a drag on
-              the track doesn't accidentally start the card-drag. */}
-          <div
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              padding: '0 10px',
-              minWidth: 0,
-            }}
-          >
-            <Slider
-              className="nost-mw-slider"
-              min={0}
-              max={100}
-              value={[muted ? 0 : vol]}
-              onValueChange={handleSliderChange}
-              aria-label="볼륨"
-            />
-          </div>
+          <Slider
+            className="nost-mw-slider"
+            min={0}
+            max={100}
+            value={[muted ? 0 : vol]}
+            onValueChange={handleSliderChange}
+            aria-label="볼륨"
+            style={{ flex: 1, minWidth: 0 }}
+          />
         </div>
       </div>
     </>

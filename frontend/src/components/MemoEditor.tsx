@@ -32,6 +32,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { toast as sonnerToast } from 'sonner';
 import { Icon } from '@/components/ui/Icon';
 import type { LauncherItem } from '../types';
 import { electronAPI } from '../electronBridge';
@@ -43,6 +44,10 @@ import {
   memoIsExpiringSoon,
   slugifyTitle,
   memoBodyToPlain,
+  memoBodyToMarkdown,
+  memoStripBullets,
+  memoStripFormatting,
+  memoCompactBlankLines,
 } from '../lib/memoUtils';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { renderMemoMarkdown } from '../lib/memoMarkdown';
@@ -86,6 +91,49 @@ export function MemoEditor({
   // can see exactly what's happening at a glance.
   const [saveStatus, setSaveStatus] = useState<'idle' | 'pending' | 'saved'>('idle');
   const savedClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Cleanup tool memory ─────────────────────────────────────
+  // Adobe-style: the toolbar button shows the LAST tool the user
+  // ran. Click runs that tool again; hover (or click on the chevron)
+  // reveals the full tool palette. Persisted in localStorage so the
+  // user's preferred default sticks across sessions / app restarts.
+  type CleanupToolId = 'markdownify' | 'plain' | 'bullets' | 'format' | 'compact';
+  /** Where the cleaned text lands.
+   *   'clipboard' (default, non-destructive): cleaned string goes
+   *      to the clipboard, the memo body is left as-is. Matches
+   *      the old single-button behaviour.
+   *   'inPlace'    (destructive): the memo body itself is rewritten
+   *      to the cleaned string; clipboard untouched. Triggers an
+   *      autosave commit. The toast offers "되돌리기" to restore
+   *      the previous body — Ctrl+Z on the textarea won't work
+   *      because we mutate React state directly, bypassing the
+   *      native undo stack. */
+  type CleanupMode = 'clipboard' | 'inPlace';
+  const CLEANUP_LS_KEY = 'nost.memo.lastCleanupTool';
+  const CLEANUP_MODE_LS_KEY = 'nost.memo.cleanupMode';
+  const [lastCleanupTool, setLastCleanupTool] = useState<CleanupToolId>(() => {
+    try {
+      const saved = localStorage.getItem(CLEANUP_LS_KEY) as CleanupToolId | null;
+      if (saved && ['markdownify', 'plain', 'bullets', 'format', 'compact'].includes(saved)) {
+        return saved;
+      }
+    } catch { /* SSR / blocked storage — fall through */ }
+    return 'markdownify';
+  });
+  const [cleanupMode, setCleanupMode] = useState<CleanupMode>(() => {
+    try {
+      const saved = localStorage.getItem(CLEANUP_MODE_LS_KEY) as CleanupMode | null;
+      if (saved === 'clipboard' || saved === 'inPlace') return saved;
+    } catch { /* fall through */ }
+    return 'clipboard'; // safe default — never modifies the body without explicit opt-in
+  });
+  const [cleanupMenuOpen, setCleanupMenuOpen] = useState(false);
+  const cleanupHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const selectCleanupMode = useCallback((m: CleanupMode) => {
+    setCleanupMode(m);
+    try { localStorage.setItem(CLEANUP_MODE_LS_KEY, m); } catch { /* blocked storage */ }
+  }, []);
   // Local body state. We seed from the item once on mount; subsequent
   // re-renders of the parent (because of TTL ticks, autosave commits,
   // etc.) don't clobber unsaved input — only an explicit prop change
@@ -300,32 +348,127 @@ export function MemoEditor({
   };
 
   /**
-   * "정리하여 복사" — strips markdown markers AND bullet glyphs from
-   * the current body, copies the cleaned text to the clipboard.
-   * Body itself is NOT modified — user keeps their formatted memo,
-   * gets a clean snapshot for paste targets that already provide
-   * their own list formatting (PowerPoint, Google Slides, etc).
+   * Tool palette for "정리하여 복사" — one entry per cleanup mode.
+   * The body is never mutated; we just produce a cleaned string and
+   * push it to the clipboard, so destructive operations are
+   * reversible by simply pasting from history.
    *
-   * Address two real-world frustrations the user described:
-   *   1. GPT/Claude paste → memo holds markdown → "paste as plain
-   *      text" via Ctrl+Shift+V loses line breaks. Our cleaner
-   *      preserves them.
-   *   2. Existing bullet markers double up in PowerPoint
-   *      ("• - item"). Cleaner strips the leading bullet glyph.
+   * ICONS: chosen from Material Symbols' "format_*" family so they
+   * read as document-cleanup affordances. The active-tool icon
+   * surfaces in the toolbar (Adobe-style "last used wins").
    */
-  const handleCleanCopy = async () => {
-    const cleaned = memoBodyToPlain(body);
+  const cleanupTools: Array<{
+    id: 'markdownify' | 'plain' | 'bullets' | 'format' | 'compact';
+    label: string;
+    hint: string;
+    icon: string;
+    run: (s: string) => string;
+    toast: string;
+  }> = [
+    {
+      id: 'markdownify',
+      label: '마크다운으로 정리',
+      hint: '제목·목록·단락을 자동 인식해 마크다운 구조로',
+      icon: 'auto_awesome',
+      run: memoBodyToMarkdown,
+      toast: '마크다운으로 정리해 복사했어요',
+    },
+    {
+      id: 'plain',
+      label: '서식·말머리표 모두 제거',
+      hint: '플레인 텍스트로. 파워포인트 붙여넣기 최적',
+      icon: 'format_clear',
+      run: memoBodyToPlain,
+      toast: '플레인으로 정리해 복사했어요',
+    },
+    {
+      id: 'bullets',
+      label: '말머리표만 제거',
+      hint: '굵기·제목은 유지, 글머리 기호만 떼기',
+      icon: 'format_indent_decrease',
+      run: memoStripBullets,
+      toast: '말머리표 제거 후 복사했어요',
+    },
+    {
+      id: 'format',
+      label: '굵기·기울임만 제거',
+      hint: '`**`·`*`·`#` 만 제거, 글머리표는 유지',
+      icon: 'format_color_reset',
+      run: memoStripFormatting,
+      toast: '서식 제거 후 복사했어요',
+    },
+    {
+      id: 'compact',
+      label: '연속 빈 줄 합치기',
+      hint: '빈 줄 2줄 이상은 1줄로, 줄바꿈 정리',
+      icon: 'compress',
+      run: memoCompactBlankLines,
+      toast: '빈 줄 정리 후 복사했어요',
+    },
+  ];
+
+  /**
+   * Adobe-style tool palette flow (two-step):
+   *
+   *   1. selectCleanupTool — clicking a submenu item ONLY swaps the
+   *      currently-armed tool. The toolbar icon changes to reflect
+   *      it. NO clipboard write, NO toast. This is "loading the
+   *      tool" in Photoshop terms — the slot is now bound to that
+   *      tool but you haven't applied it yet.
+   *
+   *   2. runActiveCleanupTool — clicking the main toolbar button
+   *      runs whatever tool is currently armed and writes the
+   *      cleaned text to the clipboard. This is "stroking the
+   *      canvas" in Photoshop terms.
+   *
+   * Earlier draft conflated the two (submenu click both selected
+   * AND ran). The user pointed out the flow is select-then-apply,
+   * not select-and-fire. Matters because users may want to swap
+   * the active tool ahead of time and then apply later, or
+   * preview the icon to confirm the right tool is loaded.
+   */
+  const selectCleanupTool = useCallback((id: CleanupToolId) => {
+    setLastCleanupTool(id);
+    try { localStorage.setItem(CLEANUP_LS_KEY, id); } catch { /* blocked storage */ }
+    setCleanupMenuOpen(false);
+  }, []);
+
+  const activeCleanupTool = cleanupTools.find(t => t.id === lastCleanupTool) ?? cleanupTools[0];
+
+  const runActiveCleanupTool = useCallback(async () => {
+    const tool = activeCleanupTool;
+    const cleaned = tool.run(body);
     if (!cleaned.trim()) {
       showToast?.('정리할 내용이 없어요');
       return;
     }
-    try {
-      await navigator.clipboard.writeText(cleaned);
-    } catch {
-      try { electronAPI.copyText(cleaned, false); } catch { /* dev mode */ }
+    if (cleanupMode === 'inPlace') {
+      // Destructive: rewrite the memo body. The autosave debounce
+      // picks this up and commits. We snapshot the previous body so
+      // the toast can restore it — Ctrl+Z doesn't work for
+      // programmatic state changes (textarea native undo only
+      // tracks user keystrokes).
+      if (cleaned === body) {
+        showToast?.('이미 정리된 상태예요');
+        return;
+      }
+      const before = body;
+      setBody(cleaned);
+      sonnerToast(`본문에 적용됨 — ${tool.label}`, {
+        description: '되돌리기를 누르면 이전 상태로 복구됩니다',
+        action: { label: '되돌리기', onClick: () => setBody(before) },
+        duration: 6000,
+      });
+    } else {
+      try {
+        await navigator.clipboard.writeText(cleaned);
+      } catch {
+        try { electronAPI.copyText(cleaned, false); } catch { /* dev mode */ }
+      }
+      showToast?.(tool.toast);
     }
-    showToast?.('정리하여 복사했어요 (말머리표·서식 제거)');
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body, activeCleanupTool, cleanupMode, showToast]);
 
   /** 내보내기 = OS save-as dialog. Snapshot to a real file the user
    *  picks. Memo stays — different from the previous "open in
@@ -525,11 +668,208 @@ export function MemoEditor({
             title="복사 (Ctrl+Shift+C)"
             onClick={handleCopy}
           />
-          <HeaderBtn
-            icon="auto_fix_high"
-            title="정리하여 복사 · 말머리표와 서식 제거"
-            onClick={handleCleanCopy}
-          />
+          {/* ── Cleanup tool palette (Adobe-style) ────────────
+              The toolbar slot mirrors WHATEVER tool is currently
+              armed. Hover reveals the full palette so the user
+              can swap the armed tool — clicking a palette entry
+              ONLY arms it (icon swaps). Actually running the
+              cleanup happens by clicking the main slot afterwards.
+
+              Two-step (select → apply) instead of one-step
+              (select-and-run) because the user described the
+              flow explicitly that way: pick the tool, then use
+              the button you just configured. */}
+          <div
+            style={{ position: 'relative', display: 'flex' }}
+            onMouseEnter={() => {
+              if (cleanupHoverTimerRef.current) clearTimeout(cleanupHoverTimerRef.current);
+              cleanupHoverTimerRef.current = setTimeout(() => setCleanupMenuOpen(true), 220);
+            }}
+            onMouseLeave={() => {
+              if (cleanupHoverTimerRef.current) clearTimeout(cleanupHoverTimerRef.current);
+              cleanupHoverTimerRef.current = setTimeout(() => setCleanupMenuOpen(false), 200);
+            }}
+          >
+            {/* The slot. In 'inPlace' mode we add a subtle warning
+                accent so the user is reminded the click will modify
+                the body — even at a glance, before reading the
+                tooltip. The accent uses the same destructive-hue
+                conventions the rest of the editor uses (delete btn). */}
+            <div style={{ position: 'relative' }}>
+              <HeaderBtn
+                icon={activeCleanupTool.icon}
+                title={`정리 — ${activeCleanupTool.label}\n${cleanupMode === 'inPlace' ? '클릭: 본문에 적용 · 호버: 다른 도구 / 모드 선택' : '클릭: 클립보드에 복사 · 호버: 다른 도구 / 모드 선택'}`}
+                onClick={runActiveCleanupTool}
+              />
+              {cleanupMode === 'inPlace' && (
+                <span
+                  aria-hidden
+                  style={{
+                    position: 'absolute',
+                    top: 1, right: 1,
+                    width: 6, height: 6,
+                    borderRadius: '50%',
+                    background: 'var(--color-destructive, #f59e0b)',
+                    boxShadow: '0 0 0 1.5px var(--bg-rgba)',
+                    pointerEvents: 'none',
+                  }}
+                />
+              )}
+            </div>
+
+            {cleanupMenuOpen && (
+              <div
+                role="menu"
+                style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 6px)',
+                  right: 0,
+                  minWidth: 260,
+                  padding: 4,
+                  background: 'var(--bg-rgba)',
+                  border: '1px solid var(--border-rgba)',
+                  borderRadius: 10,
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.18)',
+                  zIndex: 100,
+                  backdropFilter: 'blur(18px)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 1,
+                  animation: 'memoCleanupMenuIn 0.15s ease',
+                }}
+              >
+                <style>{`
+                  @keyframes memoCleanupMenuIn {
+                    from { opacity: 0; transform: translateY(-4px); }
+                    to   { opacity: 1; transform: translateY(0); }
+                  }
+                `}</style>
+                <div style={{
+                  padding: '6px 10px 4px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: 'var(--text-dim)',
+                  letterSpacing: 0.4,
+                  textTransform: 'uppercase',
+                }}>
+                  정리 결과를 어디로
+                </div>
+                {/* Mode toggle — two pills. Persisted choice. The
+                    'inPlace' option is intentionally a different
+                    hue to make the destructive intent self-evident
+                    even before reading the label. */}
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: 4,
+                  padding: '0 6px 6px',
+                }}>
+                  {([
+                    { id: 'clipboard' as const, label: '복사만', icon: 'content_paste', hint: '메모 본문은 그대로, 정리한 결과만 클립보드에' },
+                    { id: 'inPlace' as const, label: '본문에 적용', icon: 'edit_note', hint: '메모 본문 자체를 정리된 결과로 덮어씁니다' },
+                  ]).map(opt => {
+                    const active = cleanupMode === opt.id;
+                    const destructive = opt.id === 'inPlace';
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); selectCleanupMode(opt.id); }}
+                        title={opt.hint}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+                          padding: '6px 8px',
+                          borderRadius: 7,
+                          background: active
+                            ? (destructive ? 'color-mix(in srgb, var(--color-destructive, #f59e0b) 16%, transparent)' : 'var(--accent-dim)')
+                            : 'transparent',
+                          border: `1px solid ${active
+                            ? (destructive ? 'var(--color-destructive, #f59e0b)' : 'var(--accent)')
+                            : 'var(--border-rgba)'}`,
+                          color: active
+                            ? (destructive ? 'var(--color-destructive, #f59e0b)' : 'var(--accent)')
+                            : 'var(--text-muted)',
+                          fontSize: 10.5, fontWeight: active ? 700 : 500,
+                          cursor: 'pointer', fontFamily: 'inherit',
+                          transition: 'all 0.1s',
+                        }}
+                      >
+                        <Icon name={opt.icon} size={12} color="currentColor" />
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{
+                  padding: '4px 10px 4px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: 'var(--text-dim)',
+                  letterSpacing: 0.4,
+                  textTransform: 'uppercase',
+                  borderTop: '1px solid var(--border-rgba)',
+                  marginTop: 2,
+                }}>
+                  정리 도구 선택
+                </div>
+                {cleanupTools.map(tool => {
+                  const isActive = tool.id === lastCleanupTool;
+                  return (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={(e) => { e.stopPropagation(); selectCleanupTool(tool.id); }}
+                      style={{
+                        display: 'flex', alignItems: 'flex-start', gap: 10,
+                        padding: '8px 10px',
+                        background: isActive ? 'var(--accent-dim)' : 'transparent',
+                        border: 'none', borderRadius: 7,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        textAlign: 'left',
+                        transition: 'background 0.1s',
+                      }}
+                      onMouseEnter={e => {
+                        if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-hover)';
+                      }}
+                      onMouseLeave={e => {
+                        if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
+                      }}
+                    >
+                      <Icon name={tool.icon} size={16} color={isActive ? 'var(--accent)' : 'var(--text-muted)'} style={{ marginTop: 1, flexShrink: 0 }} />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: isActive ? 'var(--accent)' : 'var(--text-color)' }}>
+                          {tool.label}
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.4 }}>
+                          {tool.hint}
+                        </span>
+                      </div>
+                      {isActive && (
+                        <Icon name="check" size={13} color="var(--accent)" style={{ marginLeft: 'auto', flexShrink: 0 }} />
+                      )}
+                    </button>
+                  );
+                })}
+                <div style={{
+                  padding: '4px 10px 6px',
+                  fontSize: 10,
+                  color: 'var(--text-dim)',
+                  borderTop: '1px solid var(--border-rgba)',
+                  marginTop: 2,
+                  lineHeight: 1.5,
+                }}>
+                  도구를 누르면 아이콘이 바뀝니다 · 그 다음 버튼을 클릭해 실행
+                  {cleanupMode === 'inPlace' && (
+                    <div style={{ color: 'var(--color-destructive, #f59e0b)', fontWeight: 600, marginTop: 2 }}>
+                      ⚠ 본문에 적용 모드 — 토스트의 '되돌리기'로 복구 가능
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
           <HeaderBtn
             icon={pinned ? 'lock' : 'lock_open'}
             title={pinned ? '보호 해제 (Ctrl+P)' : '보호 · 자동 만료 안 됨 (Ctrl+P)'}

@@ -146,23 +146,20 @@ export function RecommendPanel({ open, spaces, onClose, onAddItems }: RecommendP
 
       <div
         style={{
-          // Fills the main content area between sidebar and right edge.
-          // The sidebar is 44 px when collapsed; we leave a 1 px hairline
-          // for the divider. The panel sits ABOVE the grid (z:50) but
-          // doesn't claim the full screen — title bar and notifications
-          // stay reachable. Slides down from the top in 180 ms.
-          position: 'absolute',
-          left: 44,
-          right: 0,
-          top: 0,
+          // Inline flex item — sits as a sibling above the spaces grid
+          // and PUSHES the grid down by its own height instead of
+          // overlaying it. Earlier the panel was position:absolute and
+          // the user couldn't see whichever spaces were behind it.
+          // Same visual silhouette, just no z-index trick.
+          flexShrink: 0,
           height: 280,
           background: 'var(--bg-rgba)',
           borderBottom: '1px solid var(--border-rgba)',
           display: 'flex',
           flexDirection: 'column',
-          zIndex: 50,
           boxShadow: '0 12px 32px rgba(0,0,0,0.16)',
           animation: 'recommendPanelIn 0.18s cubic-bezier(0.34, 1.4, 0.64, 1)',
+          overflow: 'hidden',
         }}
       >
         {/* Header */}

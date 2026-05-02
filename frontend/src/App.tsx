@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Toaster } from 'sonner';
+import { Toaster, toast as sonnerToast } from 'sonner';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -32,13 +32,11 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
 import { RecommendPanel } from './components/RecommendPanel';
 import { useGhostCards } from './hooks/useGhostCards';
-import { GhostCard } from './components/GhostCard';
 import { NodePanel } from './components/NodePanel';
 import { ContainerSlotPicker, type PendingRemoval, type PendingNewItem } from './components/ContainerSlotPicker';
 import { BatchDropDialog, type PendingDrop } from './components/BatchDropDialog';
 import { CommandBar, parseCommand, buildSuggestions } from './components/CommandBar';
 import { ToastOverlay } from './components/ToastOverlay';
-import { ClipboardSuggestion } from './components/ClipboardSuggestion';
 import { WelcomeModal } from './components/WelcomeModal';
 import { TileOverlay } from './components/TileOverlay';
 import { ContainerBloom, hitTestBloomZone, type Dir as BloomDir } from './components/ContainerBloom';
@@ -854,6 +852,25 @@ export default function App() {
   // Cards added in the last ~700ms get a spring-pop entry animation (see @keyframes cardEnter in index.css)
   const [justAddedItemIds, setJustAddedItemIds] = useState<Set<string>>(new Set());
   const justAddedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The most recently added single card via ItemDialog. Used by the
+  // post-save toast nudge — when the user clicks "꾸미기" the parent
+  // re-opens the dialog on this exact item with advanced expanded.
+  // A ref (not state) because we only consult it from a click handler;
+  // no render needs to react to it.
+  const lastAddedItemRef = useRef<{ spaceId: string; id: string } | null>(null);
+
+  // ── Text-clipboard prompt ──────────────────────────────────
+  // When the user copies free text outside the app, we surface a
+  // small inline banner offering two destinations: a clipboard
+  // text card (saves the literal string) or a memo (treats it as
+  // long-form prose). Other clipboard types (url / app / folder /
+  // hex) flow through ItemDialog's auto-detect → no banner needed.
+  // Only "text" gets the banner because it's the one type with two
+  // genuinely different commit paths.
+  const [clipTextPrompt, setClipTextPrompt] = useState<{ value: string; label: string } | null>(null);
+  const lastClipTextRef = useRef('');
+  const dismissedTextRef = useRef<Set<string>>(new Set());
+  const [itemDialogStartAdvanced, setItemDialogStartAdvanced] = useState(false);
 
   // Marks IDs as "just added" so ItemCard can trigger @keyframes cardEnter.
   // Defined early so it can be referenced by handleSaveItem (below) and handleBatchConfirm (further below).
@@ -1185,10 +1202,6 @@ export default function App() {
     });
   }, []);
 
-  // ── Clipboard quick-add suggestion ───────────────────────
-  const [clipSuggestion, setClipSuggestion] = useState<{ type: 'url' | 'app' | 'folder' | 'hex' | 'text'; value: string; label: string } | null>(null);
-  const lastClipValueRef = useRef('');
-
   // Tracks the user's most recent pointer position in SCREEN coords
   // (window x/y + clientX/y, then converted by main when needed).
   // pinAsFloating reads this so a freshly-promoted badge lands near
@@ -1207,19 +1220,65 @@ export default function App() {
     window.addEventListener('mousemove', onMove);
     return () => window.removeEventListener('mousemove', onMove);
   }, []);
+  // ── Text-clipboard polling ────────────────────────────────
+  // Mirrors the old ClipboardSuggestion polling but narrowed to
+  // type==='text' only. Other types are now handled inside
+  // ItemDialog (auto-detect on open). Re-checks on focus so a user
+  // who copied text in another app sees the prompt as soon as they
+  // alt-tab back. dismissedTextRef tracks values the user has
+  // explicitly closed so they don't re-appear.
   useEffect(() => {
+    let cancelled = false;
     const check = async () => {
-      const result = await electronAPI.analyzeClipboard();
-      if (result.type === 'none' || !result.value) { return; }
-      if (result.value === lastClipValueRef.current) return; // same as last time — don't re-show
-      lastClipValueRef.current = result.value;
-      setClipSuggestion({ type: result.type, value: result.value, label: result.label ?? result.value });
+      const r = await electronAPI.analyzeClipboard();
+      if (cancelled) return;
+      if (r.type !== 'text' || !r.value) return;
+      if (r.value === lastClipTextRef.current) return;
+      if (dismissedTextRef.current.has(r.value)) return;
+      lastClipTextRef.current = r.value;
+      setClipTextPrompt({ value: r.value, label: r.label ?? r.value });
     };
     const onFocus = () => check();
     window.addEventListener('focus', onFocus);
-    check(); // also check on mount
-    return () => window.removeEventListener('focus', onFocus);
+    void check();
+    return () => { cancelled = true; window.removeEventListener('focus', onFocus); };
   }, []);
+
+  const handleClipTextToCard = useCallback(() => {
+    if (!clipTextPrompt) return;
+    const { value, label } = clipTextPrompt;
+    setClipTextPrompt(null);
+    dismissedTextRef.current.add(value);
+    setEditItem(null);
+    setPrefilledItem({ type: 'text', value, title: label } as Partial<LauncherItem>);
+    setEditSpaceId(data.spaces[0]?.id ?? '');
+    setDialog('item');
+  }, [clipTextPrompt, data.spaces]);
+
+  const handleClipTextToMemo = useCallback(() => {
+    if (!clipTextPrompt) return;
+    const { value } = clipTextPrompt;
+    const targetSpaceId = data.spaces[0]?.id;
+    setClipTextPrompt(null);
+    dismissedTextRef.current.add(value);
+    if (!targetSpaceId) return;
+    const newItem = store.addMemo(targetSpaceId, value);
+    if (newItem) {
+      sonnerToast('메모로 저장됨', {
+        description: data.spaces[0].name,
+        action: {
+          label: '열기',
+          onClick: () => setEditingMemoId({ spaceId: targetSpaceId, itemId: newItem.id }),
+        },
+        duration: 4000,
+      });
+    }
+  }, [clipTextPrompt, data.spaces, store]);
+
+  const handleClipTextDismiss = useCallback(() => {
+    if (clipTextPrompt) dismissedTextRef.current.add(clipTextPrompt.value);
+    setClipTextPrompt(null);
+  }, [clipTextPrompt]);
 
   // ── Extension banner ──────────────────────────────────────
   const [extBannerDismissed, setExtBannerDismissed] = useState(
@@ -1795,34 +1854,6 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.spaces, handleAddColorSwatch]);
 
-  const handleClipboardAdd = useCallback(() => {
-    if (!clipSuggestion) return;
-    const { type, value, label } = clipSuggestion;
-    setClipSuggestion(null);
-    // Hex fast-path — add the swatch and follow up with the edit
-    // dialog so the user can immediately label it (matches the
-    // "+ 빠른추가" hex flow). Earlier this was a silent add; the
-    // user asked for the labelling bay because an unlabelled #hex
-    // is hard to recall later.
-    if (type === 'hex') {
-      const targetSpaceId = data.spaces[0]?.id;
-      if (targetSpaceId) {
-        const newItem = handleAddColorSwatch(targetSpaceId, { hex: value });
-        if (newItem) {
-          setEditItem(newItem);
-          setEditSpaceId(targetSpaceId);
-          setDialog('item');
-        }
-      }
-      return;
-    }
-    setEditItem(null);
-    setPrefilledItem({ type, value, title: label, clickCount: 0, pinned: false } as Partial<import('./types').LauncherItem>);
-    setEditSpaceId(data.spaces[0]?.id ?? '');
-    setDialog('item');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipSuggestion, data.spaces, handleAddColorSwatch]);
-
   // ── Scan select → prefill ItemDialog ─────────────────────
   const handleScanSelect = useCallback((type: string, title: string, value: string, extra?: { exePath?: string; iconType?: 'material' | 'image'; icon?: string }) => {
     setPrefilledItem({
@@ -1865,6 +1896,8 @@ export default function App() {
       const newId = generateId();
       store.addItem(spaceId, item as Omit<LauncherItem, 'id'>, newId);
       markItemsAsNew([newId]);
+      // Stash for the post-save "꾸미기" toast — see handleRequestAdvanced.
+      lastAddedItemRef.current = { spaceId, id: newId };
       // First-card celebration: fired here so it covers manual adds, ghost
       // accepts, batch drops, and any other path that lands here. The
       // component itself dedupes via localStorage.
@@ -1872,8 +1905,130 @@ export default function App() {
     }
   }, [store, data.spaces, markItemsAsNew, quotaChecks]);
 
+  // ── Screen-pick mode (phase ③ "🎯 화면에서 고르기") ──────────
+  // The dialog hands us a fully-built partial item; we close the
+  // dialog, glow every space accordion in the main UI, and let the
+  // user click one to commit. ESC or 취소 cancels — we then re-open
+  // the dialog at phase ③ with the partial preserved so the user
+  // doesn't lose state. Implementation choice: a capture-phase
+  // document click listener that resolves the click target to the
+  // nearest `[data-space-id]`, since SpaceAccordion + SortableSpace
+  // already carry that attribute (used by the drag system too). No
+  // per-component plumbing needed.
+  const [screenPicker, setScreenPicker] = useState<{ partial: Omit<LauncherItem, 'id'> } | null>(null);
+
+  const handlePickOnScreen = useCallback((partial: Omit<LauncherItem, 'id'>) => {
+    // The partial item lives inside `screenPicker` state until the
+    // user clicks a space (commit) or ESC (cancel-and-reopen).
+    // Closing the dialog is enough — the dialog's own onClose will
+    // clear prefilledItem/editItem, but we don't depend on those.
+    setScreenPicker({ partial });
+    setDialog('none');
+  }, []);
+
+  const cancelScreenPicker = useCallback((reopen: boolean) => {
+    const partial = screenPicker?.partial;
+    setScreenPicker(null);
+    if (reopen && partial) {
+      setEditItem(null);
+      setPrefilledItem(partial as Partial<LauncherItem>);
+      setEditSpaceId(data.spaces[0]?.id ?? '');
+      setDialog('item');
+    }
+  }, [screenPicker, data.spaces]);
+
+  // Body attribute drives the glow CSS (see index.css). Set/cleared
+  // on screenPicker change so we never leak the picking state across
+  // unrelated UI work.
+  useEffect(() => {
+    if (screenPicker) {
+      document.body.setAttribute('data-screen-picking', 'true');
+    } else {
+      document.body.removeAttribute('data-screen-picking');
+    }
+    return () => { document.body.removeAttribute('data-screen-picking'); };
+  }, [screenPicker]);
+
+  // Safety net: if any other dialog opens while pick mode is active,
+  // cancel the pick. The glow + click intercept would compete with
+  // the new dialog's own UI, and the user has clearly moved on.
+  useEffect(() => {
+    if (screenPicker && dialog !== 'none') {
+      cancelScreenPicker(false);
+    }
+  }, [screenPicker, dialog, cancelScreenPicker]);
+
+  // Capture-phase click intercept — fires before the space's own
+  // click handlers (drag init, expand toggle, etc.) so we can swallow
+  // the event entirely.
+  useEffect(() => {
+    if (!screenPicker) return;
+    const partial = screenPicker.partial;
+    const onClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const spaceEl = target?.closest('[data-space-id]') as HTMLElement | null;
+      if (!spaceEl) return; // click outside any space — let it bubble (close dialog etc)
+      const sid = spaceEl.getAttribute('data-space-id');
+      if (!sid) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleSaveItem(sid, partial);
+      setScreenPicker(null);
+      // Mirror ItemDialog's brain-off "꾸미기" nudge so this path
+      // gets the same affordance — the user only "skipped advanced"
+      // because it was never offered, not because they're sure.
+      const refIdAfter = lastAddedItemRef.current;
+      if (refIdAfter) {
+        sonnerToast('카드 추가됨', {
+          description: '아이콘이나 색상을 바꿔볼까요?',
+          action: { label: '꾸미기', onClick: () => handleRequestAdvanced(sid) },
+          duration: 5000,
+        });
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cancelScreenPicker(true);
+      }
+    };
+    // Capture so we beat dnd-kit + the accordion's own onClick.
+    document.addEventListener('click', onClick, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('click', onClick, true);
+      document.removeEventListener('keydown', onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenPicker]);
+
+  const handleRequestAdvanced = useCallback((spaceId: string) => {
+    const ref = lastAddedItemRef.current;
+    if (!ref) return;
+    // Find the freshly-saved item in either the dialog's chosen space
+    // or the recorded one (they should match, but the dialog's value
+    // wins). This covers the post-save state where the store has just
+    // been updated and the new id is in `data.spaces`.
+    const finalSpaceId = spaceId || ref.spaceId;
+    const space = data.spaces.find(s => s.id === finalSpaceId);
+    const item = space?.items.find(i => i.id === ref.id);
+    if (!item) return;
+    setEditItem(item);
+    setEditSpaceId(finalSpaceId);
+    setPrefilledItem(null);
+    setItemDialogStartAdvanced(true);
+    setDialog('item');
+  }, [data.spaces]);
+
   // ── Item launcher (shared between card clicks & commands) ─
   const launchItem = useCallback((item: LauncherItem, spaceId: string) => {
+    // Memo cards have no launch target — "launching" them just opens
+    // the editor. This covers all entry points (badge click, search
+    // result, keyboard command), not just the in-app card click.
+    if (item.type === 'memo') {
+      setEditingMemoId({ spaceId, itemId: item.id });
+      return;
+    }
     store.incrementClickCount(spaceId, item.id);
     launchAndPosition(item, data.settings.closeAfterOpen);
   }, [store, data.settings.closeAfterOpen, launchAndPosition]);
@@ -2802,21 +2957,6 @@ export default function App() {
             onRecommendClick={() => handleToggleRecommend()}
           />
 
-          {/* RecommendPanel — inline 3-column scan view. Bound to the
-              same `ghostCards.active` toggle as the sidebar lightbulb so
-              the panel and the per-space ghost suggestions appear and
-              disappear together (one engine, two surfaces — see
-              lib/scanEngine.ts). */}
-          <RecommendPanel
-            open={ghostCards.active}
-            spaces={data.spaces}
-            onClose={handleToggleRecommend}
-            onAddItems={(spaceId, items) => {
-              for (const item of items) store.addItem(spaceId, item);
-              showToast(`${items.length}개 항목 추가됨`);
-            }}
-          />
-
           {/* ── Unified DnD: space grip (left-click) + card right-click drag ───── */}
           <DndContext
             sensors={allSensors}
@@ -3143,15 +3283,137 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── Clipboard quick-add suggestion ──────── */}
-          {clipSuggestion && (
-            <ClipboardSuggestion
-              type={clipSuggestion.type}
-              value={clipSuggestion.value}
-              label={clipSuggestion.label}
-              onAdd={handleClipboardAdd}
-              onDismiss={() => setClipSuggestion(null)}
-            />
+          {/* RecommendPanel — inline 3-column scan view. Bound to the
+              same `ghostCards.active` toggle as the sidebar lightbulb so
+              the panel and the per-space ghost suggestions appear and
+              disappear together (one engine, two surfaces — see
+              lib/scanEngine.ts). Lives INSIDE the main-content column so
+              it pushes the spaces grid down by its height instead of
+              overlaying (and hiding) the topmost spaces. */}
+          <RecommendPanel
+            open={ghostCards.active}
+            spaces={data.spaces}
+            onClose={handleToggleRecommend}
+            onAddItems={(spaceId, items) => {
+              for (const item of items) store.addItem(spaceId, item);
+              showToast(`${items.length}개 항목 추가됨`);
+            }}
+          />
+
+          {/* Clipboard quick-add suggestion was here. Retired in v3 —
+              clipboard auto-detect now feeds ItemDialog directly for
+              url/app/folder. v4 brings back ONLY the text-type prompt:
+              free text has two genuinely different destinations
+              (text card or memo), so the user picks. */}
+          {clipTextPrompt && (
+            <div style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '8px 14px',
+              borderBottom: '1px solid var(--border-rgba)',
+              background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
+              animation: 'slideDown 0.18s ease',
+            }}>
+              <Icon name="content_paste" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>텍스트가 복사되어 있어요</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 600, color: 'var(--text-color)',
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  maxWidth: 340,
+                }}>
+                  "{clipTextPrompt.label}"
+                </span>
+              </div>
+              <button
+                onClick={handleClipTextToCard}
+                title="이 텍스트를 클릭하면 클립보드로 복사하는 카드"
+                style={{
+                  height: 28, padding: '0 10px', borderRadius: 6,
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border-rgba)',
+                  color: 'var(--text-color)',
+                  fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                  cursor: 'pointer', flexShrink: 0,
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                }}
+              >
+                <Icon name="content_paste" size={12} />클립보드 카드
+              </button>
+              <button
+                onClick={handleClipTextToMemo}
+                title="첫 스페이스에 메모로 저장 — 본문에 자동으로 채워집니다"
+                style={{
+                  height: 28, padding: '0 10px', borderRadius: 6,
+                  background: 'var(--accent)',
+                  border: '1px solid var(--accent)',
+                  color: '#fff',
+                  fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                  cursor: 'pointer', flexShrink: 0,
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                }}
+              >
+                <Icon name="sticky_note_2" size={12} />메모로
+              </button>
+              <button
+                onClick={handleClipTextDismiss}
+                title="닫기"
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  padding: 4, display: 'flex', alignItems: 'center',
+                  opacity: 0.55, flexShrink: 0,
+                }}
+              >
+                <Icon name="close" size={13} color="var(--text-muted)" />
+              </button>
+            </div>
+          )}
+
+          {/* ── Screen-pick mode banner ──────────
+              Shown while the user is in "pick a space by clicking
+              one in the actual UI" mode (triggered from ItemDialog
+              phase ③). The glow + cursor:pointer on every space is
+              CSS-driven via [data-screen-picking="true"]. This bar
+              just tells the user what's expected and gives an exit. */}
+          {screenPicker && (
+            <div style={{
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '8px 14px',
+              borderBottom: '1px solid var(--accent)',
+              background: 'color-mix(in srgb, var(--accent) 14%, var(--bg-rgba))',
+              animation: 'slideDown 0.18s ease',
+              color: 'var(--text-color)',
+            }}>
+              <Icon name="my_location" size={16} color="var(--accent)" style={{ flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent)' }}>
+                  스페이스를 클릭해서 카드를 둘 곳을 골라주세요
+                </span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  ESC로 취소하고 다이얼로그로 돌아갑니다 · "{(screenPicker.partial as LauncherItem).title || (screenPicker.partial as LauncherItem).value}"
+                </span>
+              </div>
+              <button
+                onClick={() => cancelScreenPicker(true)}
+                style={{
+                  height: 28, padding: '0 12px', borderRadius: 7,
+                  background: 'var(--surface)',
+                  border: '1px solid var(--border-rgba)',
+                  color: 'var(--text-muted)',
+                  fontSize: 11, fontWeight: 600,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                  flexShrink: 0,
+                }}
+                title="ESC"
+              >
+                취소
+              </button>
+            </div>
           )}
 
           {/* ── Clean-mode action bar ────────────────
@@ -3426,55 +3688,13 @@ export default function App() {
 
               </SortableContext>
 
-              {/* ── Ghost "추천" space (unmatched items) ── */}
-              {ghostCards.hasGhostSpace && (
-                <div style={{
-                  margin: '8px 10px', padding: '12px', borderRadius: 12,
-                  border: '1.5px dashed var(--accent-dim)', background: 'var(--surface)',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
-                    <Icon name="lightbulb" size={14} color="var(--accent)" />
-                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)' }}>추천 항목</span>
-                  </div>
-                  {/* Type-grouped sections */}
-                  {(['folder', 'app', 'document', 'url'] as const).map(dtype => {
-                    const items = ghostCards.ghostSpaceItems.filter(g => g.displayType === dtype);
-                    if (items.length === 0) return null;
-                    const label = dtype === 'folder' ? '폴더' : dtype === 'app' ? '앱' : dtype === 'document' ? '문서' : '사이트';
-                    const icon = dtype === 'folder' ? 'folder' : dtype === 'app' ? 'apps' : dtype === 'document' ? 'description' : 'language';
-                    return (
-                      <div key={dtype} style={{ marginBottom: 8 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6, padding: '0 2px' }}>
-                          <Icon name={icon} size={12} color="var(--text-dim)" />
-                          <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-dim)' }}>{label}</span>
-                          <span style={{ fontSize: 9, color: 'var(--text-dim)' }}>{items.length}</span>
-                        </div>
-                        <div style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fill, minmax(84px, 1fr))',
-                          gap: 8,
-                        }}>
-                          {items.map(ghost => (
-                            <GhostCard
-                              key={`ghost-${ghost.value}`}
-                              ghost={ghost}
-                              onAccept={() => {
-                                const targetId = data.spaces[0]?.id;
-                                if (targetId) {
-                                  store.addItem(targetId, { title: ghost.title, value: ghost.value, type: ghost.type });
-                                  ghostCards.accept(ghost);
-                                  showToast(`"${ghost.title}" → ${data.spaces[0].name}`);
-                                }
-                              }}
-                              onDismiss={() => ghostCards.dismiss(ghost.value)}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+              {/* The bottom "추천 항목" ghost space was here — retired
+                  per user directive. Smart recommendations now live
+                  exclusively in the top-of-screen RecommendPanel
+                  (lightbulb sidebar tool); duplicating them at the
+                  bottom of the main column was redundant scroll noise.
+                  Per-space ghost cards inside each SpaceAccordion are
+                  kept since they're contextually scoped. */}
 
           </div>
 
@@ -3755,9 +3975,18 @@ export default function App() {
 
       {/* ── Dialogs ──────────────────────────────────────────── */}
       <ItemDialog
-        key={editItem?.id || (prefilledItem ? 'prefill-' + prefilledItem.value : 'none')}
+        // Re-mount when target item changes OR when we're re-opening
+        // the same item to land on the advanced section (the latter
+        // wouldn't otherwise re-trigger startAdvanced).
+        key={
+          (editItem?.id || (prefilledItem ? 'prefill-' + prefilledItem.value : 'none'))
+          + (itemDialogStartAdvanced ? ':adv' : '')
+        }
         open={dialog === 'item'}
-        onClose={() => { setDialog('none'); setEditItem(null); setPrefilledItem(null); }}
+        onClose={() => {
+          setDialog('none'); setEditItem(null); setPrefilledItem(null);
+          setItemDialogStartAdvanced(false);
+        }}
         spaces={data.spaces}
         presets={store.presets}
         currentPresetId={store.activePresetId}
@@ -3777,6 +4006,9 @@ export default function App() {
           undefined
         }
         onSave={handleSaveItem}
+        onRequestAdvanced={handleRequestAdvanced}
+        startAdvanced={itemDialogStartAdvanced}
+        onPickOnScreen={handlePickOnScreen}
       />
       <ItemWizard
         open={dialog === 'quickadd'}

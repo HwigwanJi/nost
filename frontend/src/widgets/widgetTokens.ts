@@ -63,8 +63,18 @@ export const WIDGET = {
    *  while the inside card hangs above it as a smaller bounded
    *  shape. The differential width is what makes the T silhouette. */
   insideMarginX: 12,
-  /** Inside card top offset from the outer card edge. */
-  insideMarginTop: 8,
+  /** Inside card top offset from the outer card edge. Now matches
+   *  insideMarginBottom so the inside card sits visually centered
+   *  in the available room above the T-split footer (52 px of slack:
+   *  7 + 38 + 7 = 52). The user pointed out earlier that the inside
+   *  card was hugging the T-shape — equal margins above & below the
+   *  inside card balance the silhouette. */
+  insideMarginTop: 7,
+  /** Inside card bottom offset (gap between inside card and the
+   *  T-split footer). New in v6 of the family-look pass — was 0
+   *  before, which made the inside card visually fall into the
+   *  T-shape rather than float above it. */
+  insideMarginBottom: 7,
 
   /** Bottom T-split row — a SINGLE wide region split into 2 (or 3)
    *  cells via vertical 1px dividers. Replaces the previous "row of

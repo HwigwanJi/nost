@@ -1,14 +1,54 @@
+/**
+ * ItemDialog — phase-based card add/edit (v4).
+ *
+ * Earlier rewrites kept squeezing every form field onto one screen.
+ * The user pushed back: a wide one-page form is still a form. The
+ * goal is "뇌빼고 딸깍딸깍" — each step exposes ONE decision, the
+ * user moves forward (click / Enter / swipe), and the next step
+ * appears. v4 implements that as three slide-able phases:
+ *
+ *   ① 유형 (TYPE)   — big icon-card grid. Click → 0.12s feedback → next.
+ *                     If allowedTypes narrows to one, this phase is
+ *                     skipped on mount.
+ *   ② 값 + 이름     — value input + (optional) folder/exe picker, plus
+ *      (VALUE)        a smaller name input whose placeholder shows the
+ *                     auto-derived title so Enter alone commits.
+ *   ③ 위치 (PLACE)  — space chip grid (click = save+close), monitor
+ *                     pill row, and an opt-in "🎯 화면에서 고르기"
+ *                     button (wires into App via onPickOnScreen).
+ *
+ * Navigation surfaces:
+ *   - Tab dots at the top — clickable, jumps to any phase.
+ *   - ⌘/Ctrl + Enter — save anywhere; if invalid, jump to first
+ *                      incomplete phase instead.
+ *   - ←/→ — phase nav, ignored when focus is in a text input.
+ *   - Horizontal pointer drag (60+ px) on the phase area — slide
+ *     between phases; visual translateX follows finger live, snaps
+ *     on release.
+ *
+ * Advanced (icon picker + custom colour) is intentionally OUT of the
+ * three-phase flow — it's reachable only via the post-save toast
+ * "꾸미기" button, which re-opens the dialog with `startAdvanced` so
+ * the dialog renders ONLY the advanced editor (no tabs, no slider).
+ *
+ * Widget mode (color-swatch) reuses the same phase shell but with
+ * different content: phase ① is replaced by the colour + name editor
+ * (since the widget's "type" is already fixed at creation), phase ②
+ * disappears, phase ③ stays as space picker.
+ */
+
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { toast } from 'sonner';
 import type { LauncherItem, Space } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { electronAPI } from '../electronBridge';
 import { useBusyMark } from '../lib/userBusy';
 import { useFaviconAutoFetch, fetchFaviconDataUrl, ensureHttpUrl } from '../hooks/useFavicon';
+import { plausibleTypes } from '../lib/typePlausibility';
 
 interface ItemDialogProps {
   open: boolean;
@@ -17,29 +57,33 @@ interface ItemDialogProps {
   editItem?: LauncherItem | null;
   defaultSpaceId?: string;
   monitorCount?: number;
-  // Restrict the Type dropdown to a subset. Callers that already know the type
-  // (e.g. file-drop → folder/app only, URL-drop → url/browser) pass this so the
-  // user isn't shown meaningless alternatives. Omit to show every type.
   allowedTypes?: Array<LauncherItem['type']>;
-  // All presets (including non-active). Passing this enables a Preset
-  // dropdown alongside the Space dropdown when editing — so users can move
-  // a card across presets, not just within one.
-  // Omit when adding a new card; new cards always go to the active preset.
   presets?: Array<{ id: '1' | '2' | '3'; label?: string; spaces: Space[] }>;
   currentPresetId?: '1' | '2' | '3';
   onSave: (spaceId: string, item: Omit<LauncherItem, 'id'> | LauncherItem, targetPresetId?: '1' | '2' | '3') => void;
+  /** Optional — fires the post-save "꾸미기" toast nudge for the
+   *  brain-off path. Parent looks up the just-added card by id and
+   *  re-opens the dialog with `startAdvanced` so the user can swap
+   *  icon / pick colour without leaving keyboard rhythm. */
+  onRequestAdvanced?: (spaceId: string) => void;
+  /** True when re-opened from the toast nudge — bypasses phases and
+   *  renders the advanced editor only. */
+  startAdvanced?: boolean;
+  /** Optional — phase ③ "🎯 화면에서 고르기" button calls this with
+   *  the in-progress item. Parent typically hides the dialog and
+   *  enables a click-on-space picker mode in the main UI. Omit to
+   *  hide the button. */
+  onPickOnScreen?: (item: Omit<LauncherItem, 'id'>) => void;
 }
 
-// Monotone Material Symbols only — emoji were jarring when mixed with the rest
-// of the UI. `icon` is rendered via <Icon name=...> so it picks up theme colors.
-const TYPE_OPTIONS: Array<{ value: LauncherItem['type']; label: string; icon: string }> = [
-  { value: 'url',     label: '웹 URL',      icon: 'language' },
-  { value: 'folder',  label: '폴더 경로',   icon: 'folder' },
-  { value: 'app',     label: '앱 실행',     icon: 'apps' },
-  { value: 'window',  label: '창 포커스',   icon: 'select_window' },
-  { value: 'browser', label: '브라우저 탭', icon: 'tab' },
-  { value: 'text',    label: '텍스트 복사', icon: 'content_paste' },
-  { value: 'cmd',     label: '커맨드 실행', icon: 'terminal' },
+const TYPE_OPTIONS: Array<{ value: LauncherItem['type']; label: string; icon: string; hint: string }> = [
+  { value: 'url',     label: '웹 URL',      icon: 'language',       hint: 'https://...' },
+  { value: 'folder',  label: '폴더',        icon: 'folder',         hint: 'C:\\...' },
+  { value: 'app',     label: '앱',          icon: 'apps',           hint: '.exe / .lnk' },
+  { value: 'text',    label: '텍스트',      icon: 'content_paste',  hint: '클립보드 복사' },
+  { value: 'cmd',     label: '커맨드',      icon: 'terminal',       hint: 'cmd 한 줄' },
+  { value: 'window',  label: '창 포커스',   icon: 'select_window',  hint: '창 제목' },
+  { value: 'browser', label: '브라우저 탭', icon: 'tab',            hint: '확장 필요' },
 ];
 
 const PRESET_COLORS = [
@@ -77,13 +121,22 @@ const MAT_ICONS = [
   'favorite','radio_button_checked','emoji_emotions','face',
 ];
 
-export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1, allowedTypes, presets, currentPresetId, onSave }: ItemDialogProps) {
+type Phase = 0 | 1 | 2;
+const PHASE_LABELS = ['유형', '값·이름', '위치'];
+const SWIPE_COMMIT_PX = 60;
+/** Material-symbol names are lowercase + underscore; emoji are
+ *  multi-byte glyphs in the dingbat / supplemental ranges. Same
+ *  predicate SpaceAccordion uses to render space.icon correctly. */
+const isEmojiIcon = (s: string) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s);
+
+export function ItemDialog({
+  open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1,
+  allowedTypes, presets, currentPresetId, onSave,
+  onRequestAdvanced, startAdvanced, onPickOnScreen,
+}: ItemDialogProps) {
   useBusyMark('modal:item-edit', open);
   const isEdit = !!(editItem && 'id' in editItem && editItem.id);
 
-  // Find which preset currently owns the item (only relevant when editing
-  // and the caller passed `presets`). The preset dropdown defaults to this
-  // — switching it filters the space dropdown to that preset's spaces.
   const initialPresetId: '1' | '2' | '3' | undefined = (() => {
     if (!isEdit || !presets || !editItem) return currentPresetId;
     const owning = presets.find(p => p.spaces.some(s => s.items.some(i => i.id === (editItem as LauncherItem).id)));
@@ -104,13 +157,11 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
 
   const [form, setForm] = useState<ItemForm>(() => ({
     title: editItem?.title ?? '',
-    type: editItem?.type ?? 'url',
+    type: editItem?.type ?? (allowedTypes?.[0] ?? 'url'),
     value: editItem?.value ?? '',
     color: editItem?.color ?? '',
     presetId: initialPresetId,
     spaceId: (() => {
-      // When editing across-preset, find the space inside the OWNING preset
-      // (which may not be the currently-displayed `spaces` prop).
       if (isEdit && editItem && presets) {
         for (const p of presets) {
           const s = p.spaces.find(sp => sp.items.some(i => i.id === (editItem as LauncherItem).id));
@@ -125,18 +176,18 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     monitor: editItem?.monitor ?? undefined,
   }));
 
-  // Spaces actually visible in the Space dropdown — filtered to the
-  // currently-selected preset when editing across presets.
   const visibleSpaces: Space[] = (() => {
     if (!presets || !form.presetId) return spaces;
     const p = presets.find(pp => pp.id === form.presetId);
     return p?.spaces ?? spaces;
   })();
 
+
   const [iconSearch, setIconSearch] = useState(isEdit && editItem?.iconType === 'material' ? editItem.icon ?? '' : '');
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [autoFavicon, setAutoFavicon] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(isEdit);
+  const [clipboardHint, setClipboardHint] = useState<{ type: LauncherItem['type']; label: string } | null>(null);
+  const advancedTouchedRef = useRef(!!startAdvanced || isEdit);
   const fileRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const cropRef = useRef<{ x: number; y: number; size: number } | null>(null);
@@ -155,11 +206,254 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     setForm(prev => ({ ...prev, ...patch }));
   }, []);
 
-  /* ── Auto-fetch favicon for URL / browser items ──────────────────
-   * Two effects: (1) reset to default when the input no longer warrants
-   * an auto-resolved favicon; (2) hand off the actual fetch to the
-   * shared hook, which goes through main process (CSP-bypass + 1×1
-   * placeholder rejection — see hooks/useFavicon.ts). */
+  const isWidgetMode = form.type === 'widget';
+  const isColorSwatch = isWidgetMode && editItem?.widget?.kind === 'color-swatch';
+  const initialColorOpts = (editItem?.widget?.kind === 'color-swatch')
+    ? editItem.widget.options
+    : null;
+  const [swatchHex, setSwatchHex] = useState(
+    (initialColorOpts?.hex || '#6366F1').toUpperCase()
+  );
+  const [swatchName, setSwatchName] = useState(
+    initialColorOpts?.name ?? ''
+  );
+
+  /* ── Type plausibility ─────────────────────────────────────────
+   * Three layers of narrowing the type cards visible to the user:
+   *   1. Caller-supplied `allowedTypes` (drag-drop / scan context).
+   *   2. Value-derived plausibility — paths can't be URLs, etc.
+   *      Empty value = no signal, so all types pass.
+   *   3. User override (`showAllTypes` toggled via "다른 유형 보기")
+   *      — bypasses #2 only, never #1.
+   *
+   * Effective option list = TYPE_OPTIONS ∩ allowed ∩ (plausible ∪
+   * override). If everything would be hidden by plausibility, we
+   * still show the override-revealed full list for sanity. */
+  const [showAllTypes, setShowAllTypes] = useState(false);
+  const plausibleSet = useMemo(() => plausibleTypes(form.value), [form.value]);
+
+  const typeOptions = useMemo(() => {
+    let opts = TYPE_OPTIONS;
+    if (allowedTypes && allowedTypes.length > 0) {
+      opts = opts.filter(o => allowedTypes.includes(o.value));
+    }
+    if (!showAllTypes) {
+      const narrowed = opts.filter(o => plausibleSet.has(o.value));
+      // Sanity guard: if plausibility hid everything (e.g. exotic
+      // value the rules don't recognise), fall back to the wider
+      // post-allowedTypes set so the user can always pick something.
+      if (narrowed.length > 0) opts = narrowed;
+    }
+    return opts;
+  }, [allowedTypes, plausibleSet, showAllTypes]);
+
+  const hiddenTypeCount = useMemo(() => {
+    const baseCount = (allowedTypes && allowedTypes.length > 0)
+      ? TYPE_OPTIONS.filter(o => allowedTypes.includes(o.value)).length
+      : TYPE_OPTIONS.length;
+    return showAllTypes ? 0 : Math.max(0, baseCount - typeOptions.length);
+  }, [allowedTypes, showAllTypes, typeOptions.length]);
+
+  const typeLocked = typeOptions.length <= 1;
+
+  /* Auto-correct: when the value changes such that the currently
+   * selected type is no longer plausible, snap to the first
+   * plausible option. Skip while the user has opted into
+   * "다른 유형 보기" — that's a deliberate override. */
+  useEffect(() => {
+    if (showAllTypes) return;
+    if (isWidgetMode) return;
+    if (!form.value.trim()) return;
+    if (plausibleSet.has(form.type)) return;
+    const next = typeOptions[0]?.value;
+    if (next && next !== form.type) f({ type: next });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plausibleSet, showAllTypes]);
+
+  /* ── Smart space recommendation ─────────────────────────────
+   * Score each visible space against the in-progress value, then
+   * surface the strongest match as the recommended landing spot.
+   * Heuristics by type:
+   *   url/browser : matching hostname → +10/match
+   *   folder/app  : same parent folder → +6/match, same drive → +1
+   *   text/cmd/window : skip (too noisy)
+   * A busy space gets a tiny tiebreaker (+0.5 per item) so a frequently
+   * touched space wins over a near-empty one with one coincidence. */
+  const recommendedSpaceId: string | null = useMemo(() => {
+    const v = form.value.trim();
+    if (!v) return null;
+    if (form.type === 'text' || form.type === 'cmd' || form.type === 'window') return null;
+    if (isWidgetMode) return null;
+
+    const hostFor = (url: string): string | null => {
+      try {
+        const u = new URL(/^https?:\/\//.test(url) ? url : 'https://' + url);
+        return u.hostname.replace(/^www\./, '').toLowerCase();
+      } catch { return null; }
+    };
+    const dirFor = (p: string): string | null => {
+      const m = p.match(/^(.*[\\/])[^\\/]+$/);
+      return m ? m[1].toLowerCase() : null;
+    };
+    const driveFor = (p: string): string | null => {
+      const m = p.match(/^([A-Za-z]:[\\/])/);
+      return m ? m[1].toLowerCase() : null;
+    };
+
+    const targetHost = (form.type === 'url' || form.type === 'browser') ? hostFor(v) : null;
+    const targetDir  = (form.type === 'folder' || form.type === 'app') ? dirFor(v) : null;
+    const targetDrive = (form.type === 'folder' || form.type === 'app') ? driveFor(v) : null;
+    if (!targetHost && !targetDir && !targetDrive) return null;
+
+    let best: { id: string; score: number } | null = null;
+    for (const s of visibleSpaces) {
+      let score = 0;
+      for (const it of s.items) {
+        if (it.id === editItem?.id) continue;
+        if (targetHost && (it.type === 'url' || it.type === 'browser')) {
+          if (hostFor(it.value) === targetHost) score += 10;
+        }
+        if (targetDir && (it.type === 'folder' || it.type === 'app')) {
+          if (dirFor(it.value) === targetDir) score += 6;
+        }
+        if (targetDrive && (it.type === 'folder' || it.type === 'app')) {
+          if (driveFor(it.value) === targetDrive) score += 1;
+        }
+      }
+      if (score > 0) score += s.items.length * 0.5;
+      if (score > 0 && (!best || score > best.score)) best = { id: s.id, score };
+    }
+    return best?.id ?? null;
+  }, [form.value, form.type, isWidgetMode, visibleSpaces, editItem?.id]);
+
+  /* ── Phase state ────────────────────────────────────────────
+   * Initial phase: skip TYPE if locked or in widget mode (the
+   * caller already fixed the kind). Skip VALUE in widget mode
+   * (no value/path on a widget). Otherwise start at TYPE.
+   * When `startAdvanced` is true the whole phase shell is bypassed
+   * — see render branch below. */
+  const initialPhase: Phase = (() => {
+    if (isWidgetMode) return isEdit ? 2 : 0;
+    if (typeLocked) return form.value ? 2 : 1;
+    // Fully prefilled (typical of the screen-pick cancel-and-restore
+    // path, or any caller that hands us type + value) → skip straight
+    // to place. derivedTitle covers the empty-title case at save time
+    // so a non-empty value alone is enough signal. The user has
+    // nothing to decide in phases ① or ②.
+    if (form.value.trim()) return 2;
+    return 0;
+  })();
+  const [phase, setPhase] = useState<Phase>(initialPhase);
+  const [dragDx, setDragDx] = useState(0);
+  const dragRef = useRef<{ startX: number; startY: number; pointerId: number; locked: 'h' | 'v' | null } | null>(null);
+
+  /* ── Validation + derived title ─────────────────────────── */
+  const valueError = useMemo(() => {
+    const v = form.value.trim();
+    if (!v) return null;
+    if ((form.type === 'url' || form.type === 'browser') && !/^https?:\/\/.+/.test(v))
+      return 'URL은 https:// 또는 http://로 시작해야 합니다';
+    if (form.type === 'folder' && !/^[A-Za-z]:\\/.test(v) && !v.startsWith('/') && !v.startsWith('\\\\'))
+      return '올바른 폴더 경로를 입력하세요 (예: C:\\Users\\...)';
+    if (form.type === 'app' && v && !/\.(exe|bat|cmd|lnk)$/i.test(v) && !v.startsWith('C:\\'))
+      return '실행 파일 경로를 입력하거나 브라우저로 선택하세요';
+    return null;
+  }, [form.type, form.value]);
+
+  const derivedTitle: string = useMemo(() => {
+    const v = form.value.trim();
+    if (!v) return '';
+    try {
+      switch (form.type) {
+        case 'url':
+        case 'browser': {
+          const u = new URL(/^https?:\/\//.test(v) ? v : 'https://' + v);
+          return u.hostname.replace(/^www\./, '');
+        }
+        case 'folder':
+        case 'app': {
+          const last = v.split(/[\\/]/).pop() ?? v;
+          return last.replace(/\.(exe|lnk|bat|cmd)$/i, '');
+        }
+        case 'text': {
+          const firstLine = v.split(/\r?\n/).find(l => l.trim()) ?? v;
+          return firstLine.slice(0, 32);
+        }
+        case 'cmd':
+          return v.split(/\s+/)[0] ?? v;
+        case 'window':
+          return v.slice(0, 32);
+        default:
+          return v.slice(0, 32);
+      }
+    } catch {
+      return v.slice(0, 32);
+    }
+  }, [form.type, form.value]);
+
+  const phaseComplete = useCallback((p: Phase): boolean => {
+    if (isWidgetMode) {
+      // Widget: phase 0 = colour+name editor, phase 1 unused, phase 2 = place
+      if (p === 0) return !!form.title.trim() && (!isColorSwatch || /^#[0-9A-F]{6}$/i.test(swatchHex));
+      if (p === 2) return !!form.spaceId;
+      return true;
+    }
+    if (p === 0) return !!form.type;
+    if (p === 1) return !!form.value.trim() && !valueError;
+    if (p === 2) return !!form.spaceId;
+    return false;
+  }, [form.type, form.value, form.title, form.spaceId, valueError, isWidgetMode, isColorSwatch, swatchHex]);
+
+  const firstIncompletePhase = (): Phase => {
+    if (isWidgetMode) {
+      if (!phaseComplete(0)) return 0;
+      return 2;
+    }
+    if (!phaseComplete(0)) return 0;
+    if (!phaseComplete(1)) return 1;
+    return 2;
+  };
+
+  const goPhase = useCallback((p: Phase) => {
+    setPhase(p);
+    setDragDx(0);
+  }, []);
+
+  /* ── Effects: clipboard, favicon, file icon ─────────────── */
+  useEffect(() => {
+    if (!open) return;
+    if (isEdit) return;
+    if (form.value) return;
+    if (allowedTypes) return;
+    if (isWidgetMode) return;
+    let cancelled = false;
+    (async () => {
+      const r = await electronAPI.analyzeClipboard();
+      if (cancelled) return;
+      if (r.type === 'none' || !r.value) return;
+      const mapped: LauncherItem['type'] | null =
+        r.type === 'url' ? 'url' :
+        r.type === 'app' ? 'app' :
+        r.type === 'folder' ? 'folder' :
+        r.type === 'text' ? 'text' :
+        null;
+      if (!mapped) return;
+      setForm(prev => ({
+        ...prev,
+        type: mapped,
+        value: r.value!,
+        title: prev.title || r.label || '',
+      }));
+      setClipboardHint({ type: mapped, label: r.label ?? r.value! });
+      // Clipboard pre-fill makes phase ① redundant — jump to ② so the
+      // user just confirms. They can swipe back if they want a different type.
+      goPhase(1);
+      window.setTimeout(() => setClipboardHint(null), 4500);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   useEffect(() => {
     if (manualIconRef.current) return;
     if (!autoFavicon) return;
@@ -192,7 +486,6 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     if (manualIconRef.current) return;
     if (form.type !== 'app') return;
     if (!form.value?.trim()) return;
-
     let cancelled = false;
     (async () => {
       const icon = await electronAPI.getFileIcon(form.value.trim());
@@ -202,7 +495,7 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     return () => { cancelled = true; };
   }, [form.type, form.value]);
 
-  /* ── Icon helpers ───────────────────────────────────────── */
+  /* ── Icon helpers (advanced editor) ─────────────────────── */
   const selectMaterialIcon = useCallback((name: string) => {
     manualIconRef.current = true;
     setAutoFavicon(false);
@@ -248,7 +541,6 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     ? MAT_ICONS.filter(i => i.includes(iconSearch.toLowerCase()))
     : MAT_ICONS;
 
-  /* ── Image crop ──────────────────────────────────────────── */
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -278,25 +570,12 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     setCropSrc(null);
   }, [cropSrc, f]);
 
-  /* ── Value validation ────────────────────────────────────── */
-  const valueError = useMemo(() => {
-    const v = form.value.trim();
-    if (!v) return null;
-    if ((form.type === 'url' || form.type === 'browser') && !/^https?:\/\/.+/.test(v))
-      return 'URL은 https:// 또는 http://로 시작해야 합니다';
-    if (form.type === 'folder' && !/^[A-Za-z]:\\/.test(v) && !v.startsWith('/') && !v.startsWith('\\\\'))
-      return '올바른 폴더 경로를 입력하세요 (예: C:\\Users\\...)';
-    if (form.type === 'app' && v && !/\.(exe|bat|cmd|lnk)$/i.test(v) && !v.startsWith('C:\\'))
-      return '실행 파일 경로를 입력하거나 브라우저로 선택하세요';
-    return null;
-  }, [form.type, form.value]);
-
   /* ── File pickers ─────────────────────────────────────────── */
   const handlePickFolder = async () => {
     const p = await electronAPI.pickFolder();
     if (p) {
-      f({ value: p });
-      if (!form.title) f({ title: p.split('\\').pop() || p, value: p });
+      const fallbackName = p.split('\\').pop() || p;
+      f({ value: p, ...(form.title ? {} : { title: fallbackName }) });
     }
   };
 
@@ -304,12 +583,10 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     const p = await electronAPI.pickExe();
     if (p) {
       const name = p.split('\\').pop()?.replace(/\.(exe|lnk)$/i, '') || p;
-      f({ value: p });
-      if (!form.title) f({ title: name, value: p });
+      f({ value: p, ...(form.title ? {} : { title: name }) });
     }
   };
 
-  /* ── Duplicate check ─────────────────────────────────────── */
   const duplicateItem = (() => {
     const val = form.value.trim().toLowerCase();
     if (!val) return null;
@@ -322,16 +599,13 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
   })();
 
   /* ── Save ─────────────────────────────────────────────────── */
-  function handleSave() {
-    // Widgets carry no `value` (they don't launch a target), so the
-    // standard "title + value required" check would block save. We
-    // gate on title only for widgets; colour-swatches additionally
-    // need a valid hex.
-    if (!form.title.trim()) return;
-    if (!isWidgetMode && !form.value.trim()) return;
+  function buildItemPayload(): Omit<LauncherItem, 'id'> | LauncherItem | null {
+    const finalTitle = form.title.trim() || derivedTitle;
+    if (!finalTitle) return null;
+    if (!isWidgetMode && !form.value.trim()) return null;
 
     const base = {
-      title: form.title,
+      title: finalTitle,
       type: form.type,
       value: form.value,
       color: form.color || undefined,
@@ -341,9 +615,6 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
       ...(editItem?.exePath ? { exePath: editItem.exePath } : {}),
     };
 
-    // Preserve / update the widget sub-document. For colour-swatch we
-    // pull the local hex/name state into options; for any other
-    // widget kind we just spread editItem.widget through unchanged.
     let widget: LauncherItem['widget'] | undefined;
     if (isWidgetMode && editItem?.widget) {
       if (editItem.widget.kind === 'color-swatch') {
@@ -360,58 +631,585 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     }
 
     if (isEdit) {
-      // Pass targetPresetId only when it differs from the original owning
-      // preset — keeps existing in-preset edit codepath untouched.
+      return { ...editItem, ...base, ...(widget ? { widget } : {}) } as LauncherItem;
+    }
+    return { ...base, ...(widget ? { widget } : {}) } as Omit<LauncherItem, 'id'>;
+  }
+
+  function handleSave(targetSpaceId?: string) {
+    const payload = buildItemPayload();
+    if (!payload) {
+      const p = firstIncompletePhase();
+      goPhase(p);
+      return;
+    }
+    const useSpace = targetSpaceId || form.spaceId;
+    if (isEdit) {
       const presetMoved = !!(form.presetId && initialPresetId && form.presetId !== initialPresetId);
-      onSave(
-        form.spaceId,
-        { ...editItem, ...base, ...(widget ? { widget } : {}) } as LauncherItem,
-        presetMoved ? form.presetId : undefined,
-      );
+      onSave(useSpace, payload as LauncherItem, presetMoved ? form.presetId : undefined);
     } else {
-      onSave(form.spaceId, { ...base, ...(widget ? { widget } : {}) } as Omit<LauncherItem, 'id'>);
+      onSave(useSpace, payload as Omit<LauncherItem, 'id'>);
+      if (!advancedTouchedRef.current && onRequestAdvanced) {
+        toast('카드 추가됨', {
+          description: '아이콘이나 색상을 바꿔볼까요?',
+          action: { label: '꾸미기', onClick: () => onRequestAdvanced(useSpace) },
+          duration: 5000,
+        });
+      }
     }
     onClose();
   }
 
-  const dropBtnStyle: React.CSSProperties = {
-    width: '100%', height: 32, padding: '0 10px',
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
-    background: 'var(--surface)', border: '1px solid var(--border-rgba)',
-    borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit',
-    fontSize: 12, color: 'var(--text-color)', transition: 'border-color 0.12s',
+  /* ── Phase auto-advance handlers ────────────────────────── */
+  const handlePickType = (t: LauncherItem['type']) => {
+    f({ type: t });
+    setClipboardHint(null);
+    // Tiny dwell so the user sees the selection state before sliding.
+    window.setTimeout(() => goPhase(1), 120);
   };
 
-  const selectedSpace = visibleSpaces.find(s => s.id === form.spaceId);
-  const selectedType = TYPE_OPTIONS.find(o => o.value === form.type);
-  // Widget cards have an entirely different shape — no value/URL/path,
-  // no type to choose, no icon picker (the widget renders its own
-  // inner UI). We hide those sections in widget mode and keep only
-  // title + space (and color via the existing color section, if any).
-  const isWidgetMode = form.type === 'widget';
-  // Specific widget-kind fields. Only populated when editing a
-  // colour-swatch widget — `editItem.widget.options` is read once at
-  // mount and the user's edits live in local state until save.
-  const isColorSwatch = isWidgetMode && editItem?.widget?.kind === 'color-swatch';
-  const initialColorOpts = (editItem?.widget?.kind === 'color-swatch')
-    ? editItem.widget.options
-    : null;
-  const [swatchHex, setSwatchHex] = useState(
-    (initialColorOpts?.hex || '#6366F1').toUpperCase()
-  );
-  const [swatchName, setSwatchName] = useState(
-    initialColorOpts?.name ?? ''
-  );
-  // When context narrows the choices to one, the dropdown is meaningless — we
-  // still render it (disabled) so users know the type, but they can't change it.
-  const typeOptions = useMemo(
-    () => (allowedTypes && allowedTypes.length > 0)
-      ? TYPE_OPTIONS.filter(o => allowedTypes.includes(o.value))
-      : TYPE_OPTIONS,
-    [allowedTypes],
-  );
-  const typeLocked = typeOptions.length <= 1;
+  const handleValueEnter = () => {
+    if (!form.value.trim() || valueError) return;
+    goPhase(2);
+  };
 
+  const handlePickSpace = (sid: string) => {
+    f({ spaceId: sid });
+    handleSave(sid);
+  };
+
+  /* ── Keyboard nav ───────────────────────────────────────────
+   * Bound on `document` with capture: true — Radix Dialog's own
+   * keydown handlers bubble first by default, and an earlier
+   * `window`-level binding was occasionally beaten by them on
+   * Ctrl+Enter (the close button focused inside the trap, Enter
+   * fires its click before our handler sees the event). Capture
+   * ensures we always run first.
+   *
+   * Stale-closure guard: `handleSave` / `goPhase` / `phaseComplete`
+   * are read via refs that always point to the latest render —
+   * otherwise the listener freezes on the first render's closures
+   * and Ctrl+Enter ends up calling stale form state. */
+  const latestRef = useRef({ phase, handleSave: (_?: string) => {}, goPhase, phaseComplete });
+  useEffect(() => {
+    latestRef.current = { phase, handleSave, goPhase, phaseComplete };
+  });
+  useEffect(() => {
+    if (!open || startAdvanced) return;
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const inInput = !!target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable
+      );
+      const cur = latestRef.current;
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        cur.handleSave();
+        return;
+      }
+      // Plain Enter on phase ③ (no input focused) → save with the
+      // currently-selected space chip. Phase ② keeps its
+      // input-bound Enter → "next" semantic via renderValuePhase.
+      if (e.key === 'Enter' && !inInput && cur.phase === 2 && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        cur.handleSave();
+        return;
+      }
+      if (e.key === 'ArrowLeft' && !inInput) {
+        if (cur.phase > 0) { e.preventDefault(); cur.goPhase((cur.phase - 1) as Phase); }
+      } else if (e.key === 'ArrowRight' && !inInput) {
+        if (cur.phase < 2 && cur.phaseComplete(cur.phase)) {
+          e.preventDefault(); cur.goPhase((cur.phase + 1) as Phase);
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [open, startAdvanced]);
+
+  /* ── Pointer drag (horizontal swipe between phases) ─────── */
+  const onSliderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Only react to primary mouse button / touch / pen
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    // Don't capture drag from inside text inputs or buttons — they need
+    // their own click semantics. Bail if the target is interactive.
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'LABEL') return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, pointerId: e.pointerId, locked: null };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
+  };
+
+  const onSliderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (d.locked === null) {
+      // Decide axis after first 8px of motion.
+      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+        d.locked = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+      }
+    }
+    if (d.locked !== 'h') return;
+    // Resist over-drag at edges (rubber-band).
+    let bounded = dx;
+    if ((phase === 0 && dx > 0) || (phase === 2 && dx < 0)) bounded = dx * 0.35;
+    setDragDx(bounded);
+  };
+
+  const onSliderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
+    const dx = e.clientX - d.startX;
+    dragRef.current = null;
+    if (d.locked === 'h' && Math.abs(dx) >= SWIPE_COMMIT_PX) {
+      if (dx < 0 && phase < 2 && phaseComplete(phase)) {
+        goPhase((phase + 1) as Phase);
+        return;
+      }
+      if (dx > 0 && phase > 0) {
+        goPhase((phase - 1) as Phase);
+        return;
+      }
+    }
+    setDragDx(0);
+  };
+
+  /* ── Auto-focus the relevant input each phase ───────────── */
+  const valueInputRef = useRef<HTMLInputElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!open || startAdvanced) return;
+    const t = window.setTimeout(() => {
+      if (phase === 1) valueInputRef.current?.focus();
+    }, 220);
+    return () => window.clearTimeout(t);
+  }, [open, startAdvanced, phase]);
+
+  /* ── Render: advanced (re-open) mode ────────────────────── */
+  if (startAdvanced) {
+    return (
+      <Dialog open={open} onOpenChange={v => !v && onClose()}>
+        <DialogContent style={{ width: 560, maxWidth: '92vw', padding: 0, overflow: 'hidden' }}>
+          <DialogHeader style={{ padding: '14px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
+            <DialogTitle style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-color)' }}>
+              꾸미기 — {form.title || derivedTitle || '카드'}
+            </DialogTitle>
+          </DialogHeader>
+          <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14, maxHeight: 'calc(82vh - 110px)', overflowY: 'auto' }}>
+            {renderAdvancedSection({
+              form, cropSrc, setCropSrc, imgRef, handleCropApply,
+              setAutoFavicon, setForm, iconTab, setIconTab,
+              iconSearch, setIconSearch, filteredIcons, selectMaterialIcon,
+              fetchFavicon, fetchFileIcon, resetIcon, fileRef, handleFileChange,
+              f,
+            })}
+          </div>
+          <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)' }}>
+            <Button variant="ghost" onClick={onClose}>닫기</Button>
+            <Button onClick={() => handleSave()} title="저장 (Ctrl + Enter)">
+              저장 <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.7, fontWeight: 400 }}>Ctrl+Enter</span>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  /* ── Render: phase shell ─────────────────────────────────── */
+  const sliderTransform = `translateX(calc(${-phase * 100}% + ${dragDx}px))`;
+  const sliderTransition = dragDx === 0 ? 'transform 0.28s cubic-bezier(0.4, 0.1, 0.3, 1)' : 'none';
+  const canGoNext = phaseComplete(phase) && phase < 2;
+  const isPlace = phase === 2;
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent style={{ width: 580, maxWidth: '94vw', padding: 0, overflow: 'hidden' }}>
+        <DialogHeader style={{ padding: '14px 20px 10px', borderBottom: '1px solid var(--border-rgba)' }}>
+          <DialogTitle style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-color)' }}>
+            {isEdit ? '카드 수정' : '카드 추가'}
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Phase tabs — clickable progress dots with labels. Below
+            them, a 2px progress line that grows with the active phase
+            ratio. The line lives in a 1px-tall track so it doesn't
+            stack visually with the dialog header border. */}
+        <div style={{
+          position: 'relative', height: 2,
+          background: 'color-mix(in srgb, var(--border-rgba) 60%, transparent)',
+        }}>
+          <div style={{
+            position: 'absolute', inset: 0, right: 'auto',
+            width: `${((isWidgetMode
+              ? (phase === 0 ? 0.5 : 1)
+              : ((phase + 1) / 3)) * 100)}%`,
+            background: 'var(--accent)',
+            transition: 'width 0.32s cubic-bezier(0.4, 0.1, 0.3, 1)',
+          }} />
+        </div>
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0,
+          padding: '12px 20px 6px',
+        }}>
+          {(isWidgetMode ? [0, 2] : [0, 1, 2]).map((p, i, arr) => {
+            const active = phase === p;
+            const reachable = p === 0 || phaseComplete((p - 1) as Phase) || phaseComplete(p as Phase);
+            const labelOverride = isWidgetMode && p === 0 ? '색·이름' : PHASE_LABELS[p];
+            return (
+              <div key={p} style={{ display: 'flex', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  onClick={() => reachable && goPhase(p as Phase)}
+                  disabled={!reachable}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '6px 10px', borderRadius: 99,
+                    background: active ? 'var(--accent-dim)' : 'transparent',
+                    border: 'none',
+                    color: active ? 'var(--accent)' : reachable ? 'var(--text-muted)' : 'var(--text-dim)',
+                    fontSize: 11, fontWeight: active ? 700 : 500,
+                    cursor: reachable ? 'pointer' : 'not-allowed',
+                    fontFamily: 'inherit',
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <span style={{
+                    width: 18, height: 18, borderRadius: '50%',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    background: active ? 'var(--accent)' : phaseComplete(p as Phase) ? 'color-mix(in srgb, var(--accent) 30%, transparent)' : 'var(--surface)',
+                    color: active ? '#fff' : phaseComplete(p as Phase) ? 'var(--accent)' : 'var(--text-dim)',
+                    fontSize: 10, fontWeight: 700,
+                    border: active ? 'none' : `1px solid ${phaseComplete(p as Phase) ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                  }}>
+                    {phaseComplete(p as Phase) && !active ? '✓' : (isWidgetMode && p === 2 ? 2 : p + 1)}
+                  </span>
+                  {labelOverride}
+                </button>
+                {i < arr.length - 1 && (
+                  <span style={{
+                    width: 24, height: 1, background: 'var(--border-rgba)', margin: '0 2px',
+                  }} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Phase slider — overflow hidden, transform-translateX. */}
+        <div
+          style={{ overflow: 'hidden', touchAction: 'pan-y', userSelect: 'none' }}
+          onPointerDown={onSliderPointerDown}
+          onPointerMove={onSliderPointerMove}
+          onPointerUp={onSliderPointerUp}
+          onPointerCancel={onSliderPointerUp}
+        >
+          <div style={{
+            display: 'flex',
+            transform: sliderTransform,
+            transition: sliderTransition,
+            minHeight: 380,
+          }}>
+            {/* Phase ① — Type / (widget) Color+Name */}
+            <div style={{ flex: '0 0 100%', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+              {isWidgetMode ? (
+                renderWidgetPhase({
+                  isColorSwatch, swatchHex, setSwatchHex, swatchName, setSwatchName,
+                  title: form.title, onTitleChange: (v: string) => f({ title: v }),
+                  derivedTitle, titleInputRef,
+                })
+              ) : (
+                renderTypePhase({
+                  typeOptions, current: form.type, onPick: handlePickType,
+                  typeLocked, clipboardHint, setClipboardHint,
+                  hiddenTypeCount, showAllTypes,
+                  onToggleShowAll: () => setShowAllTypes(s => !s),
+                })
+              )}
+            </div>
+
+            {/* Phase ② — Value + Name */}
+            <div style={{ flex: '0 0 100%', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+              {!isWidgetMode && renderValuePhase({
+                form, f,
+                valueInputRef, titleInputRef,
+                derivedTitle, valueError, duplicateItem,
+                onPickFolder: handlePickFolder, onPickExe: handlePickExe,
+                onEnterCommit: handleValueEnter,
+              })}
+            </div>
+
+            {/* Phase ③ — Place */}
+            <div style={{ flex: '0 0 100%', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+              {renderPlacePhase({
+                visibleSpaces, recommendedSpaceId,
+                form, f, isEdit, presets,
+                monitorCount, isWidgetMode,
+                onPickSpace: handlePickSpace,
+                onPickPreset: (pid) => {
+                  const p = presets?.find(pp => pp.id === pid);
+                  const firstSpaceId = p?.spaces[0]?.id ?? '';
+                  setForm(prev => ({ ...prev, presetId: pid, spaceId: firstSpaceId }));
+                },
+                onPickOnScreen: onPickOnScreen
+                  ? () => {
+                      const payload = buildItemPayload();
+                      if (!payload) { goPhase(firstIncompletePhase()); return; }
+                      onPickOnScreen(payload as Omit<LauncherItem, 'id'>);
+                    }
+                  : undefined,
+              })}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)', display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <Button variant="ghost" onClick={onClose}>취소</Button>
+            {phase > 0 && (
+              <Button variant="ghost" onClick={() => goPhase((phase - 1) as Phase)}>
+                <Icon name="arrow_back" size={14} style={{ marginRight: 4 }} />이전
+              </Button>
+            )}
+          </div>
+          <div>
+            {!isPlace ? (
+              <Button
+                onClick={() => goPhase((phase + 1) as Phase)}
+                disabled={!canGoNext}
+                title="다음 (→ 또는 Enter)"
+              >
+                다음 <Icon name="arrow_forward" size={14} style={{ marginLeft: 4 }} />
+              </Button>
+            ) : (
+              <Button
+                onClick={() => handleSave()}
+                disabled={!phaseComplete(2) || !(form.title.trim() || derivedTitle) || (!isWidgetMode && !form.value.trim())}
+                title="저장 (Ctrl + Enter)"
+              >
+                {isEdit ? '저장' : '추가'}
+                <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.7, fontWeight: 400 }}>Ctrl+Enter</span>
+              </Button>
+            )}
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────
+ * Phase renderers — kept as plain functions (not components) so
+ * they share the parent's closure state without ref/prop juggling.
+ * Pure JSX-returning helpers; no hooks inside.
+ * ───────────────────────────────────────────────────────────── */
+
+function renderTypePhase({
+  typeOptions, current, onPick, typeLocked, clipboardHint, setClipboardHint,
+  hiddenTypeCount, showAllTypes, onToggleShowAll,
+}: {
+  typeOptions: typeof TYPE_OPTIONS;
+  current: LauncherItem['type'];
+  onPick: (t: LauncherItem['type']) => void;
+  typeLocked: boolean;
+  clipboardHint: { type: LauncherItem['type']; label: string } | null;
+  setClipboardHint: (v: null) => void;
+  hiddenTypeCount: number;
+  showAllTypes: boolean;
+  onToggleShowAll: () => void;
+}) {
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+        <h2 style={phaseHeadingStyle}>어떤 카드인가요?</h2>
+        {clipboardHint && (
+          <button
+            type="button"
+            onClick={() => setClipboardHint(null)}
+            title="클립보드에서 자동 감지된 유형. 다른 카드를 누르면 바뀝니다."
+            style={chipStyle}
+          >
+            <Icon name="content_paste" size={11} color="var(--accent)" />
+            클립보드에서
+          </button>
+        )}
+      </div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+        gap: 10,
+        marginTop: 4,
+      }}>
+        {typeOptions.map(o => {
+          const active = o.value === current;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              disabled={typeLocked && !active}
+              onClick={() => onPick(o.value)}
+              title={`${o.label} : ${o.hint}`}
+              style={{
+                display: 'flex', flexDirection: 'column',
+                alignItems: 'center', justifyContent: 'center',
+                gap: 8,
+                padding: '20px 12px',
+                minHeight: 110,
+                borderRadius: 12,
+                background: active ? 'var(--accent-dim)' : 'var(--surface)',
+                border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                color: active ? 'var(--accent)' : 'var(--text-muted)',
+                cursor: typeLocked && !active ? 'default' : 'pointer',
+                fontFamily: 'inherit',
+                fontSize: 12,
+                fontWeight: active ? 700 : 500,
+                transition: 'all 0.15s',
+                opacity: typeLocked && !active ? 0.4 : 1,
+                transform: active ? 'scale(1.02)' : 'scale(1)',
+              }}
+            >
+              <Icon name={o.icon} size={28} color={active ? 'var(--accent)' : 'var(--text-muted)'} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
+                <span>{o.label}</span>
+                <span style={{ fontSize: 10, color: active ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 400 }}>{o.hint}</span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {/* Override link — surfaces only when plausibility hid types
+          AND the user hasn't already opted into the full list. The
+          link disappears once expanded so it doesn't shout "go back"
+          at the user; they can re-narrow by editing the value. */}
+      {(hiddenTypeCount > 0 || showAllTypes) && (
+        <button
+          type="button"
+          onClick={onToggleShowAll}
+          style={{
+            alignSelf: 'center',
+            marginTop: 4,
+            padding: '4px 10px',
+            background: 'transparent',
+            border: 'none',
+            color: 'var(--text-dim)',
+            fontSize: 10.5,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            textDecoration: 'underline',
+            textUnderlineOffset: 3,
+          }}
+        >
+          {showAllTypes ? '추천 유형만 보기' : `다른 유형 보기 (${hiddenTypeCount}개 더)`}
+        </button>
+      )}
+    </>
+  );
+}
+
+function renderWidgetPhase({
+  isColorSwatch, swatchHex, setSwatchHex, swatchName, setSwatchName,
+  title, onTitleChange, derivedTitle, titleInputRef,
+}: {
+  isColorSwatch: boolean;
+  swatchHex: string;
+  setSwatchHex: (v: string) => void;
+  swatchName: string;
+  setSwatchName: (v: string) => void;
+  title: string;
+  onTitleChange: (v: string) => void;
+  derivedTitle: string;
+  titleInputRef: React.RefObject<HTMLInputElement | null>;
+}) {
+  if (!isColorSwatch) {
+    return (
+      <>
+        <h2 style={phaseHeadingStyle}>이름</h2>
+        <Input
+          ref={titleInputRef}
+          value={title}
+          onChange={e => onTitleChange(e.target.value)}
+          placeholder={derivedTitle ? `${derivedTitle}  (Enter로 그대로 사용)` : '카드 이름'}
+          style={{ height: 44, fontSize: 14, borderRadius: 10 }}
+          autoFocus
+        />
+      </>
+    );
+  }
+  return (
+    <>
+      <h2 style={phaseHeadingStyle}>색상과 이름</h2>
+      <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+        <label style={{
+          position: 'relative',
+          width: 88, height: 88, borderRadius: 16,
+          background: swatchHex,
+          border: '1px solid var(--border-rgba)',
+          cursor: 'pointer', flexShrink: 0,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+          overflow: 'hidden',
+        }}>
+          <input
+            type="color"
+            value={swatchHex}
+            onChange={e => setSwatchHex(e.target.value.toUpperCase())}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', border: 'none' }}
+          />
+        </label>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Input
+            value={swatchHex}
+            onChange={e => {
+              const v = e.target.value.toUpperCase();
+              if (/^#?[0-9A-F]{0,6}$/.test(v)) {
+                setSwatchHex(v.startsWith('#') ? v : '#' + v);
+              }
+            }}
+            placeholder="#RRGGBB"
+            className="font-mono text-xs"
+            style={{ height: 36, fontSize: 13 }}
+          />
+          <Input
+            ref={titleInputRef}
+            value={swatchName}
+            onChange={e => { setSwatchName(e.target.value); onTitleChange(e.target.value); }}
+            placeholder="이름 (선택) — 예: 브랜드 프라이머리"
+            style={{ height: 36, fontSize: 13 }}
+          />
+        </div>
+      </div>
+    </>
+  );
+}
+
+function renderValuePhase({
+  form, f,
+  valueInputRef, titleInputRef,
+  derivedTitle, valueError, duplicateItem,
+  onPickFolder, onPickExe, onEnterCommit,
+}: {
+  form: any;
+  f: (patch: any) => void;
+  valueInputRef: React.RefObject<HTMLInputElement | null>;
+  titleInputRef: React.RefObject<HTMLInputElement | null>;
+  derivedTitle: string;
+  valueError: string | null;
+  duplicateItem: { item: LauncherItem; space: Space } | null;
+  onPickFolder: () => void;
+  onPickExe: () => void;
+  onEnterCommit: () => void;
+}) {
+  const valueLabel =
+    form.type === 'url' || form.type === 'browser' ? 'URL' :
+    form.type === 'folder' ? '폴더 경로' :
+    form.type === 'app' ? '실행 파일' :
+    form.type === 'cmd' ? '커맨드' :
+    form.type === 'text' ? '텍스트' :
+    form.type === 'window' ? '창 제목' : '값';
   const valuePlaceholder =
     form.type === 'url' ? 'https://...'
     : form.type === 'folder' ? 'C:\\Users\\...'
@@ -420,440 +1218,422 @@ export function ItemDialog({ open, onClose, spaces, editItem, defaultSpaceId, mo
     : form.type === 'text' ? '클립보드에 복사될 텍스트'
     : form.type === 'window' ? '창 제목 (Alt+Tab에 보이는 이름)'
     : '값 입력';
-
-  const valueLabel =
-    form.type === 'url' || form.type === 'browser' ? 'URL' :
-    form.type === 'folder' ? '폴더 경로' :
-    form.type === 'app' ? '실행 파일' :
-    form.type === 'cmd' ? '커맨드' :
-    form.type === 'text' ? '텍스트' :
-    form.type === 'window' ? '창 제목' : '값';
-
   return (
-    <Dialog open={open} onOpenChange={v => !v && onClose()}>
-      <DialogContent style={{ width: 440, padding: 0, overflow: 'hidden' }}>
-        <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
-          <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)' }}>
-            {isEdit ? '카드 수정' : '카드 추가'}
-          </DialogTitle>
-        </DialogHeader>
-
-        <div style={{ padding: '16px 20px 4px', display: 'flex', flexDirection: 'column', gap: 12, overflowY: 'auto', maxHeight: 'calc(88vh - 110px)' }}>
-
-          {/* ① Icon preview + Name */}
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-            <button
-              onClick={() => setShowAdvanced(v => !v)}
-              title="아이콘 변경 (클릭)"
-              style={{
-                width: 48, height: 48, flexShrink: 0, borderRadius: 12,
-                background: 'var(--surface)',
-                border: `1.5px solid ${showAdvanced ? 'var(--accent)' : 'var(--border-rgba)'}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', overflow: 'hidden', padding: 0,
-                transition: 'border-color 0.15s',
-              }}
-            >
-              {form.iconType === 'image'
-                ? <img src={form.icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    onError={() => { setAutoFavicon(false); setForm(p => ({ ...p, iconType: 'material', icon: form.type === 'app' ? 'apps' : 'public' })); }} />
-                : <Icon name={form.icon} size={24} color="var(--text-muted)" />
-              }
-            </button>
-            <Input
-              value={form.title}
-              onChange={e => f({ title: e.target.value })}
-              placeholder="카드 이름"
-              style={{ flex: 1, height: 48, fontSize: 14, borderRadius: 10 }}
-              autoFocus
-            />
-          </div>
-
-          {/* ② Type + Space — widget mode hides the Type dropdown
-                 (its kind is fixed at creation; can't be changed to
-                 a URL etc.) and gives Space the full row. */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: isWidgetMode ? '1fr' : '1fr 1fr',
-            gap: 8,
-          }}>
-            {!isWidgetMode && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>유형</Label>
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    disabled={typeLocked}
-                    style={{ ...dropBtnStyle, opacity: typeLocked ? 0.75 : 1, cursor: typeLocked ? 'default' : 'pointer' }}
-                    title={typeLocked ? '감지된 유형으로 자동 설정됨' : undefined}
-                  >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {selectedType && <Icon name={selectedType.icon} size={14} color="var(--text-muted)" />}
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {selectedType?.label ?? '선택'}
-                      </span>
-                    </span>
-                    {!typeLocked && <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />}
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent style={{ minWidth: 160 }}>
-                    {typeOptions.map(o => (
-                      <DropdownMenuItem key={o.value} onClick={() => f({ type: o.value })}
-                        style={{ fontWeight: o.value === form.type ? 700 : 400 }}>
-                        <Icon name={o.icon} size={14} color="var(--text-muted)" />
-                        <span>{o.label}</span>
-                        {o.value === form.type && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            )}
-
-            {/* Preset dropdown — only when editing AND caller passed presets.
-                Lets the user move a card to a different preset entirely.
-                Adding new cards always uses the active preset (no dropdown). */}
-            {isEdit && presets && presets.length > 1 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>프리셋</Label>
-                <DropdownMenu>
-                  <DropdownMenuTrigger style={dropBtnStyle}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {(() => {
-                        const p = presets.find(pp => pp.id === form.presetId);
-                        return p ? (p.label || `프리셋 ${p.id}`) : '선택';
-                      })()}
-                    </span>
-                    <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent style={{ minWidth: 160 }}>
-                    {presets.map(p => (
-                      <DropdownMenuItem
-                        key={p.id}
-                        onClick={() => {
-                          // When the preset changes, reset the space to the
-                          // first space of that preset so the dropdown below
-                          // doesn't show a stale-looking selection.
-                          const firstSpaceId = p.spaces[0]?.id ?? '';
-                          setForm(prev => ({ ...prev, presetId: p.id, spaceId: firstSpaceId }));
-                        }}
-                        style={{ fontWeight: p.id === form.presetId ? 700 : 400 }}
-                      >
-                        {p.label || `프리셋 ${p.id}`}
-                        {p.id === form.presetId && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            )}
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-              <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>스페이스</Label>
-              <DropdownMenu>
-                <DropdownMenuTrigger style={dropBtnStyle}>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {selectedSpace ? `${selectedSpace.icon ?? ''} ${selectedSpace.name}`.trim() : '선택'}
-                  </span>
-                  <Icon name="expand_more" size={14} style={{ flexShrink: 0 }} color="var(--text-dim)" />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent style={{ minWidth: 160 }}>
-                  {visibleSpaces.map(s => (
-                    <DropdownMenuItem key={s.id} onClick={() => f({ spaceId: s.id })}
-                      style={{ fontWeight: s.id === form.spaceId ? 700 : 400 }}>
-                      {s.icon} {s.name}
-                      {s.id === form.spaceId && <Icon name="check" size={13} style={{ marginLeft: 'auto' }} color="var(--accent)" />}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
-
-          {/* ②-bis Colour swatch editor — only for color-swatch widgets.
-                A native color picker handles the hex (HTML5 input
-                type=color, integrated with the OS picker), and a
-                separate name input lets the user label the swatch
-                (e.g. "Brand primary"). The Pantone-style widget
-                renders the name above the hex when a name is set. */}
-          {isColorSwatch && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '6px 0 2px' }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                {/* Color picker swatch — clicking opens the OS native
-                    color picker. We render a styled wrapper so it
-                    matches the rest of the dialog instead of looking
-                    like a default browser control. */}
-                <label style={{
-                  position: 'relative',
-                  width: 56, height: 56,
-                  borderRadius: 10,
-                  background: swatchHex,
-                  border: '1px solid var(--border-rgba)',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-                  overflow: 'hidden',
-                }}>
-                  <input
-                    type="color"
-                    value={swatchHex}
-                    onChange={e => setSwatchHex(e.target.value.toUpperCase())}
-                    style={{
-                      position: 'absolute', inset: 0,
-                      width: '100%', height: '100%',
-                      opacity: 0, cursor: 'pointer', border: 'none',
-                    }}
-                  />
-                </label>
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>HEX</Label>
-                  <Input
-                    value={swatchHex}
-                    onChange={e => {
-                      const v = e.target.value.toUpperCase();
-                      // Only accept hex-shaped input. Tolerant on
-                      // length so the user can type one char at a
-                      // time without the value snapping back.
-                      if (/^#?[0-9A-F]{0,6}$/.test(v)) {
-                        setSwatchHex(v.startsWith('#') ? v : '#' + v);
-                      }
-                    }}
-                    placeholder="#RRGGBB"
-                    className="font-mono text-xs"
-                    style={{ height: 30, fontSize: 12 }}
-                  />
-                </div>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>이름 (선택)</Label>
-                <Input
-                  value={swatchName}
-                  onChange={e => setSwatchName(e.target.value)}
-                  placeholder="예: 브랜드 프라이머리"
-                  style={{ height: 30, fontSize: 12 }}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* ③ Value / Path — hidden for widgets (no URL/path on a
-                widget; the renderer wires its own behaviour). */}
-          {!isWidgetMode && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>{valueLabel}</Label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <Input
-                value={form.value}
-                onChange={e => f({ value: e.target.value })}
-                placeholder={valuePlaceholder}
-                className="font-mono text-xs"
-                style={{ flex: 1, borderColor: valueError ? 'var(--destructive, #ef4444)' : undefined }}
-              />
-              {form.type === 'folder' && (
-                <button type="button" onClick={handlePickFolder} title="폴더 선택"
-                  style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
-                  <Icon name="folder_open" size={16} />
-                </button>
-              )}
-              {form.type === 'app' && (
-                <button type="button" onClick={handlePickExe} title="실행 파일 선택"
-                  style={{ flexShrink: 0, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', color: 'var(--text-muted)' }}>
-                  <Icon name="apps" size={16} />
-                </button>
-              )}
-            </div>
-            {valueError && (
-              <p style={{ fontSize: 10, color: 'var(--destructive, #ef4444)', display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
-                <Icon name="error" size={12} />{valueError}
-              </p>
-            )}
-            {duplicateItem && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 7, background: 'var(--surface)', border: '1px solid var(--border-focus)' }}>
-                <Icon name="warning" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                  <b style={{ color: 'var(--text-color)' }}>{duplicateItem.item.title}</b>에 동일한 값이 이미 있습니다 ({duplicateItem.space.name})
-                </span>
-              </div>
-            )}
-          </div>
-          )}
-
-          {/* ④ Monitor — also hidden for widgets (they have no
-              launchable target so monitor preference is meaningless). */}
-          {!isWidgetMode && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap', flexShrink: 0 }}>모니터</span>
-            <div style={{ display: 'flex', gap: 4 }}>
-              <button onClick={() => f({ monitor: undefined })} title="자동 (마지막 위치)"
-                style={{ height: 28, padding: '0 10px', borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', background: form.monitor === undefined ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${form.monitor === undefined ? 'var(--accent)' : 'var(--border-rgba)'}`, color: form.monitor === undefined ? '#fff' : 'var(--text-muted)' }}>
-                자동
-              </button>
-              {Array.from({ length: monitorCount }, (_, i) => i + 1).map(n => (
-                <button key={n} onClick={() => f({ monitor: n })} title={`모니터 ${n}`}
-                  style={{ height: 28, padding: '0 10px', borderRadius: 6, fontWeight: 600, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.12s', background: form.monitor === n ? 'var(--accent)' : 'var(--surface)', border: `1px solid ${form.monitor === n ? 'var(--accent)' : 'var(--border-rgba)'}`, color: form.monitor === n ? '#fff' : 'var(--text-muted)' }}>
-                  {n}
-                </button>
-              ))}
-            </div>
-          </div>
-          )}
-
-          {/* ⑤ Advanced toggle */}
-          <button
-            onClick={() => setShowAdvanced(v => !v)}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 5, width: '100%',
-              padding: '6px 0', background: 'none', border: 'none',
-              borderTop: '1px solid var(--border-rgba)', cursor: 'pointer',
-              color: showAdvanced ? 'var(--accent)' : 'var(--text-dim)',
-              fontSize: 11, fontFamily: 'inherit', transition: 'color 0.12s',
-            }}
-          >
-            <Icon name={showAdvanced ? 'expand_less' : 'expand_more'} size={14} />
-            아이콘 &amp; 색상
+    <>
+      <h2 style={phaseHeadingStyle}>{valueLabel}</h2>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <Input
+          ref={valueInputRef}
+          value={form.value}
+          onChange={e => f({ value: e.target.value })}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); onEnterCommit(); } }}
+          placeholder={valuePlaceholder}
+          className="font-mono text-xs"
+          style={{ flex: 1, height: 44, fontSize: 13, borderColor: valueError ? 'var(--destructive, #ef4444)' : undefined }}
+        />
+        {form.type === 'folder' && (
+          <button type="button" onClick={onPickFolder} title="폴더 선택" style={pickerBtnStyle}>
+            <Icon name="folder_open" size={18} />
           </button>
-
-          {/* ⑥ Advanced section */}
-          {showAdvanced && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, paddingBottom: 4 }}>
-
-              {/* Crop overlay */}
-              {cropSrc && (
-                <div style={{ padding: 10, borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
-                  <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>가운데 정사각형으로 크롭됩니다</p>
-                  <img ref={imgRef} src={cropSrc} alt="crop preview" style={{ maxHeight: 120, maxWidth: '100%', borderRadius: 6, objectFit: 'contain' }} />
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button onClick={() => setCropSrc(null)} style={{ padding: '4px 12px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit' }}>취소</button>
-                    <button onClick={handleCropApply} style={{ padding: '4px 12px', fontSize: 11, borderRadius: 6, background: 'var(--accent)', border: 'none', color: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>적용</button>
-                  </div>
-                </div>
-              )}
-
-              {/* Icon picker */}
-              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                {/* Preview + reset */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', flexShrink: 0 }}>
-                  <div style={{ width: 56, height: 56, borderRadius: 12, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-                    {form.iconType === 'image'
-                      ? <img src={form.icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={() => { setAutoFavicon(false); setForm(p => ({ ...p, iconType: 'material', icon: form.type === 'app' ? 'apps' : 'public' })); }} />
-                      : <Icon name={form.icon} size={28} color="var(--text-muted)" />
-                    }
-                  </div>
-                  <button onClick={resetIcon} title="기본값으로 초기화"
-                    style={{ padding: '2px 8px', fontSize: 10, borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-dim)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
-                    <Icon name="restart_alt" size={11} />초기화
-                  </button>
-                </div>
-
-                {/* Tabs + content */}
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <div style={{ display: 'flex', gap: 3 }}>
-                    {(['symbol', 'system', 'image'] as const).map(tab => {
-                      const labels: Record<IconTab, string> = { symbol: '심볼', system: '시스템', image: '이미지' };
-                      const active = iconTab === tab;
-                      return (
-                        <button key={tab} onClick={() => setIconTab(tab)}
-                          style={{ padding: '3px 10px', fontSize: 11, borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', fontWeight: active ? 700 : 400, background: active ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`, color: active ? 'var(--accent)' : 'var(--text-muted)', transition: 'all 0.1s' }}>
-                          {labels[tab]}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {iconTab === 'symbol' && (
-                    <>
-                      <input
-                        value={iconSearch}
-                        onChange={e => { setIconSearch(e.target.value); if (!e.target.value) f({ iconType: 'material', icon: 'star' }); }}
-                        placeholder="아이콘 검색 (예: folder, chart...)"
-                        style={{ width: '100%', padding: '5px 8px', fontSize: 11, background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 6, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none' }}
-                      />
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, maxHeight: 72, overflowY: 'auto' }}>
-                        {filteredIcons.slice(0, 30).map(ico => (
-                          <button key={ico} title={ico} onClick={() => selectMaterialIcon(ico)}
-                            style={{ width: 28, height: 28, borderRadius: 6, background: form.icon === ico && form.iconType === 'material' ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--border-rgba)'}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                            <Icon name={ico} size={15} color={form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--text-muted)'} />
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-
-                  {iconTab === 'system' && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {(form.type === 'url' || form.type === 'browser') && (
-                        <>
-                          <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>사이트의 파비콘을 자동으로 가져옵니다.</p>
-                          <button onClick={fetchFavicon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                            <Icon name="language" size={13} />사이트 아이콘 가져오기
-                          </button>
-                        </>
-                      )}
-                      {form.type === 'app' && (
-                        <>
-                          <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>실행 파일의 시스템 아이콘을 가져옵니다.</p>
-                          <button onClick={fetchFileIcon} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                            <Icon name="apps" size={13} />파일 아이콘 가져오기
-                          </button>
-                        </>
-                      )}
-                      {form.type !== 'url' && form.type !== 'browser' && form.type !== 'app' && (
-                        <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이 유형은 시스템 아이콘을 지원하지 않습니다.</p>
-                      )}
-                    </div>
-                  )}
-
-                  {iconTab === 'image' && (
-                    <>
-                      <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이미지 파일을 업로드해 아이콘으로 사용합니다.</p>
-                      <button onClick={() => fileRef.current?.click()} style={{ padding: '4px 10px', fontSize: 11, borderRadius: 6, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content' }}>
-                        <Icon name="upload" size={13} />이미지 업로드
-                      </button>
-                    </>
-                  )}
-                  <input ref={fileRef} type="file" accept="image/*" hidden onChange={handleFileChange} />
-                </div>
-              </div>
-
-              {/* Color picker */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>카드 색상</Label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-                  {PRESET_COLORS.map(c => (
-                    <button key={c} onClick={() => f({ color: c })}
-                      style={{ width: 20, height: 20, borderRadius: '50%', background: c, border: 'none', cursor: 'pointer', outline: form.color === c ? `2.5px solid ${c}` : 'none', outlineOffset: 2, transition: 'transform 0.1s', flexShrink: 0 }}
-                      onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.2)')}
-                      onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
-                    />
-                  ))}
-                  <input type="color" value={form.color || '#6366f1'} onChange={e => f({ color: e.target.value })} title="직접 지정"
-                    style={{ width: 20, height: 20, borderRadius: '50%', border: 'none', cursor: 'pointer', background: 'transparent', padding: 0, flexShrink: 0 }} />
-                  {form.color && (
-                    <button onClick={() => f({ color: '' })} style={{ fontSize: 10, color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
-                      초기화
-                    </button>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          )}
-
+        )}
+        {form.type === 'app' && (
+          <button type="button" onClick={onPickExe} title="실행 파일 선택" style={pickerBtnStyle}>
+            <Icon name="apps" size={18} />
+          </button>
+        )}
+      </div>
+      {valueError && (
+        <p style={{ fontSize: 11, color: 'var(--destructive, #ef4444)', display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
+          <Icon name="error" size={12} />{valueError}
+        </p>
+      )}
+      {duplicateItem && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--border-focus)' }}>
+          <Icon name="warning" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            <b style={{ color: 'var(--text-color)' }}>{duplicateItem.item.title}</b>에 동일한 값이 이미 있습니다 ({duplicateItem.space.name})
+          </span>
         </div>
+      )}
 
-        <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)', marginTop: 4 }}>
-          <Button variant="ghost" onClick={onClose}>취소</Button>
-          {/* Widgets carry no `value` — gating on it would leave the
-              save button permanently disabled for widget edits.
-              For widgets we only require a non-empty title; the
-              value validation is bypassed. handleSave's own check
-              mirrors this. */}
-          <Button
-            onClick={handleSave}
-            disabled={!form.title.trim() || (!isWidgetMode && !form.value.trim())}
-          >
-            {isEdit ? '저장' : '추가'}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <div style={{ height: 1, background: 'var(--border-rgba)', margin: '4px 0' }} />
+
+      <h2 style={{ ...phaseHeadingStyle, fontSize: 12, color: 'var(--text-muted)' }}>이름 (선택)</h2>
+      <Input
+        ref={titleInputRef}
+        value={form.title}
+        onChange={e => f({ title: e.target.value })}
+        onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); onEnterCommit(); } }}
+        placeholder={derivedTitle ? `${derivedTitle}  (비워두면 자동)` : '카드 이름 (자동 추론)'}
+        style={{ height: 38, fontSize: 13, borderRadius: 8 }}
+      />
+    </>
   );
 }
+
+function renderPlacePhase({
+  visibleSpaces, recommendedSpaceId,
+  form, f, isEdit, presets,
+  monitorCount, isWidgetMode,
+  onPickSpace, onPickPreset, onPickOnScreen,
+}: {
+  visibleSpaces: Space[];
+  recommendedSpaceId: string | null;
+  form: any;
+  f: (patch: any) => void;
+  isEdit: boolean;
+  presets?: Array<{ id: '1' | '2' | '3'; label?: string; spaces: Space[] }>;
+  monitorCount: number;
+  isWidgetMode: boolean;
+  onPickSpace: (sid: string) => void;
+  onPickPreset: (pid: '1' | '2' | '3') => void;
+  onPickOnScreen?: () => void;
+}) {
+  // Recommended space, when present, leads the chip grid. Original
+  // order is preserved otherwise — we don't re-sort by score, just
+  // promote the single best match. This keeps the rest of the list
+  // predictable for repeat users.
+  const orderedSpaces = recommendedSpaceId
+    ? [
+        ...visibleSpaces.filter(s => s.id === recommendedSpaceId),
+        ...visibleSpaces.filter(s => s.id !== recommendedSpaceId),
+      ]
+    : visibleSpaces;
+  return (
+    <>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h2 style={phaseHeadingStyle}>어디에 둘까요?</h2>
+        {isEdit && presets && presets.length > 1 && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            {presets.map(p => {
+              const active = p.id === form.presetId;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => onPickPreset(p.id)}
+                  style={{
+                    padding: '3px 9px', borderRadius: 6,
+                    fontSize: 10, fontWeight: active ? 700 : 500,
+                    background: active ? 'var(--accent-dim)' : 'transparent',
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                    color: active ? 'var(--accent)' : 'var(--text-dim)',
+                    cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  {p.label || `프리셋 ${p.id}`}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Space chip grid — click to save+close. No own scroll: an
+          earlier `overflowY: auto, maxHeight: 200` scrolled but ALSO
+          clipped the "추천" badge at the chip's top edge. The badge
+          intentionally floats 7px above the chip, so the parent must
+          allow vertical overflow. The phase shell (slider) still
+          clips horizontally for the slide animation; vertical
+          growth is naturally bounded by the dialog viewport. */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+        gap: 8,
+        paddingTop: 8,   // gives the floating "추천" badge room before the section above
+      }}>
+        {orderedSpaces.map(s => {
+          const active = s.id === form.spaceId;
+          const recommended = s.id === recommendedSpaceId;
+          return (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => onPickSpace(s.id)}
+              title={`${s.name} — 클릭 즉시 저장${recommended ? ' (도메인/경로 일치 · 추천)' : ''}`}
+              style={{
+                position: 'relative',
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '10px 12px',
+                borderRadius: 10,
+                background: active ? 'var(--accent-dim)' : recommended ? 'color-mix(in srgb, var(--accent) 8%, var(--surface))' : 'var(--surface)',
+                border: `1.5px solid ${active || recommended ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                color: active ? 'var(--accent)' : 'var(--text-color)',
+                cursor: 'pointer', fontFamily: 'inherit',
+                fontSize: 12, fontWeight: active ? 700 : 500,
+                textAlign: 'left', minHeight: 50,
+                transition: 'all 0.12s',
+                boxShadow: recommended && !active ? '0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent)' : undefined,
+              }}
+            >
+              {s.icon && (
+                isEmojiIcon(s.icon)
+                  ? <span style={{ fontSize: 18, flexShrink: 0, lineHeight: 1 }}>{s.icon}</span>
+                  : <Icon name={s.icon} size={18} color={active ? 'var(--accent)' : (s.color ?? 'var(--text-muted)')} />
+              )}
+              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                <span style={{ fontSize: 10, color: active ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 400 }}>
+                  {s.items.length}개 카드
+                </span>
+              </div>
+              {recommended && (
+                <span
+                  aria-label="추천"
+                  style={{
+                    position: 'absolute', top: -7, right: 8,
+                    padding: '1px 7px', fontSize: 9, fontWeight: 700,
+                    borderRadius: 99,
+                    background: 'var(--accent)',
+                    color: '#fff',
+                    letterSpacing: 0.3,
+                    boxShadow: '0 1px 4px rgba(0,0,0,0.18)',
+                  }}
+                >
+                  추천
+                </span>
+              )}
+              <Icon name="arrow_forward" size={14} color={active ? 'var(--accent)' : 'var(--text-dim)'} />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Monitor + screen-pick — bottom row. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginTop: 2 }}>
+        {!isWidgetMode && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>모니터</span>
+            <button type="button" onClick={() => f({ monitor: undefined })} title="자동 (마지막 위치)" style={monitorBtn(form.monitor === undefined)}>
+              자동
+            </button>
+            {Array.from({ length: monitorCount }, (_, i) => i + 1).map(n => (
+              <button key={n} type="button" onClick={() => f({ monitor: n })} title={`모니터 ${n}`} style={monitorBtn(form.monitor === n)}>
+                {n}
+              </button>
+            ))}
+          </div>
+        )}
+        {onPickOnScreen && (
+          <button
+            type="button"
+            onClick={onPickOnScreen}
+            title="다이얼로그가 잠시 숨겨지고, 화면의 스페이스를 직접 클릭해서 고를 수 있어요"
+            style={{
+              marginLeft: 'auto',
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              height: 32, padding: '0 12px', borderRadius: 8,
+              background: 'var(--surface)',
+              border: '1px solid var(--border-rgba)',
+              color: 'var(--text-muted)',
+              fontSize: 11, fontWeight: 600, cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            <Icon name="my_location" size={14} />화면에서 고르기
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ── Advanced section renderer (used by startAdvanced re-open mode) */
+function renderAdvancedSection(p: {
+  form: any;
+  cropSrc: string | null;
+  setCropSrc: (v: string | null) => void;
+  imgRef: React.RefObject<HTMLImageElement | null>;
+  handleCropApply: () => void;
+  setAutoFavicon: (v: boolean) => void;
+  setForm: React.Dispatch<React.SetStateAction<any>>;
+  iconTab: 'symbol' | 'system' | 'image';
+  setIconTab: (t: 'symbol' | 'system' | 'image') => void;
+  iconSearch: string;
+  setIconSearch: (v: string) => void;
+  filteredIcons: string[];
+  selectMaterialIcon: (n: string) => void;
+  fetchFavicon: () => void;
+  fetchFileIcon: () => void;
+  resetIcon: () => void;
+  fileRef: React.RefObject<HTMLInputElement | null>;
+  handleFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  f: (patch: any) => void;
+}) {
+  const { form, cropSrc, setCropSrc, imgRef, handleCropApply,
+    setAutoFavicon, setForm, iconTab, setIconTab,
+    iconSearch, setIconSearch, filteredIcons, selectMaterialIcon,
+    fetchFavicon, fetchFileIcon, resetIcon, fileRef, handleFileChange, f } = p;
+  return (
+    <>
+      {cropSrc && (
+        <div style={{ padding: 10, borderRadius: 8, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0 }}>가운데 정사각형으로 크롭됩니다</p>
+          <img ref={imgRef} src={cropSrc} alt="crop preview" style={{ maxHeight: 120, maxWidth: '100%', borderRadius: 6, objectFit: 'contain' }} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setCropSrc(null)} style={cropBtnGhost}>취소</button>
+            <button onClick={handleCropApply} style={cropBtnAccent}>적용</button>
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', flexShrink: 0 }}>
+          <div style={{ width: 64, height: 64, borderRadius: 14, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+            {form.iconType === 'image'
+              ? <img src={form.icon} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} onError={() => { setAutoFavicon(false); setForm((q: any) => ({ ...q, iconType: 'material', icon: form.type === 'app' ? 'apps' : 'public' })); }} />
+              : <Icon name={form.icon} size={32} color="var(--text-muted)" />
+            }
+          </div>
+          <button onClick={resetIcon} title="기본값으로 초기화" style={{ padding: '2px 8px', fontSize: 10, borderRadius: 5, background: 'var(--surface)', border: '1px solid var(--border-rgba)', color: 'var(--text-dim)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+            <Icon name="restart_alt" size={11} />초기화
+          </button>
+        </div>
+
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            {(['symbol', 'system', 'image'] as const).map(tab => {
+              const labels = { symbol: '심볼', system: '시스템', image: '이미지' };
+              const active = iconTab === tab;
+              return (
+                <button key={tab} onClick={() => setIconTab(tab)}
+                  style={{ padding: '4px 12px', fontSize: 11, borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit', fontWeight: active ? 700 : 400, background: active ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`, color: active ? 'var(--accent)' : 'var(--text-muted)', transition: 'all 0.1s' }}>
+                  {labels[tab]}
+                </button>
+              );
+            })}
+          </div>
+
+          {iconTab === 'symbol' && (
+            <>
+              <input
+                value={iconSearch}
+                onChange={e => { setIconSearch(e.target.value); if (!e.target.value) f({ iconType: 'material', icon: 'star' }); }}
+                placeholder="아이콘 검색 (예: folder, chart...)"
+                style={{ width: '100%', padding: '6px 10px', fontSize: 12, background: 'var(--surface)', border: '1px solid var(--border-rgba)', borderRadius: 7, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none' }}
+              />
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxHeight: 168, overflowY: 'auto' }}>
+                {filteredIcons.slice(0, 80).map(ico => (
+                  <button key={ico} title={ico} onClick={() => selectMaterialIcon(ico)}
+                    style={{ width: 32, height: 32, borderRadius: 7, background: form.icon === ico && form.iconType === 'material' ? 'var(--accent-dim)' : 'var(--surface)', border: `1px solid ${form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--border-rgba)'}`, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Icon name={ico} size={16} color={form.icon === ico && form.iconType === 'material' ? 'var(--accent)' : 'var(--text-muted)'} />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {iconTab === 'system' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {(form.type === 'url' || form.type === 'browser') && (
+                <>
+                  <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>사이트의 파비콘을 자동으로 가져옵니다.</p>
+                  <button onClick={fetchFavicon} style={smallActionBtn}>
+                    <Icon name="language" size={13} />사이트 아이콘 가져오기
+                  </button>
+                </>
+              )}
+              {form.type === 'app' && (
+                <>
+                  <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>실행 파일의 시스템 아이콘을 가져옵니다.</p>
+                  <button onClick={fetchFileIcon} style={smallActionBtn}>
+                    <Icon name="apps" size={13} />파일 아이콘 가져오기
+                  </button>
+                </>
+              )}
+              {form.type !== 'url' && form.type !== 'browser' && form.type !== 'app' && (
+                <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이 유형은 시스템 아이콘을 지원하지 않습니다.</p>
+              )}
+            </div>
+          )}
+
+          {iconTab === 'image' && (
+            <>
+              <p style={{ fontSize: 11, color: 'var(--text-dim)', margin: 0 }}>이미지 파일을 업로드해 아이콘으로 사용합니다.</p>
+              <button onClick={() => fileRef.current?.click()} style={smallActionBtn}>
+                <Icon name="upload" size={13} />이미지 업로드
+              </button>
+            </>
+          )}
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={handleFileChange} />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <Label className="text-xs" style={{ color: 'var(--text-muted)' }}>카드 색상</Label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          {PRESET_COLORS.map(c => (
+            <button key={c} onClick={() => f({ color: c })}
+              style={{ width: 24, height: 24, borderRadius: '50%', background: c, border: 'none', cursor: 'pointer', outline: form.color === c ? `2.5px solid ${c}` : 'none', outlineOffset: 2, transition: 'transform 0.1s', flexShrink: 0 }}
+              onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.2)')}
+              onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}
+            />
+          ))}
+          <input type="color" value={form.color || '#6366f1'} onChange={e => f({ color: e.target.value })} title="직접 지정"
+            style={{ width: 24, height: 24, borderRadius: '50%', border: 'none', cursor: 'pointer', background: 'transparent', padding: 0, flexShrink: 0 }} />
+          {form.color && (
+            <button onClick={() => f({ color: '' })} style={{ fontSize: 10, color: 'var(--text-dim)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+              초기화
+            </button>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ── Shared style fragments ──────────────────────────────────── */
+const phaseHeadingStyle: React.CSSProperties = {
+  fontSize: 14,
+  fontWeight: 700,
+  color: 'var(--text-color)',
+  margin: 0,
+  letterSpacing: -0.2,
+};
+
+const chipStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: 4,
+  padding: '3px 9px', fontSize: 10, fontWeight: 600,
+  borderRadius: 99,
+  background: 'var(--accent-dim)',
+  border: '1px solid var(--accent)',
+  color: 'var(--accent)',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+const pickerBtnStyle: React.CSSProperties = {
+  flexShrink: 0, width: 44, height: 44,
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+  background: 'var(--surface)', border: '1px solid var(--border-rgba)',
+  borderRadius: 8, cursor: 'pointer', color: 'var(--text-muted)',
+};
+
+function monitorBtn(active: boolean): React.CSSProperties {
+  return {
+    height: 32, padding: '0 12px', borderRadius: 7,
+    fontWeight: 600, fontSize: 11, cursor: 'pointer',
+    fontFamily: 'inherit', transition: 'all 0.12s',
+    background: active ? 'var(--accent)' : 'var(--surface)',
+    border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+    color: active ? '#fff' : 'var(--text-muted)',
+  };
+}
+
+const cropBtnGhost: React.CSSProperties = {
+  padding: '4px 12px', fontSize: 11, borderRadius: 6,
+  background: 'var(--surface)', border: '1px solid var(--border-rgba)',
+  color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit',
+};
+
+const cropBtnAccent: React.CSSProperties = {
+  padding: '4px 12px', fontSize: 11, borderRadius: 6,
+  background: 'var(--accent)', border: 'none',
+  color: '#fff', cursor: 'pointer', fontFamily: 'inherit',
+};
+
+const smallActionBtn: React.CSSProperties = {
+  padding: '5px 12px', fontSize: 11, borderRadius: 7,
+  background: 'var(--surface)', border: '1px solid var(--border-rgba)',
+  color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit',
+  display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content',
+};

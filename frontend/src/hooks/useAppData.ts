@@ -1212,12 +1212,12 @@ export function useAppData() {
   // Thin wrappers over addItem/updateItem that bake the memo-specific
   // shape — keeping the call sites readable. The TTL math lives in
   // memoUtils so tests can validate it without going through React.
-  const addMemo = useCallback((spaceId: string): LauncherItem | null => {
+  const addMemo = useCallback((spaceId: string, initialBody?: string): LauncherItem | null => {
     const now = Date.now();
     const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
     const ttlDays = settings.defaultTtlDays;
     const memo: MemoData = {
-      body: '',
+      body: initialBody ?? '',
       createdAt: now,
       expiresAt: now + ttlDays * 24 * 60 * 60 * 1000,
       lastTouchedAt: now,
