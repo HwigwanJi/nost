@@ -1135,6 +1135,7 @@ export default function App() {
     handleNodeGroupLaunch,
     handleDeckLaunch,
     store,
+    openMemoEditor: (sid: string, iid: string) => setEditingMemoId({ spaceId: sid, itemId: iid }),
   });
   badgeLaunchRef.current = {
     spaces: data.spaces,
@@ -1143,6 +1144,7 @@ export default function App() {
     handleNodeGroupLaunch,
     handleDeckLaunch,
     store,
+    openMemoEditor: (sid: string, iid: string) => setEditingMemoId({ spaceId: sid, itemId: iid }),
   };
 
   useEffect(() => {
@@ -1163,6 +1165,15 @@ export default function App() {
         }
       }
       if (item && ownerSpaceId) {
+        // Memo cards "launch" by opening the editor — they have
+        // no executable target. Mirrors the same guard inside
+        // launchItem (in-app card click); the badge path bypasses
+        // launchItem and goes straight to launchAndPosition,
+        // which would have done nothing for a memo.
+        if (item.type === 'memo') {
+          r.openMemoEditor(ownerSpaceId, itemId);
+          return;
+        }
         r.launchAndPosition(item, r.closeAfterOpen);
         r.store.incrementClickCount(ownerSpaceId, itemId);
       }
@@ -1241,7 +1252,19 @@ export default function App() {
     const onFocus = () => check();
     window.addEventListener('focus', onFocus);
     void check();
-    return () => { cancelled = true; window.removeEventListener('focus', onFocus); };
+    // Focus-only listening missed the case where the user copies
+    // text in another app while nost stays focused (multi-monitor
+    // setup, or text dragged in from a side panel). Cheap 1.5 s
+    // poll closes that gap. Stops while document is hidden so we
+    // don't burn cycles when nost is minimised to tray.
+    const intervalId = window.setInterval(() => {
+      if (!document.hidden) void check();
+    }, 1500);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   const handleClipTextToCard = useCallback(() => {

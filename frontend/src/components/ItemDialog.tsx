@@ -419,6 +419,21 @@ export function ItemDialog({
     setDragDx(0);
   }, []);
 
+  /** Phase navigation helpers — widget mode skips phase 1 entirely
+   *  (no value/name to edit; the swatch editor lives on phase 0).
+   *  Earlier the slider walked 0→1→2 even in widget mode and the
+   *  user briefly saw the empty phase 1 panel. */
+  const nextPhase = useCallback((p: Phase): Phase => {
+    if (isWidgetMode && p === 0) return 2;
+    return (p < 2 ? p + 1 : p) as Phase;
+  }, [isWidgetMode]);
+  const prevPhase = useCallback((p: Phase): Phase => {
+    if (isWidgetMode && p === 2) return 0;
+    return (p > 0 ? p - 1 : p) as Phase;
+  }, [isWidgetMode]);
+  const isLastPhase = useCallback((p: Phase) => isWidgetMode ? p === 2 : p === 2, [isWidgetMode]);
+  const isFirstPhase = useCallback((p: Phase) => p === 0, []);
+
   /* ── Effects: clipboard, favicon, file icon ─────────────── */
   useEffect(() => {
     if (!open) return;
@@ -690,9 +705,18 @@ export function ItemDialog({
    * are read via refs that always point to the latest render —
    * otherwise the listener freezes on the first render's closures
    * and Ctrl+Enter ends up calling stale form state. */
-  const latestRef = useRef({ phase, handleSave: (_?: string) => {}, goPhase, phaseComplete });
+  const latestRef = useRef({
+    phase,
+    handleSave: (_?: string) => {},
+    goPhase,
+    phaseComplete,
+    nextPhase,
+    prevPhase,
+    isFirstPhase,
+    isLastPhase,
+  });
   useEffect(() => {
-    latestRef.current = { phase, handleSave, goPhase, phaseComplete };
+    latestRef.current = { phase, handleSave, goPhase, phaseComplete, nextPhase, prevPhase, isFirstPhase, isLastPhase };
   });
   useEffect(() => {
     if (!open || startAdvanced) return;
@@ -713,17 +737,17 @@ export function ItemDialog({
       // Plain Enter on phase ③ (no input focused) → save with the
       // currently-selected space chip. Phase ② keeps its
       // input-bound Enter → "next" semantic via renderValuePhase.
-      if (e.key === 'Enter' && !inInput && cur.phase === 2 && !e.metaKey && !e.ctrlKey) {
+      if (e.key === 'Enter' && !inInput && cur.isLastPhase(cur.phase) && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         e.stopPropagation();
         cur.handleSave();
         return;
       }
       if (e.key === 'ArrowLeft' && !inInput) {
-        if (cur.phase > 0) { e.preventDefault(); cur.goPhase((cur.phase - 1) as Phase); }
+        if (!cur.isFirstPhase(cur.phase)) { e.preventDefault(); cur.goPhase(cur.prevPhase(cur.phase)); }
       } else if (e.key === 'ArrowRight' && !inInput) {
-        if (cur.phase < 2 && cur.phaseComplete(cur.phase)) {
-          e.preventDefault(); cur.goPhase((cur.phase + 1) as Phase);
+        if (!cur.isLastPhase(cur.phase) && cur.phaseComplete(cur.phase)) {
+          e.preventDefault(); cur.goPhase(cur.nextPhase(cur.phase));
         }
       }
     };
@@ -768,12 +792,12 @@ export function ItemDialog({
     const dx = e.clientX - d.startX;
     dragRef.current = null;
     if (d.locked === 'h' && Math.abs(dx) >= SWIPE_COMMIT_PX) {
-      if (dx < 0 && phase < 2 && phaseComplete(phase)) {
-        goPhase((phase + 1) as Phase);
+      if (dx < 0 && !isLastPhase(phase) && phaseComplete(phase)) {
+        goPhase(nextPhase(phase));
         return;
       }
-      if (dx > 0 && phase > 0) {
-        goPhase((phase - 1) as Phase);
+      if (dx > 0 && !isFirstPhase(phase)) {
+        goPhase(prevPhase(phase));
         return;
       }
     }
@@ -824,8 +848,8 @@ export function ItemDialog({
   /* ── Render: phase shell ─────────────────────────────────── */
   const sliderTransform = `translateX(calc(${-phase * 100}% + ${dragDx}px))`;
   const sliderTransition = dragDx === 0 ? 'transform 0.28s cubic-bezier(0.4, 0.1, 0.3, 1)' : 'none';
-  const canGoNext = phaseComplete(phase) && phase < 2;
-  const isPlace = phase === 2;
+  const canGoNext = phaseComplete(phase) && !isLastPhase(phase);
+  const isPlace = isLastPhase(phase);
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
@@ -971,20 +995,20 @@ export function ItemDialog({
         <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)', display: 'flex', justifyContent: 'space-between' }}>
           <div style={{ display: 'flex', gap: 6 }}>
             <Button variant="ghost" onClick={onClose}>취소</Button>
-            {phase > 0 && (
-              <Button variant="ghost" onClick={() => goPhase((phase - 1) as Phase)}>
-                <Icon name="arrow_back" size={14} style={{ marginRight: 4 }} />이전
+            {!isFirstPhase(phase) && (
+              <Button variant="ghost" onClick={() => goPhase(prevPhase(phase))}>
+                이전
               </Button>
             )}
           </div>
           <div>
             {!isPlace ? (
               <Button
-                onClick={() => goPhase((phase + 1) as Phase)}
+                onClick={() => goPhase(nextPhase(phase))}
                 disabled={!canGoNext}
-                title="다음 (→ 또는 Enter)"
+                title="다음 (Enter 또는 우측 드래그)"
               >
-                다음 <Icon name="arrow_forward" size={14} style={{ marginLeft: 4 }} />
+                다음
               </Button>
             ) : (
               <Button

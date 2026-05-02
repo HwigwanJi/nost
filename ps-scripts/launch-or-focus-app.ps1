@@ -14,9 +14,20 @@ if (-not [System.IO.Path]::IsPathRooted($target)) {
     Write-Output "ERROR: 경로가 파일명만 저장되어 있습니다 ($target). 카드를 삭제하고 다시 등록하세요."
     exit
 }
+# WindowsApps versioned exe paths go stale when the Store app auto-
+# updates: the cached card points at e.g. `...\OpenAI.ChatGPT-Desktop
+# _1.2026.43.0_x64__...\app\ChatGPT.exe`, but auto-update moves the
+# exe under a new version folder. Test-Path returns false and the
+# script used to bail with "파일이 존재하지 않습니다" before even
+# reaching the WindowsApps fallback section that can resolve the
+# CURRENT install via Get-AppxPackage / parsed PackageFamilyName.
+# Skip the early existence check for those paths and let section (A)
+# below find the live install.
 if (-not (Test-Path -LiteralPath $target)) {
-    Write-Output "ERROR: 파일이 존재하지 않습니다: $target"
-    exit
+    if ($target -notmatch '\\WindowsApps\\') {
+        Write-Output "ERROR: 파일이 존재하지 않습니다: $target"
+        exit
+    }
 }
 
 # ── .lnk resolution ───────────────────────────────────────────────────
@@ -128,12 +139,26 @@ if ($target -match '\\WindowsApps\\') {
         }
     } catch { $attemptErrors += "Get-StartApps: $($_.Exception.Message)" }
 
-    # Method 2: Extract AUMID from path + Get-AppxPackage
+    # Method 2: Get-AppxPackage by package NAME (first underscore segment
+    # of the WindowsApps folder), not by full prefix match. Prefix
+    # matching breaks the moment the Store auto-updates the app — the
+    # old saved path no longer starts with the new InstallLocation.
+    # Name-based matching survives version bumps.
     if (-not $launched) {
         try {
-            $pkg = Get-AppxPackage | Where-Object {
-                $_.InstallLocation -and $target.StartsWith($_.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)
-            } | Select-Object -First 1
+            $folderName = ($target -split '\\WindowsApps\\')[1] -split '\\' | Select-Object -First 1
+            $baseName   = ($folderName -split '_')[0]
+            $pkg = $null
+            if ($baseName) {
+                $pkg = Get-AppxPackage | Where-Object { $_.Name -eq $baseName } | Select-Object -First 1
+            }
+            if (-not $pkg) {
+                # Last-resort: full prefix match (covers exotic install paths
+                # outside Program Files that the name match might miss).
+                $pkg = Get-AppxPackage | Where-Object {
+                    $_.InstallLocation -and $target.StartsWith($_.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)
+                } | Select-Object -First 1
+            }
             if ($pkg) {
                 $manifest = Get-AppxPackageManifest -Package $pkg
                 $appId = $manifest.Package.Applications.Application.Id
@@ -145,16 +170,28 @@ if ($target -match '\\WindowsApps\\') {
         } catch { $attemptErrors += "AppxPackage: $($_.Exception.Message)" }
     }
 
-    # Method 3: Parse PackageFamilyName from folder path directly
+    # Method 3: Parse PackageFamilyName from folder path. Used when
+    # Get-AppxPackage couldn't be queried (locked-down environments,
+    # cross-user installs). We try several App-ID guesses in order of
+    # likelihood; per-iteration try/catch so a wrong guess doesn't
+    # kill the whole fallback (the original loop break-on-throw bug).
     if (-not $launched) {
         try {
             $folderName = ($target -split '\\WindowsApps\\')[1] -split '\\' | Select-Object -First 1
             if ($folderName -match '^(.+?)_[\d.]+_.*?__(.+)$') {
-                $familyName = "$($Matches[1])_$($Matches[2])"
-                foreach ($aid in @($Matches[1], 'App', 'app')) {
-                    Start-Process explorer.exe "shell:AppsFolder\${familyName}!${aid}" -ErrorAction Stop
-                    $launched = $true
-                    break
+                $familyName  = "$($Matches[1])_$($Matches[2])"
+                $packageName = $Matches[1]
+                # 'App' is the by-far most common AppID; lowercase 'app'
+                # next; the package short-name is rare but happens for
+                # apps with multiple Application entries.
+                foreach ($aid in @('App', 'app', $packageName)) {
+                    try {
+                        Start-Process explorer.exe "shell:AppsFolder\${familyName}!${aid}" -ErrorAction Stop
+                        $launched = $true
+                        break
+                    } catch {
+                        $attemptErrors += "PackageFamily!$aid : $($_.Exception.Message)"
+                    }
                 }
             }
         } catch { $attemptErrors += "PackageFamily parse: $($_.Exception.Message)" }

@@ -130,6 +130,12 @@ async function connectSSE() {
               try {
                 await chrome.windows.create({ url: data.url, type: 'normal', state: 'normal' });
               } catch (e) { /* ignore */ }
+            } else if (data.action === 'refreshTabs') {
+              // nost is asking for a fresh tab snapshot — usually at
+              // startup, when nost finished loading before this
+              // extension's service worker woke up. Just trigger the
+              // same push the tab events trigger.
+              sendTabs();
             } else if (data.action === 'resize' && typeof data.windowId === 'number') {
               const upd = { state: 'normal', focused: true };
               if (typeof data.left === 'number') upd.left = data.left;

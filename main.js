@@ -1384,16 +1384,26 @@ function mutateBadges(fn) {
 }
 
 function createWindow() {
-  // Restore saved bounds when valid; otherwise center at 75% — same logic as /75
+  // SSOT for cold-start window placement: ALWAYS recenter on the
+  // primary display's work area at app launch. Earlier we restored
+  // the last-session windowBounds verbatim, which felt fine within
+  // a session but meant a user who had ever dragged the window
+  // off-center stayed off-center for every subsequent launch — the
+  // user reported "consistently skewed down" because of this.
+  //
+  // We still honour the SAVED SIZE (so resize-during-session
+  // persists), but the position is computed fresh each launch
+  // from `centeredBounds`-style math against the primary work
+  // area. The /75 IPC and this code path now share the same
+  // center calculation; one place owns "where does it land".
   const saved = store.get('windowBounds');
-  const isValidSaved = saved
-    && saved.width > 0 && saved.height > 0
-    && saved.x != null && saved.y != null
-    && isBoundsOnScreen(saved.x, saved.y, saved.width, saved.height);
-
-  const { x: initX, y: initY, width: initW, height: initH } = isValidSaved
-    ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height }
-    : centeredBounds(75);
+  const default75 = centeredBounds(75);
+  const savedSizeOk = saved && saved.width > 0 && saved.height > 0;
+  const initW = savedSizeOk ? saved.width  : default75.width;
+  const initH = savedSizeOk ? saved.height : default75.height;
+  const wa = getScreen().getPrimaryDisplay().workArea;
+  const initX = wa.x + Math.round((wa.width  - initW) / 2);
+  const initY = wa.y + Math.round((wa.height - initH) / 2);
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
 
@@ -1495,13 +1505,17 @@ function createWindow() {
     if (settings.autoHide) mainWindow.hide();
   });
 
-  // Debounced bounds save — avoids thrashing electron-store on every pixel drag
+  // Debounced bounds save — avoids thrashing electron-store on every pixel drag.
+  // Position is intentionally NOT persisted (SSOT: cold start always centers
+  // on the primary work area). We keep just width/height so the user's
+  // resize-during-session preference survives across launches.
   let boundsTimer = null;
   const saveBounds = () => {
     clearTimeout(boundsTimer);
     boundsTimer = setTimeout(() => {
       if (mainWindow && !mainWindow.isMaximized()) {
-        store.set('windowBounds', mainWindow.getBounds());
+        const b = mainWindow.getBounds();
+        store.set('windowBounds', { width: b.width, height: b.height });
       }
     }, 500);
   };
@@ -2274,20 +2288,28 @@ function registerIpcHandlers() {
       }
     }
 
-    // Plain text fallback — anything that doesn't match the typed
-    // formats above. We cap the suggested length at 200 chars (the
-    // launcher card title is 1-2 lines tops; longer copy is almost
-    // certainly a paragraph the user didn't intend to launcher-ify)
-    // and also reject very-short single-token clips that are likely
-    // accidental selections (less than 2 chars). No newlines either —
-    // multi-line copies are usually code/email bodies.
+    // Plain text fallback — accepts both single-line snippets AND
+    // multiline blobs. The renderer offers two destinations
+    // (clipboard text card OR memo) so multiline content is not
+    // only welcome but expected (memo is the natural home for
+    // pasted prose / GPT output).
+    //
+    //   - min length: 2 chars (drops accidental 1-char selects)
+    //   - max length: 50_000 chars (defends against the
+    //     occasional binary-blob accident; legitimate memos are
+    //     well under this)
+    //   - newlines allowed (was previously rejected — that's
+    //     exactly the case the user reported as broken)
+    //
+    // Label = first non-empty line, capped at 40 chars + ellipsis.
+    // This reads better than "first 40 chars including the heading
+    // hash and bullets" since the actual title of a pasted memo is
+    // almost always its first content line.
     {
-      if (text.length >= 2 && text.length <= 200 && !text.includes('\n')) {
-        // Suggest as text-copy card. The label shows a preview; the
-        // card type 'text' makes click-to-launch copy the full value
-        // back to the clipboard, which is the existing nost text
-        // card behaviour.
-        const label = text.length > 32 ? text.slice(0, 32) + '…' : text;
+      if (text.length >= 2 && text.length <= 50_000) {
+        const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) ?? text;
+        const trimmed = firstLine.trim();
+        const label = trimmed.length > 40 ? trimmed.slice(0, 40) + '…' : trimmed;
         return { type: 'text', value: text, label };
       }
     }
@@ -3346,6 +3368,36 @@ app.whenReady().then(() => {
   // Spawn the floating orb if the user has it enabled. Delayed a tick so
   // the main window initializes first — avoids a perceived double-flash.
   setTimeout(() => syncFloatingWindow(), 200);
+
+  // ── Extension warmup: nudge the Chrome extension at startup ──
+  // The MV3 service worker may be asleep when nost finishes loading,
+  // which leaves chromeTabs empty for the first few seconds — every
+  // URL card opens a new browser window instead of focusing an
+  // existing tab. We retry every 1.5 s up to 8 attempts (~12 s) and
+  // bail as soon as we see a fresh tabs push from the extension.
+  // The retry has two effects:
+  //   (1) If SSE is already connected, sendSse('refreshTabs') asks
+  //       the extension to call sendTabs() again, picking up tabs
+  //       opened between extension wake and nost ready.
+  //   (2) If SSE is not yet connected, the call no-ops. We just keep
+  //       polling — once the extension's SW reconnects it'll send
+  //       its initial sendTabs() and our `lastTabsUpdateAt` updates.
+  let extWarmupAttempts = 0;
+  const extWarmupTimer = setInterval(() => {
+    extWarmupAttempts += 1;
+    const haveTabs = lastTabsUpdateAt > 0 && global.chromeTabs?.length > 0;
+    if (haveTabs || extWarmupAttempts >= 8) {
+      clearInterval(extWarmupTimer);
+      log.debug(`[ext-warmup] done after ${extWarmupAttempts} attempt(s) · tabs=${global.chromeTabs?.length ?? 0}`);
+      return;
+    }
+    if (sseConnection) {
+      const sent = sendSse({ action: 'refreshTabs' });
+      log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: refreshTabs sent=${sent}`);
+    } else {
+      log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: no SSE conn yet`);
+    }
+  }, 1500);
 
   // Restore floating badges if any were pinned in a previous session.
   setTimeout(() => syncBadgeOverlay(), 300);
