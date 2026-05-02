@@ -163,6 +163,213 @@ export function memoCompactBlankLines(body: string): string {
 }
 
 /**
+ * HTML → markdown converter.
+ *
+ * The user's real "마크다운으로 정리" use case: copy a rendered
+ * answer from ChatGPT / Notion / Claude. The system clipboard then
+ * carries TWO formats:
+ *   - text/plain : flat string ("Heading 1\nBullet\n…")
+ *   - text/html  : `<h1>Heading 1</h1><ul><li>Bullet</li>…</ul>`
+ *
+ * `<textarea>` only ever receives the plain version when pasted,
+ * so the rich structure is silently lost the moment the user hits
+ * Ctrl+V — the heuristic markdownify can only guess at structure
+ * after the fact. By capturing `text/html` at paste time and
+ * pairing it with its plain twin, we can fully reconstruct
+ * `# Heading 1` / `- Bullet` from the original DOM.
+ *
+ * Scope:
+ *   Headings (h1-h6), bold, italic, inline code, code blocks,
+ *   ordered + unordered lists with arbitrary nesting, links,
+ *   paragraphs, line breaks, blockquotes, horizontal rules.
+ *   Tables collapse to plain text rows (a future-feature TODO).
+ *
+ * Known wrappers we strip:
+ *   - Office's <!--StartFragment--> markers
+ *   - Empty <span style="..."> nesting that GPT often emits
+ */
+export function htmlToMarkdown(rawHtml: string): string {
+  if (!rawHtml || typeof document === 'undefined') return '';
+  // Office / GPT clipboard often wraps the actual content in
+  // <html><body>...<!--StartFragment-->...<!--EndFragment--></body></html>.
+  // Trim to the fragment when present so the wrapper doesn't pollute output.
+  const fragMatch = rawHtml.match(/<!--StartFragment-->([\s\S]*?)<!--EndFragment-->/);
+  const html = fragMatch ? fragMatch[1] : rawHtml;
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  return walkHtml(container).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function walkHtml(node: Node, listDepth = 0): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    // Collapse runs of whitespace inside text nodes — HTML treats
+    // them as a single space, but the textContent we'd otherwise
+    // return preserves indentation that's purely visual.
+    const t = node.textContent ?? '';
+    return t.replace(/\s+/g, ' ');
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+  const el = node as HTMLElement;
+  const tag = el.tagName.toLowerCase();
+  const inner = (depth = listDepth) =>
+    Array.from(el.childNodes).map(c => walkHtml(c, depth)).join('');
+
+  switch (tag) {
+    case 'h1': return `\n\n# ${inner().trim()}\n\n`;
+    case 'h2': return `\n\n## ${inner().trim()}\n\n`;
+    case 'h3': return `\n\n### ${inner().trim()}\n\n`;
+    case 'h4': return `\n\n#### ${inner().trim()}\n\n`;
+    case 'h5': return `\n\n##### ${inner().trim()}\n\n`;
+    case 'h6': return `\n\n###### ${inner().trim()}\n\n`;
+    case 'strong': case 'b': {
+      const t = inner().trim();
+      return t ? `**${t}**` : '';
+    }
+    case 'em': case 'i': {
+      const t = inner().trim();
+      return t ? `*${t}*` : '';
+    }
+    case 'code': {
+      const parent = el.parentElement?.tagName.toLowerCase();
+      if (parent === 'pre') return inner();
+      const t = (el.textContent ?? '').trim();
+      return t ? `\`${t}\`` : '';
+    }
+    case 'pre': {
+      // Try to detect language from class="language-xxx" on inner code
+      const codeEl = el.querySelector('code');
+      let lang = '';
+      if (codeEl) {
+        const cls = codeEl.className.match(/language-([\w-]+)/);
+        lang = cls?.[1] ?? '';
+      }
+      const text = (codeEl?.textContent ?? el.textContent ?? '').replace(/\s+$/, '');
+      return `\n\n\`\`\`${lang}\n${text}\n\`\`\`\n\n`;
+    }
+    case 'a': {
+      const href = el.getAttribute('href') ?? '';
+      const label = inner().trim();
+      if (!href) return label;
+      return `[${label}](${href})`;
+    }
+    case 'ul':
+      return '\n' + Array.from(el.children)
+        .filter(c => c.tagName.toLowerCase() === 'li')
+        .map(li => '  '.repeat(listDepth) + '- ' + walkHtml(li, listDepth + 1).trim())
+        .join('\n') + '\n';
+    case 'ol': {
+      let i = 1;
+      return '\n' + Array.from(el.children)
+        .filter(c => c.tagName.toLowerCase() === 'li')
+        .map(li => '  '.repeat(listDepth) + `${i++}. ` + walkHtml(li, listDepth + 1).trim())
+        .join('\n') + '\n';
+    }
+    case 'li': {
+      // Strip nested ul/ol from immediate children — they're rendered
+      // separately by the parent ul/ol loop above. We keep their text
+      // by recursing manually so deeply-nested lists survive.
+      let parts: string[] = [];
+      for (const child of Array.from(el.childNodes)) {
+        if (child.nodeType === Node.ELEMENT_NODE) {
+          const t = (child as HTMLElement).tagName.toLowerCase();
+          if (t === 'ul' || t === 'ol') {
+            parts.push('\n' + walkHtml(child, listDepth));
+            continue;
+          }
+        }
+        parts.push(walkHtml(child, listDepth));
+      }
+      return parts.join('').trim();
+    }
+    case 'p': return inner().trim() + '\n\n';
+    case 'br': return '\n';
+    case 'blockquote': {
+      const text = inner().trim();
+      return '\n' + text.split('\n').map(l => '> ' + l).join('\n') + '\n\n';
+    }
+    case 'hr': return '\n---\n\n';
+    case 'div': case 'section': case 'article':
+      // Block-level containers — emit children + a paragraph break
+      // so visual layout survives even when the source uses <div>
+      // instead of <p> (Notion habit).
+      return inner() + '\n';
+    case 'table': case 'thead': case 'tbody': case 'tr':
+      return inner() + '\n';
+    case 'td': case 'th':
+      return inner().trim() + ' | ';
+    default:
+      return inner();
+  }
+}
+
+/** True when the html clipboard payload carries actual structural
+ *  tags worth converting (vs. a wrapped plain-text blob like
+ *  `<span style="font-family:'Courier'">just text</span>`). */
+export function htmlHasStructure(html: string): boolean {
+  if (!html) return false;
+  return /<(h[1-6]|strong|b|em|i|ul|ol|li|p|code|pre|a|blockquote|hr)[\s>]/i.test(html);
+}
+
+/**
+ * Markdown-ify the body, with priority given to recently-pasted
+ * rich HTML segments. For each paste in `pastes`, find its plain
+ * twin inside `body` and substitute the html→markdown conversion.
+ * Sections of body NOT covered by any paste fall back to the
+ * heuristic `memoBodyToMarkdown` (which guesses headings from
+ * line shape + position).
+ *
+ * We process pastes longest-first so a short paste's plain text
+ * (which might be a substring of a longer paste's plain text)
+ * doesn't corrupt the longer one's substitution.
+ */
+export function memoBodyToMarkdownWithPastes(
+  body: string,
+  pastes: Array<{ plain: string; html: string }>,
+): string {
+  if (!body) return '';
+  if (!pastes.length) return memoBodyToMarkdown(body);
+
+  // Sort by plain length desc so longer matches commit first.
+  const sorted = [...pastes].sort((a, b) => b.plain.length - a.plain.length);
+
+  // Build a mask string: same length as body, true where a paste
+  // already claimed the span. Then run heuristic markdownify only
+  // over the unclaimed segments and stitch together.
+  type Seg = { from: number; to: number; out: string };
+  const claimed: Seg[] = [];
+  let work = body;
+
+  for (const p of sorted) {
+    if (!p.plain || !p.html) continue;
+    const idx = work.indexOf(p.plain);
+    if (idx < 0) continue;
+    const overlapping = claimed.some(c => !(idx + p.plain.length <= c.from || idx >= c.to));
+    if (overlapping) continue;
+    const md = htmlToMarkdown(p.html);
+    if (!md) continue;
+    claimed.push({ from: idx, to: idx + p.plain.length, out: md });
+  }
+
+  if (claimed.length === 0) return memoBodyToMarkdown(body);
+
+  claimed.sort((a, b) => a.from - b.from);
+  let cursor = 0;
+  const out: string[] = [];
+  for (const c of claimed) {
+    if (c.from > cursor) {
+      const seg = body.slice(cursor, c.from);
+      out.push(memoBodyToMarkdown(seg));
+    }
+    out.push(c.out);
+    cursor = c.to;
+  }
+  if (cursor < body.length) {
+    out.push(memoBodyToMarkdown(body.slice(cursor)));
+  }
+  return out.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
  * "마크다운으로 정리" — promote ad-hoc plain text into structured
  * markdown the way StackEdit / Obsidian's "auto-format" do.
  *

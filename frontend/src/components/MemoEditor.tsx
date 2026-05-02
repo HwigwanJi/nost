@@ -44,10 +44,11 @@ import {
   memoIsExpiringSoon,
   slugifyTitle,
   memoBodyToPlain,
-  memoBodyToMarkdown,
+  memoBodyToMarkdownWithPastes,
   memoStripBullets,
   memoStripFormatting,
   memoCompactBlankLines,
+  htmlHasStructure,
 } from '../lib/memoUtils';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import { renderMemoMarkdown } from '../lib/memoMarkdown';
@@ -129,6 +130,32 @@ export function MemoEditor({
   });
   const [cleanupMenuOpen, setCleanupMenuOpen] = useState(false);
   const cleanupHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Rich-clipboard paste history ───────────────────────────
+  // The textarea natively only ever captures `text/plain` from the
+  // OS clipboard, so the moment the user hits Ctrl+V from ChatGPT /
+  // Notion / Claude the structural markup (h1/h2/lists/bold) is
+  // gone. We intercept `paste` to also stash `text/html` into a
+  // ref, paired with its plain twin. The "마크다운으로 정리" tool
+  // then walks the body, finds each paste's plain twin, and swaps
+  // in a true html→markdown conversion — which is what the user
+  // expected the feature to do all along.
+  const pasteHistoryRef = useRef<Array<{ at: number; plain: string; html: string }>>([]);
+  const handleTextareaPaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const html = e.clipboardData?.getData('text/html') ?? '';
+    const plain = e.clipboardData?.getData('text/plain') ?? '';
+    // Skip pure-text pastes (Ctrl+Shift+V, terminal output, …). They
+    // don't carry markdown intent — the heuristic fallback handles
+    // them just fine.
+    if (!plain || !html || !htmlHasStructure(html)) return;
+    const entry = { at: Date.now(), plain, html };
+    pasteHistoryRef.current.push(entry);
+    // Cap history at 16 entries so a long editing session doesn't
+    // pile up megabytes of stale clipboard payloads.
+    if (pasteHistoryRef.current.length > 16) {
+      pasteHistoryRef.current.shift();
+    }
+  }, []);
 
   const selectCleanupMode = useCallback((m: CleanupMode) => {
     setCleanupMode(m);
@@ -368,9 +395,13 @@ export function MemoEditor({
     {
       id: 'markdownify',
       label: '마크다운으로 정리',
-      hint: '제목·목록·단락을 자동 인식해 마크다운 구조로',
+      hint: '복붙한 GPT/Notion 본문의 ##, **, - 등을 복원',
       icon: 'auto_awesome',
-      run: memoBodyToMarkdown,
+      // Uses the rich-clipboard history captured at paste time —
+      // each paste's text/html is converted back to markdown
+      // syntax. Sections without a paste-source fall through to
+      // the heuristic markdownify (line-shape guessing).
+      run: (s: string) => memoBodyToMarkdownWithPastes(s, pasteHistoryRef.current),
       toast: '마크다운으로 정리해 복사했어요',
     },
     {
@@ -909,6 +940,7 @@ export function MemoEditor({
             value={body}
             onChange={e => setBody(e.target.value)}
             onKeyDown={onTextareaKeyDown}
+            onPaste={handleTextareaPaste}
             placeholder="메모를 적어주세요. 첫 줄이 제목이 됩니다."
             spellCheck={false}
             style={{
