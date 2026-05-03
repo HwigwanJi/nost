@@ -145,6 +145,7 @@ export function RecommendPanel({ open, spaces, onClose, onAddItems }: RecommendP
       `}</style>
 
       <div
+        data-tour-id="recommend-panel"
         style={{
           // Inline flex item — sits as a sibling above the spaces grid
           // and PUSHES the grid down by its own height instead of

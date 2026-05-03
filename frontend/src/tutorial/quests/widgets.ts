@@ -163,7 +163,7 @@ const widgetsMemo: Quest = {
       id: 'cleanup',
       title: '도구 팔레트로 정리',
       body: '에디터 상단의 정리 아이콘에 마우스를 올려 도구를 골라보세요. "마크다운으로 정리"는 paste된 GPT/Notion 본문을 자동 변환.',
-      spotlight: ['memo-card', 'space-header'],
+      spotlight: ['memo-editor-toolbar', 'memo-card'],
       gesture: 'left-click',
       advance: { kind: 'next-button' },
     },

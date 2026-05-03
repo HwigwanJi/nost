@@ -781,6 +781,7 @@ export function MemoEditor({
               flow explicitly that way: pick the tool, then use
               the button you just configured. */}
           <div
+            data-tour-id="memo-editor-toolbar"
             style={{ position: 'relative', display: 'flex' }}
             onMouseEnter={() => {
               if (cleanupHoverTimerRef.current) clearTimeout(cleanupHoverTimerRef.current);

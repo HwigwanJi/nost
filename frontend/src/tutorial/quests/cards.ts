@@ -43,7 +43,7 @@ const cardsScan: Quest = {
       id: 'pick',
       title: '추천 카드 1개 클릭',
       body: '패널 안의 카드 하나를 클릭하면 스페이스 선택 → 추가까지 두 번 클릭으로 끝납니다.',
-      spotlight: ['recommend-button'],
+      spotlight: ['recommend-panel', 'recommend-button'],
       advance: {
         kind: 'expects',
         check: (() => {
@@ -103,7 +103,7 @@ const cardsClipboard: Quest = {
       id: 'commit',
       title: '"URL 카드로" 버튼 누르기',
       body: '게이트웨이 배너의 액션 버튼을 누르면 카드 다이얼로그가 자동 채움 상태로 열려요.',
-      spotlight: 'gateway-banner',
+      spotlight: ['gateway-banner', 'space-header'],
       gesture: 'left-click',
       advance: {
         kind: 'expects',
@@ -164,7 +164,7 @@ const cardsMemo: Quest = {
       id: 'memo-action',
       title: '"메모로" 버튼 누르기',
       body: '배너에 두 액션이 떠요. "메모로"를 누르면 메모 카드가 즉시 생성되고 마크다운으로 정리돼요.',
-      spotlight: 'gateway-banner',
+      spotlight: ['gateway-banner', 'space-header'],
       gesture: 'left-click',
       advance: { kind: 'event', type: 'memo-created' },
       fallbackHint: '배너 두 번째 (액센트 색) 버튼 — sticky_note_2 아이콘.',
@@ -256,14 +256,14 @@ const cardsDialog: Quest = {
       id: 'phase-flow',
       title: '페이즈 진행 체험',
       body: '유형 카드 클릭 → 값 입력 → 위치 선택. 각 페이즈에서 ⌘↵으로 즉시 저장하거나 다음으로 진행.',
-      spotlight: 'add-card-button',
+      spotlight: ['item-dialog', 'add-card-button'],
       advance: { kind: 'next-button' },
     },
     {
       id: 'screen-pick',
       title: '"🎯 화면에서 고르기" 옵션',
       body: '페이즈 ③ 우하단의 화면 픽 모드를 활용하면, 다이얼로그가 잠시 사라지고 메인 화면의 스페이스를 직접 클릭해서 카드를 둘 수 있어요.',
-      spotlight: 'add-card-button',
+      spotlight: ['item-dialog', 'add-card-button'],
       advance: { kind: 'next-button' },
     },
     {

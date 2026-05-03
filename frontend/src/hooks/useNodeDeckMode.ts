@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { AppData, AppMode, LauncherItem } from '../types';
 import { electronAPI } from '../electronBridge';
 import type { ShowToast } from '../contexts/AppContext';
+import { triggers as tutorialTriggers } from '../tutorial/triggers';
 
 interface UseNodeDeckModeOptions {
   data: AppData;
@@ -170,6 +171,7 @@ export function useNodeDeckMode({
       const next = [...cur, itemId];
       store.updateNodeGroup(group.id, { itemIds: next });
       setNodeBuilding(next);
+      tutorialTriggers.fire('node-added', { itemId, groupId: group.id, via: 'click' });
       const added = allItems.find(i => i.id === itemId);
       if (added) {
         showToast(`"${added.title}" 추가 (${next.length}/${NODE_MAX})`, { duration: 1400, immediate: true });
@@ -227,6 +229,11 @@ export function useNodeDeckMode({
     setNodeBuilding(prev => {
       if (prev.includes(itemId)) return prev.filter(id => id !== itemId);
       if (prev.length >= 3) return prev;
+      // Fire node-added so tutorial steps that use click-to-add can
+      // auto-advance. Drop-to-add already fires from App.tsx; this
+      // mirrors it for the click path so quest body "click a card"
+      // and advance="event:node-added" stay in sync.
+      tutorialTriggers.fire('node-added', { itemId, target: 'building', via: 'click' });
       return [...prev, itemId];
     });
   }, []);

@@ -801,7 +801,7 @@ export function ItemDialog({
 
   return (
     <Dialog open={open} onOpenChange={v => !v && onClose()}>
-      <DialogContent style={{ width: 580, maxWidth: '94vw', padding: 0, overflow: 'hidden' }}>
+      <DialogContent data-tour-id="item-dialog" style={{ width: 580, maxWidth: '94vw', padding: 0, overflow: 'hidden' }}>
         <DialogHeader style={{ padding: '14px 20px 10px', borderBottom: '1px solid var(--border-rgba)' }}>
           <DialogTitle style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-color)' }}>
             {isEdit ? '카드 수정' : '카드 추가'}
