@@ -63,3 +63,40 @@ export function questsForNudgeTrigger(eventType: string): Quest[] {
 export function isUnlocked(q: Quest, completed: Record<QuestId, unknown>): boolean {
   return q.prereqs.every(pr => pr in completed);
 }
+
+/** Next playable quest in the same category — used by CompletionModal
+ *  to chain. Returns the first registry-order quest in the same
+ *  category that is (a) not yet completed AND (b) unlocked given
+ *  current `completed` map. Skips Pro-locked quests when the caller
+ *  asks. */
+export function nextQuestSameCategory(
+  currentId: QuestId,
+  completed: Record<QuestId, unknown>,
+): Quest | null {
+  const cur = findQuest(currentId);
+  if (!cur) return null;
+  const peers = questsByCategory(cur.category);
+  for (const q of peers) {
+    if (q.id === currentId) continue;
+    if (q.id in completed) continue;
+    if (!isUnlocked(q, completed)) continue;
+    return q;
+  }
+  return null;
+}
+
+/** First incomplete + unlocked quest across all categories — used by
+ *  the daily nudge to pick what to suggest. Walks CATEGORY_ORDER so
+ *  basics quests come first. */
+export function firstIncompleteQuest(
+  completed: Record<QuestId, unknown>,
+): Quest | null {
+  for (const cat of CATEGORY_ORDER) {
+    for (const q of questsByCategory(cat)) {
+      if (q.id in completed) continue;
+      if (!isUnlocked(q, completed)) continue;
+      return q;
+    }
+  }
+  return null;
+}

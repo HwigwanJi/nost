@@ -482,7 +482,7 @@ export function useAppData() {
   }, []);
 
   // ── Spaces ──────────────────────────────────────────────
-  const addSpace = useCallback((name?: string) => {
+  const addSpace = useCallback((name?: string): Space => {
     const newSpace: Space = {
       id: generateId(),
       name: name?.trim() || `Space ${data.spaces.length + 1}`,
@@ -491,6 +491,7 @@ export function useAppData() {
       pinnedIds: [],
     };
     save({ ...data, spaces: [...data.spaces, newSpace] });
+    return newSpace;
   }, [data, save]);
 
   const renameSpace = useCallback((id: string, name: string) => {

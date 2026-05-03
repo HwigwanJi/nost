@@ -51,10 +51,19 @@ export type AppEvent =
   | 'item-launched'
   | 'item-added'
   | 'item-deleted'
+  | 'item-moved'
+  | 'item-dialog-opened'
   | 'space-added'
   | 'space-renamed'
+  | 'space-reordered'
+  | 'preset-switched'
   | 'memo-created'
   | 'memo-edited'
+  | 'memo-editor-opened'
+  | 'search-focused'
+  | 'node-mode-entered'
+  | 'node-added'
+  | 'floating-converted'
   | 'recommend-panel-opened'
   | 'item-dialog-cancelled'
   | 'gateway-banner-dismissed'
@@ -150,6 +159,10 @@ export interface TutorialState {
   /** True once the user has explicitly opted out of "you have
    *  N days available" 3-day-after-onboarding nudge (§ 11.1). */
   finalNudgeShown: boolean;
+  /** YYYY-MM-DD of the last day the daily incomplete-quest nudge
+   *  was surfaced. Empty string means "never shown". Capped to one
+   *  fire per local day so users aren't pestered repeatedly. */
+  lastDailyNudgeYmd: string;
 }
 
 export const EMPTY_STATE: TutorialState = {
@@ -158,4 +171,5 @@ export const EMPTY_STATE: TutorialState = {
   dismissedNudges: {},
   rewardDays: 0,
   finalNudgeShown: false,
+  lastDailyNudgeYmd: '',
 };

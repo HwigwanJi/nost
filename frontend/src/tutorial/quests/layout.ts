@@ -30,7 +30,7 @@ const layoutCardmove: Quest = {
       body: '카드를 우클릭한 채 끌어 다른 위치로 옮겨보세요. 같은 스페이스 내·다른 스페이스 모두 가능.',
       spotlight: ['item-card', 'space-header'],
       gesture: 'right-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'item-moved' },
       fallbackHint: '우클릭 메뉴는 즉시 안 떠요 — 우클릭 누른 상태로 8px 이상 끌면 드래그 모드 진입.',
     },
     {
@@ -66,7 +66,7 @@ const layoutSpacereorder: Quest = {
       body: '스페이스 헤더 (이름·아이콘 칸)를 좌클릭으로 잡고 끌어 옮기세요.',
       spotlight: 'space-header',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'space-reordered' },
       fallbackHint: '헤더 좌측의 그립 영역(::: 점)을 잡으면 더 안정적.',
     },
     {
@@ -102,7 +102,7 @@ const layoutTile: Quest = {
       body: '왼쪽 사이드바의 hub (점 연결) 아이콘을 클릭하면 노드 편집 모드.',
       spotlight: 'node-mode-button',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'node-mode-entered' },
       fallbackHint: '사이드바 두 점이 선으로 이어진 모양 아이콘 — 핀 도구 바로 아래.',
     },
     {
@@ -111,7 +111,7 @@ const layoutTile: Quest = {
       body: '노드 모드에서 카드를 클릭하면 그룹에 포함, 한 번 더 누르면 빠져요.',
       spotlight: ['item-card', 'space-header'],
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'node-added' },
     },
     {
       id: 'launch',

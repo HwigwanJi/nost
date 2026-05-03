@@ -38,11 +38,16 @@ interface Props {
   bonusMaster?: boolean;
   onKeep: () => void;
   onCleanup: () => void;
+  /** Optional next quest in the same category. When set, a primary
+   *  "다음 퀘스트로" button is shown that closes this modal and
+   *  starts the next quest in one click. */
+  nextQuest?: Quest | null;
+  onStartNext?: () => void;
 }
 
 export function CompletionModal({
   open, quest, added, data, earnedDays, totalDays,
-  bonusCategory, bonusMaster, onKeep, onCleanup,
+  bonusCategory, bonusMaster, onKeep, onCleanup, nextQuest, onStartNext,
 }: Props) {
   const itemEntries = added.addedItemIds
     .map(id => {
@@ -136,7 +141,15 @@ export function CompletionModal({
           {allEntries.length > 0 && (
             <Button variant="ghost" onClick={onCleanup}>정리하기</Button>
           )}
-          <Button onClick={onKeep}>{allEntries.length > 0 ? '남기기' : '확인'}</Button>
+          <Button variant={nextQuest ? 'ghost' : 'default'} onClick={onKeep}>
+            {allEntries.length > 0 ? '남기기' : '확인'}
+          </Button>
+          {nextQuest && onStartNext && (
+            <Button onClick={onStartNext} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Icon name="arrow_forward" size={13} color="#fff" />
+              다음: {nextQuest.title}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

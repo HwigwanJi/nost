@@ -16,8 +16,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppData } from '../types';
 import type { Quest, ProvisionResult } from './types';
-import { useTutorialState, tutorialActions } from './state';
-import { findQuest } from './registry';
+import { useTutorialState, tutorialActions, readTutorialState } from './state';
+import { findQuest, nextQuestSameCategory, firstIncompleteQuest } from './registry';
 import { ScanLoader } from './ScanLoader';
 import { QuestRunner } from './QuestRunner';
 import { CompletionModal } from './CompletionModal';
@@ -141,6 +141,41 @@ export function TutorialProvider({ data, showToast, deleteItem, deleteSpace, del
     setPhase({ kind: 'idle' });
   }, [phase, state.active, deleteItem, deleteSpace, deleteMemo]);
 
+  // Daily nudge — once per local day, on the first launch of that
+  // day, surface the first incomplete + unlocked quest as a toast
+  // with a "시작" action. State.lastDailyNudgeYmd caps to one fire/day.
+  // Skipped while a quest is already active (don't pile UI on UI) or
+  // when everything is complete.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const s = readTutorialState();
+      if (s.active) return;
+      const today = (() => {
+        const d = new Date();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${d.getFullYear()}-${m}-${day}`;
+      })();
+      if (s.lastDailyNudgeYmd === today) return;
+      const next = firstIncompleteQuest(s.completed);
+      if (!next) { tutorialActions.markDailyNudgeShown(today); return; }
+      if (isBusyRef.current()) return;
+      tutorialActions.markDailyNudgeShown(today);
+      apiRef.current.showToast(
+        `📚 아직 안 한 튜토리얼: ${next.title} · +${next.rewardDays}일`,
+        {
+          actions: [
+            { label: '시작', icon: 'play_arrow', onClick: () => start(next) },
+            { label: '나중에', icon: 'close', onClick: () => { /* dismiss */ } },
+          ],
+          duration: 9000,
+        },
+      );
+    }, 3500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Resume prompt — caller (App) invokes once on startup.
   const showResumePromptIfAny = useCallback(() => {
     const s = state;
@@ -198,20 +233,28 @@ export function TutorialProvider({ data, showToast, deleteItem, deleteSpace, del
         />
       )}
 
-      {phase.kind === 'completing' && (
-        <CompletionModal
-          open
-          quest={phase.quest}
-          added={state.active ?? { addedItemIds: [], addedSpaceIds: [], addedMemoIds: [] }}
-          data={data}
-          earnedDays={phase.earnedDays}
-          totalDays={state.rewardDays}
-          bonusCategory={phase.bonusCategoryName}
-          bonusMaster={phase.bonusMaster}
-          onKeep={handleKeep}
-          onCleanup={handleCleanup}
-        />
-      )}
+      {phase.kind === 'completing' && (() => {
+        const nq = nextQuestSameCategory(phase.quest.id, {
+          ...state.completed,
+          [phase.quest.id]: { atIso: '', durationMs: 0 },
+        });
+        return (
+          <CompletionModal
+            open
+            quest={phase.quest}
+            added={state.active ?? { addedItemIds: [], addedSpaceIds: [], addedMemoIds: [] }}
+            data={data}
+            earnedDays={phase.earnedDays}
+            totalDays={state.rewardDays}
+            bonusCategory={phase.bonusCategoryName}
+            bonusMaster={phase.bonusMaster}
+            onKeep={handleKeep}
+            onCleanup={handleCleanup}
+            nextQuest={nq}
+            onStartNext={nq ? () => { handleKeep(); start(nq); } : undefined}
+          />
+        );
+      })()}
     </TutorialContext.Provider>
   );
 }

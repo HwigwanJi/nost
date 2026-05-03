@@ -52,7 +52,7 @@ const basicsSpaces: Quest = {
       body: '방금 만든 스페이스의 이름을 더블클릭하면 입력란으로 바뀌어요. "업무" / "프로젝트" 같은 이름 추천.',
       spotlight: 'space-header',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'space-renamed' },
       fallbackHint: '스페이스 헤더 내의 이름 텍스트만 더블클릭. 아이콘이나 빈 영역은 동작 안 해요.',
     },
     {
@@ -148,7 +148,7 @@ const basicsPresets: Quest = {
       body: '"2"를 누르면 빈 작업공간이 보여요. 1번에서 만든 카드는 안 보이고, 2번만의 카드를 따로 채울 수 있어요.',
       spotlight: 'preset-toggle',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'preset-switched' },
       fallbackHint: 'Tab 키로도 다음 프리셋으로 이동돼요.',
     },
     {
@@ -157,7 +157,7 @@ const basicsPresets: Quest = {
       body: '"1"을 누르면 원래 작업환경 그대로 돌아와요. 2번에 두고 온 카드도 그대로 보존돼 있어요.',
       spotlight: 'preset-toggle',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'preset-switched' },
     },
     {
       id: 'wrap',
@@ -193,7 +193,7 @@ const basicsSearch: Quest = {
       body: '상단 검색창을 클릭하거나 키보드 `/`를 누르면 즉시 입력 모드.',
       spotlight: 'search-input',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'search-focused' },
     },
     {
       id: 'try',

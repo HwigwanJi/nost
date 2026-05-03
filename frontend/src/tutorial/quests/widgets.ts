@@ -157,7 +157,7 @@ const widgetsMemo: Quest = {
       body: '메모 카드를 클릭하면 풀스크린 에디터가 열려요. 마크다운 작성, 미리보기, 자동 저장.',
       spotlight: ['memo-card', 'space-header'],
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'memo-editor-opened' },
     },
     {
       id: 'cleanup',

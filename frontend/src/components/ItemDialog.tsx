@@ -126,7 +126,6 @@ const MAT_ICONS = [
 
 type Phase = 0 | 1 | 2;
 const PHASE_LABELS = ['유형', '값·이름', '위치'];
-const SWIPE_COMMIT_PX = 60;
 /** Material-symbol names are lowercase + underscore; emoji are
  *  multi-byte glyphs in the dingbat / supplemental ranges. Same
  *  predicate SpaceAccordion uses to render space.icon correctly. */
@@ -330,25 +329,18 @@ export function ItemDialog({
   }, [form.value, form.type, isWidgetMode, visibleSpaces, editItem?.id]);
 
   /* ── Phase state ────────────────────────────────────────────
-   * Initial phase: skip TYPE if locked or in widget mode (the
-   * caller already fixed the kind). Skip VALUE in widget mode
-   * (no value/path on a widget). Otherwise start at TYPE.
-   * When `startAdvanced` is true the whole phase shell is bypassed
-   * — see render branch below. */
+   * Always start at phase 0 (TYPE) so the user sees the full
+   * 3-step flow. Exceptions:
+   *   - widget mode: phase 0 is the colour/name editor; edit reopens
+   *     at place.
+   *   - typeLocked (caller fixed the kind, e.g. dedicated "add memo"
+   *     entry): start at VALUE since TYPE has nothing to choose. */
   const initialPhase: Phase = (() => {
     if (isWidgetMode) return isEdit ? 2 : 0;
-    if (typeLocked) return form.value ? 2 : 1;
-    // Fully prefilled (typical of the screen-pick cancel-and-restore
-    // path, or any caller that hands us type + value) → skip straight
-    // to place. derivedTitle covers the empty-title case at save time
-    // so a non-empty value alone is enough signal. The user has
-    // nothing to decide in phases ① or ②.
-    if (form.value.trim()) return 2;
+    if (typeLocked) return 1;
     return 0;
   })();
   const [phase, setPhase] = useState<Phase>(initialPhase);
-  const [dragDx, setDragDx] = useState(0);
-  const dragRef = useRef<{ startX: number; startY: number; pointerId: number; locked: 'h' | 'v' | null } | null>(null);
 
   /* ── Validation + derived title ─────────────────────────── */
   const valueError = useMemo(() => {
@@ -419,7 +411,6 @@ export function ItemDialog({
 
   const goPhase = useCallback((p: Phase) => {
     setPhase(p);
-    setDragDx(0);
   }, []);
 
   /** Phase navigation helpers — widget mode skips phase 1 entirely
@@ -761,55 +752,6 @@ export function ItemDialog({
     return () => document.removeEventListener('keydown', onKey, true);
   }, [open, startAdvanced]);
 
-  /* ── Pointer drag (horizontal swipe between phases) ─────── */
-  const onSliderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    // Only react to primary mouse button / touch / pen
-    if (e.button !== 0 && e.pointerType === 'mouse') return;
-    // Don't capture drag from inside text inputs or buttons — they need
-    // their own click semantics. Bail if the target is interactive.
-    const tag = (e.target as HTMLElement).tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'LABEL') return;
-    dragRef.current = { startX: e.clientX, startY: e.clientY, pointerId: e.pointerId, locked: null };
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* no-op */ }
-  };
-
-  const onSliderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = dragRef.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    const dx = e.clientX - d.startX;
-    const dy = e.clientY - d.startY;
-    if (d.locked === null) {
-      // Decide axis after first 8px of motion.
-      if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
-        d.locked = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
-      }
-    }
-    if (d.locked !== 'h') return;
-    // Resist over-drag at edges (rubber-band).
-    let bounded = dx;
-    if ((phase === 0 && dx > 0) || (phase === 2 && dx < 0)) bounded = dx * 0.35;
-    setDragDx(bounded);
-  };
-
-  const onSliderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = dragRef.current;
-    if (!d || d.pointerId !== e.pointerId) return;
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* no-op */ }
-    const dx = e.clientX - d.startX;
-    dragRef.current = null;
-    if (d.locked === 'h' && Math.abs(dx) >= SWIPE_COMMIT_PX) {
-      if (dx < 0 && !isLastPhase(phase) && phaseComplete(phase)) {
-        goPhase(nextPhase(phase));
-        return;
-      }
-      if (dx > 0 && !isFirstPhase(phase)) {
-        goPhase(prevPhase(phase));
-        return;
-      }
-    }
-    setDragDx(0);
-  };
-
   /* ── Auto-focus the relevant input each phase ───────────── */
   const valueInputRef = useRef<HTMLInputElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -852,8 +794,8 @@ export function ItemDialog({
   }
 
   /* ── Render: phase shell ─────────────────────────────────── */
-  const sliderTransform = `translateX(calc(${-phase * 100}% + ${dragDx}px))`;
-  const sliderTransition = dragDx === 0 ? 'transform 0.28s cubic-bezier(0.4, 0.1, 0.3, 1)' : 'none';
+  const sliderTransform = `translateX(${-phase * 100}%)`;
+  const sliderTransition = 'transform 0.28s cubic-bezier(0.4, 0.1, 0.3, 1)';
   const canGoNext = phaseComplete(phase) && !isLastPhase(phase);
   const isPlace = isLastPhase(phase);
 
@@ -931,14 +873,11 @@ export function ItemDialog({
           })}
         </div>
 
-        {/* Phase slider — overflow hidden, transform-translateX. */}
-        <div
-          style={{ overflow: 'hidden', touchAction: 'pan-y', userSelect: 'none' }}
-          onPointerDown={onSliderPointerDown}
-          onPointerMove={onSliderPointerMove}
-          onPointerUp={onSliderPointerUp}
-          onPointerCancel={onSliderPointerUp}
-        >
+        {/* Phase slider — overflow hidden, transform-translateX.
+            Phase navigation: tab buttons above, arrow keys, or footer
+            buttons. Pointer-drag/swipe was removed (caused accidental
+            phase changes during marquee selection of chips). */}
+        <div style={{ overflow: 'hidden', userSelect: 'none' }}>
           <div style={{
             display: 'flex',
             transform: sliderTransform,

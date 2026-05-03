@@ -250,7 +250,7 @@ const cardsDialog: Quest = {
       body: '아무 스페이스 하단의 + 추가를 누르면 페이즈 ① 유형 선택부터 시작해요.',
       spotlight: 'add-card-button',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'item-dialog-opened' },
     },
     {
       id: 'phase-flow',

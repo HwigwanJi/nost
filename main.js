@@ -34,6 +34,11 @@ const store = new Store({ name: 'nost-data' });
 // ── 2. Module-level globals ──────────────────────────────────────────
 let mainWindow;
 let loadingWindow    = null;
+// Renderer-controlled flag — when true the main window's blur
+// handler skips its autoHide. Used by clean mode so a click on a
+// card-to-delete (which steals focus) doesn't hide the launcher
+// mid-cleanup.
+let suppressAutoHide = false;
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
 // One BrowserWindow per display — keyed by display.id. The previous
 // single-overlay-spans-all-displays design was broken on cross-DPI
@@ -1499,8 +1504,12 @@ function createWindow() {
       .catch(() => {});
   });
 
-  // Auto-hide on focus loss when the user has enabled it in settings
+  // Auto-hide on focus loss when the user has enabled it in settings.
+  // Renderer can ask us to suppress this (e.g. while clean mode is
+  // active — clicking on cards-to-delete shouldn't accidentally
+  // dismiss the window mid-cleanup).
   mainWindow.on('blur', () => {
+    if (suppressAutoHide) return;
     const settings = store.get('appData')?.settings ?? {};
     if (settings.autoHide) mainWindow.hide();
   });
@@ -1807,6 +1816,7 @@ function registerIpcHandlers() {
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() ?? [0, 0]);
 
   ipcMain.on('set-opacity', (_, opacity) => mainWindow?.setOpacity(opacity));
+  ipcMain.on('set-suppress-autohide', (_, suppress) => { suppressAutoHide = !!suppress; });
 
   /** Re-register the global shortcut with a new key combo from settings. */
   ipcMain.on('update-shortcut', (_, newShortcut) => registerShortcut(newShortcut));

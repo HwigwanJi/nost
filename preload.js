@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyText: (text, closeAfter) => ipcRenderer.send('copy-text', text, closeAfter),
   hideApp: () => ipcRenderer.send('hide-app'),
   setOpacity: (opacity) => ipcRenderer.send('set-opacity', opacity),
+  setSuppressAutoHide: (suppress) => ipcRenderer.send('set-suppress-autohide', !!suppress),
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),
   launchOrFocusApp: (exePath, closeAfter, monitor) => ipcRenderer.invoke('launch-or-focus-app', exePath, closeAfter, monitor),

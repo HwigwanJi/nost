@@ -18,6 +18,7 @@ export interface ElectronAPI {
   copyText: (text: string, closeAfter: boolean) => void;
   getOpenWindows: () => Promise<{ windows: import('./types').WindowEntry[]; browserTabs: import('./types').ChromeTab[] }>;
   setOpacity: (opacity: number) => void;
+  setSuppressAutoHide: (suppress: boolean) => void;
   updateShortcut: (shortcut: string) => void;
   detectDialog: () => Promise<{ isDialog: boolean; title?: string; className?: string }>;
   jumpToDialogFolder: (folderPath: string) => void;
@@ -155,6 +156,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   copyText: noop,
   getOpenWindows: async () => ({ windows: [], browserTabs: [] }),
   setOpacity: noop,
+  setSuppressAutoHide: noop,
   updateShortcut: noop,
   detectDialog: async () => ({ isDialog: false }),
   jumpToDialogFolder: noop,

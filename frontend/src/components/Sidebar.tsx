@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AppMode } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
+import { triggers as tutorialTriggers } from '../tutorial/triggers';
 
 interface SidebarProps {
   activeMode: AppMode;
@@ -87,7 +88,11 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           label="노드 편집"
           active={activeMode === 'node'}
           expanded={expanded}
-          onClick={() => onModeChange(activeMode === 'node' ? 'normal' : 'node')}
+          onClick={() => {
+            const next = activeMode === 'node' ? 'normal' : 'node';
+            onModeChange(next);
+            if (next === 'node') tutorialTriggers.fire('node-mode-entered');
+          }}
           accentColor="#6366f1"
           dataTourId="node-mode-button"
         />

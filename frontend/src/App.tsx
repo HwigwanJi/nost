@@ -863,18 +863,30 @@ export default function App() {
   // Threaded into SettingsDialog so the 튜토리얼 tab can start a quest.
   const tutorialApiRef = useRef<{ start: (q: import('./tutorial').Quest) => void; showResumePromptIfAny: () => void } | null>(null);
   // Wrapper around store.addSpace that publishes the space-added
-  // tutorial trigger. Used by every UI site (header +, accordion +,
-  // command bar) so quests don't need to subscribe per-site.
+  // tutorial trigger, surfaces a toast with undo, and rate-limits
+  // creation so a stuck/repeated keypress (or accidental long-press
+  // if a button ever auto-repeats) can't spawn dozens of empty
+  // spaces in one tick. The 600 ms gap matches the OS auto-repeat
+  // period plus a comfortable margin.
+  // Toast is reached via a ref because it's declared further below;
+  // same forward-decl pattern as `tourBridgeRef`.
+  const lastSpaceAddRef = useRef(0);
+  const showToastRef = useRef<((msg: string, opts?: Parameters<ReturnType<typeof useToastQueue>['showToast']>[1]) => void) | null>(null);
   const addSpaceWithTrigger = useCallback((name?: string) => {
+    const now = Date.now();
+    if (now - lastSpaceAddRef.current < 600) return;
+    lastSpaceAddRef.current = now;
     const before = data.spaces.length;
-    store.addSpace(name);
-    // We don't get the new id back from addSpace (legacy signature),
-    // but space-added subscribers only need the count delta to know
-    // a new one landed. After-the-fact diff is reliable enough.
+    const created = store.addSpace(name);
     setTimeout(() => {
-      // Defer one tick so data has rerendered and the diff sees the new space.
-      tutorialTriggers.fire('space-added', { previousCount: before });
+      tutorialTriggers.fire('space-added', { previousCount: before, spaceId: created.id });
     }, 0);
+    showToastRef.current?.(`스페이스 "${created.name}" 추가됨`, {
+      actions: [
+        { label: '실행취소', icon: 'undo', onClick: () => store.deleteSpace(created.id) },
+      ],
+      duration: 4000,
+    });
   }, [data.spaces.length, store]);
   // Once on mount, after the provider has wired itself, prompt the
   // user to resume any quest they paused last session.
@@ -941,6 +953,8 @@ export default function App() {
 
   const { tileOverlayGroup, tileOverlayLeaving, showTileOverlay, dismissTileOverlay } = useTileOverlay();
   const { toasts, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
+  // Wire forward-declared ref now that showToast exists.
+  showToastRef.current = showToast;
 
   // ── Onboarding — applyTemplate (post-toast) ─────────────────
   // Declared here (not at the top of the component) because it depends on
@@ -1519,8 +1533,18 @@ export default function App() {
   // ── Theme sync to <html> ──────────────────────────────────
   useEffect(() => {
     // Ghost card mode → force fully opaque so cards are visible
-    electronAPI.setOpacity(ghostCards.active ? 1 : data.settings.opacity);
-  }, [data.settings.opacity, ghostCards.active]);
+    const target = ghostCards.active ? 1 : data.settings.opacity;
+    electronAPI.setOpacity(target);
+    // CSS-side: the frosted-glass background uses rgba(_, _, _, 0.95~0.96)
+    // by default. setOpacity alone leaves that 4-5% transparency baked
+    // into the surface, so at "100%" the desktop still bleeds through.
+    // When the user dials to 100% we override --bg-rgba to a fully
+    // opaque value so the window reads as truly solid. Below 100% we
+    // restore the default (let the stylesheet rule apply).
+    const root = document.documentElement;
+    if (target >= 0.999) root.style.setProperty('--bg-rgba', data.settings.theme === 'dark' ? 'rgb(5, 5, 8)' : 'rgb(255, 255, 255)');
+    else root.style.removeProperty('--bg-rgba');
+  }, [data.settings.opacity, data.settings.theme, ghostCards.active]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1553,6 +1577,12 @@ export default function App() {
     // arrow + colored badge with a mode icon. We used to inject a JS-built
     // cursor here, but that duplicated and overrode the CSS rules, defeating
     // the established arrow+badge design. Body class handling below is enough.
+
+    // Clean mode steals window focus on every card click (the deletion
+    // dialog is OS-level), which would trigger autoHide and dismiss
+    // the launcher mid-cleanup. Suppress autoHide while clean mode is
+    // active and restore on exit.
+    electronAPI.setSuppressAutoHide(activeMode === 'clean');
 
     return () => {
       document.body.classList.remove('mode-pin', 'mode-node', 'mode-deck', 'mode-clean', 'mode-tool');
@@ -1671,6 +1701,7 @@ export default function App() {
       const idx = accessible.indexOf(store.activePresetId as '1' | '2' | '3');
       const next = accessible[(idx + 1) % accessible.length];
       store.setActivePreset(next);
+      tutorialTriggers.fire('preset-switched', { from: store.activePresetId, to: next, via: 'tab' });
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -1682,6 +1713,7 @@ export default function App() {
     setEditSpaceId(spaceId);
     setPrefilledItem(null);
     setDialog('item');
+    tutorialTriggers.fire('item-dialog-opened', { mode: 'edit', itemId: item.id });
   }, []);
 
   const openScan = useCallback((spaceId: string) => {
@@ -1696,6 +1728,7 @@ export default function App() {
     setPrefilledItem(null);
     setEditSpaceId(spaceId ?? data.spaces[0]?.id ?? '');
     setDialog('wizard');
+    tutorialTriggers.fire('item-dialog-opened', { mode: 'add' });
   }, [data.spaces]);
 
   /**
@@ -2661,7 +2694,10 @@ export default function App() {
     if (!targetId || targetId === activeId) return;
 
     const next = applySpaceDrop(spaces, activeId, targetId, edge?.edge ?? null);
-    if (next) store.reorderSpaces(next);
+    if (next) {
+      store.reorderSpaces(next);
+      tutorialTriggers.fire('space-reordered', { spaceId: activeId });
+    }
   }
 
   // Item DnD (cross-space)
@@ -2700,6 +2736,7 @@ export default function App() {
     if (overId === 'drop-node-building' && nodeEditMode) {
       if (!nodeBuilding.includes(activeId) && nodeBuilding.length < 3) {
         setNodeBuilding(prev => [...prev, activeId]);
+        tutorialTriggers.fire('node-added', { itemId: activeId, target: 'building' });
       }
       return;
     }
@@ -2717,6 +2754,7 @@ export default function App() {
       if (group && !group.itemIds.includes(activeId) && group.itemIds.length < 3) {
         store.updateNodeGroup(groupId, { itemIds: [...group.itemIds, activeId] });
         showToast(`노드 "${group.name}"에 추가됨`);
+        tutorialTriggers.fire('node-added', { itemId: activeId, groupId });
       }
       return;
     }
@@ -2738,7 +2776,10 @@ export default function App() {
     // Dropped onto a space droppable zone
     if (overId.startsWith('drop-space-')) {
       const toSpaceId = overId.replace('drop-space-', '');
-      if (toSpaceId !== sourceSpace.id) store.moveItemToSpace(activeId, sourceSpace.id, toSpaceId);
+      if (toSpaceId !== sourceSpace.id) {
+        store.moveItemToSpace(activeId, sourceSpace.id, toSpaceId);
+        tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: toSpaceId });
+      }
       return;
     }
 
@@ -2752,6 +2793,7 @@ export default function App() {
     if (directSpaceMatch) {
       if (directSpaceMatch.id !== sourceSpace.id) {
         store.moveItemToSpace(activeId, sourceSpace.id, directSpaceMatch.id);
+        tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: directSpaceMatch.id });
       }
       return;
     }
@@ -2786,9 +2828,13 @@ export default function App() {
       const oldIdx = items.findIndex(i => i.id === activeId);
       const newIdx = items.findIndex(i => i.id === overId);
       if (oldIdx === -1 || newIdx === -1) return;
-      if (oldIdx !== newIdx) store.reorderItems(sourceSpace.id, arrayMove(items, oldIdx, newIdx));
+      if (oldIdx !== newIdx) {
+        store.reorderItems(sourceSpace.id, arrayMove(items, oldIdx, newIdx));
+        tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: sourceSpace.id, kind: 'reorder' });
+      }
     } else {
       store.moveItemToSpace(activeId, sourceSpace.id, targetSpace.id);
+      tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: targetSpace.id });
     }
   }
 
@@ -3305,7 +3351,12 @@ export default function App() {
             <PresetToggle
               presets={store.presets}
               activeId={store.activePresetId}
-              onSelect={id => { if (quotaChecks.preset(id)) store.setActivePreset(id); }}
+              onSelect={id => {
+                if (!quotaChecks.preset(id)) return;
+                const from = store.activePresetId;
+                store.setActivePreset(id);
+                if (from !== id) tutorialTriggers.fire('preset-switched', { from, to: id, via: 'click' });
+              }}
               onRename={(id, label) => store.renamePreset(id, label)}
             />
 
@@ -3333,7 +3384,10 @@ export default function App() {
                   fontFamily: 'inherit',
                   transition: 'border-color 0.1s',
                 }}
-                onFocus={e => { if (!isSlashMode) e.target.style.borderColor = 'var(--border-focus)'; }}
+                onFocus={e => {
+                  if (!isSlashMode) e.target.style.borderColor = 'var(--border-focus)';
+                  tutorialTriggers.fire('search-focused');
+                }}
                 onBlur={e => { if (!isSlashMode) e.target.style.borderColor = 'var(--border-rgba)'; }}
               />
 
@@ -3753,7 +3807,10 @@ export default function App() {
                           <SpaceAccordion
                             space={space}
                             headerDragActivator={dragActivator}
-                            onRename={name => store.renameSpace(space.id, name)}
+                            onRename={name => {
+                              store.renameSpace(space.id, name);
+                              tutorialTriggers.fire('space-renamed', { spaceId: space.id, name });
+                            }}
                             onDelete={() => handleDeleteSpace(space.id)}
                             onDuplicate={() => store.duplicateSpace(space.id)}
                             onSetColor={color => store.setSpaceColor(space.id, color)}
@@ -3783,7 +3840,10 @@ export default function App() {
                             onAddWidget={() => handleAddWidget(space.id)}
                             onAddColorSwatch={() => handleAddColorSwatch(space.id)}
                             onAddMemo={() => handleAddMemo(space.id)}
-                            onOpenMemoEditor={(itemId) => setEditingMemoId({ spaceId: space.id, itemId })}
+                            onOpenMemoEditor={(itemId) => {
+                              setEditingMemoId({ spaceId: space.id, itemId });
+                              tutorialTriggers.fire('memo-editor-opened', { spaceId: space.id, itemId });
+                            }}
                             onCopyMemoBody={(itemId) => handleCopyMemoBody(space.id, itemId)}
                             onCopyMemoMarkdown={(itemId) => handleCopyMemoMarkdown(space.id, itemId)}
                             onExtendMemoTtl={(itemId) => handleExtendMemoTtl(space.id, itemId)}
@@ -3805,7 +3865,10 @@ export default function App() {
                             fileDragTarget={fileDragTargetSpaceId === space.id}
                             onFileDragEnter={() => setFileDragTargetSpaceId(space.id)}
                             onFileDragLeave={() => setFileDragTargetSpaceId(prev => prev === space.id ? null : prev)}
-                            onFloatOut={() => pinAsFloating('space', space.id)}
+                            onFloatOut={() => {
+                              pinAsFloating('space', space.id);
+                              tutorialTriggers.fire('floating-converted', { kind: 'space', spaceId: space.id });
+                            }}
                             isFloating={spacesFloating.has(space.id)}
                           />
                         )}

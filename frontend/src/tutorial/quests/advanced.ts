@@ -34,7 +34,7 @@ const advancedFloating: Quest = {
       body: '아무 카드 위에서 우클릭하면 메뉴가 떠요. "플로팅으로" 항목 선택.',
       spotlight: ['item-card', 'space-header'],
       gesture: 'right-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'floating-converted' },
       fallbackHint: '카드 우클릭 → 컨텍스트 메뉴 → "플로팅" 항목.',
     },
     {
@@ -77,7 +77,7 @@ const advancedNodegroup: Quest = {
       body: '왼쪽 사이드바의 노드 도구 버튼을 클릭해 활성화하세요.',
       spotlight: 'node-mode-button',
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'node-mode-entered' },
       fallbackHint: '두 점이 선으로 이어진 hub 아이콘.',
     },
     {
@@ -86,7 +86,7 @@ const advancedNodegroup: Quest = {
       body: '카드를 클릭하면 그룹에 들어가요. 한 번 더 누르면 빠져요. 여러 스페이스의 카드를 섞어 묶을 수 있어요.',
       spotlight: ['item-card', 'space-header'],
       gesture: 'left-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'node-added' },
     },
     {
       id: 'launch',
@@ -131,7 +131,7 @@ const advancedPreset: Quest = {
       body: '편집할 카드의 다이얼로그를 열어주세요.',
       spotlight: ['item-card', 'space-header'],
       gesture: 'right-click',
-      advance: { kind: 'next-button' },
+      advance: { kind: 'event', type: 'item-dialog-opened' },
     },
     {
       id: 'phase-3',

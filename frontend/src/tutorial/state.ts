@@ -183,6 +183,13 @@ export const tutorialActions = {
     setState(prev => ({ ...prev, finalNudgeShown: true }));
   },
 
+  /** Stamp today's local YYYY-MM-DD as the day we last fired the
+   *  daily incomplete-quest nudge. Caller compares against today
+   *  before firing to enforce the once-per-day cap. */
+  markDailyNudgeShown(ymd: string) {
+    setState(prev => prev.lastDailyNudgeYmd === ymd ? prev : { ...prev, lastDailyNudgeYmd: ymd });
+  },
+
   /** Test/dev only — wipe everything. Don't expose in UI. */
   __reset() {
     setState(() => EMPTY_STATE);
