@@ -867,9 +867,33 @@ export default function App() {
   // hex) flow through ItemDialog's auto-detect → no banner needed.
   // Only "text" gets the banner because it's the one type with two
   // genuinely different commit paths.
-  const [clipTextPrompt, setClipTextPrompt] = useState<{ value: string; label: string; html?: string } | null>(null);
-  const lastClipTextRef = useRef('');
-  const dismissedTextRef = useRef<Set<string>>(new Set());
+  // ── Clipboard gateway prompt ─────────────────────────────────
+  // ONE banner, every clipboard type. analyzeClipboard returns one
+  // of { url | app | folder | hex | text | none } and we render
+  // per-type chrome and per-type actions:
+  //   - url       → URL 카드 (ItemDialog prefilled)
+  //   - app       → 앱 카드  (ItemDialog prefilled)
+  //   - folder    → 폴더 카드 (ItemDialog prefilled)
+  //   - hex       → 컬러 위젯 (instant-create + open dialog for label)
+  //   - text      → 클립보드 카드 / 메모 (two destinations)
+  //
+  // The gateway centralises "what does nost do when you copied X" —
+  // before this rewrite each type was scattered across separate
+  // banners, ItemDialog auto-detects, openQuickAdd hex specialcase,
+  // etc. Now there's a single SSOT.
+  type ClipPrompt = {
+    type: 'url' | 'app' | 'folder' | 'hex' | 'text';
+    value: string;
+    label: string;
+    html?: string;
+  };
+  const [clipPrompt, setClipPrompt] = useState<ClipPrompt | null>(null);
+  const lastClipValueRef = useRef('');
+  const dismissedClipRef = useRef<Set<string>>(new Set());
+  // Forward-ref to handleAddColorSwatch (declared later; TDZ would
+  // otherwise prevent the hex handler below from referring to it).
+  // Populated in an effect below the swatch declaration.
+  const addColorSwatchRef = useRef<((spaceId: string, opts: { hex: string; name?: string }) => LauncherItem | null) | null>(null);
   const [itemDialogStartAdvanced, setItemDialogStartAdvanced] = useState(false);
 
   // Marks IDs as "just added" so ItemCard can trigger @keyframes cardEnter.
@@ -1231,37 +1255,33 @@ export default function App() {
     window.addEventListener('mousemove', onMove);
     return () => window.removeEventListener('mousemove', onMove);
   }, []);
-  // ── Text-clipboard polling ────────────────────────────────
-  // Mirrors the old ClipboardSuggestion polling but narrowed to
-  // type==='text' only. Other types are now handled inside
-  // ItemDialog (auto-detect on open). Re-checks on focus so a user
-  // who copied text in another app sees the prompt as soon as they
-  // alt-tab back. dismissedTextRef tracks values the user has
-  // explicitly closed so they don't re-appear.
+  // ── Clipboard polling ──────────────────────────────────────
+  // Single gateway: every non-'none' type becomes a clipPrompt.
+  // The banner (rendered below) branches on `type` for chrome
+  // and actions. Re-checks on window focus + 1.5 s interval to
+  // catch external copies while nost stays focused.
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
       const r = await electronAPI.analyzeClipboard();
       if (cancelled) return;
-      if (r.type !== 'text' || !r.value) return;
-      if (r.value === lastClipTextRef.current) return;
-      if (dismissedTextRef.current.has(r.value)) return;
-      lastClipTextRef.current = r.value;
-      // Stash the HTML twin (when present) at prompt time — when
-      // the user clicks "메모로" we use it to reconstruct proper
-      // markdown structure (## / ** / -). By the time the click
-      // fires the OS clipboard may have been replaced, so we
-      // capture eagerly.
-      setClipTextPrompt({ value: r.value, label: r.label ?? r.value, html: r.html });
+      if (r.type === 'none' || !r.value) return;
+      if (r.value === lastClipValueRef.current) return;
+      if (dismissedClipRef.current.has(r.value)) return;
+      lastClipValueRef.current = r.value;
+      setClipPrompt({
+        type: r.type as ClipPrompt['type'],
+        value: r.value,
+        label: r.label ?? r.value,
+        // html is only present (and only useful) for type==='text'
+        // — used to reconstruct markdown when the source had
+        // structural markup (GPT / Notion / Claude paste).
+        html: r.type === 'text' ? r.html : undefined,
+      });
     };
     const onFocus = () => check();
     window.addEventListener('focus', onFocus);
     void check();
-    // Focus-only listening missed the case where the user copies
-    // text in another app while nost stays focused (multi-monitor
-    // setup, or text dragged in from a side panel). Cheap 1.5 s
-    // poll closes that gap. Stops while document is hidden so we
-    // don't burn cycles when nost is minimised to tray.
     const intervalId = window.setInterval(() => {
       if (!document.hidden) void check();
     }, 1500);
@@ -1270,32 +1290,53 @@ export default function App() {
       window.removeEventListener('focus', onFocus);
       window.clearInterval(intervalId);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleClipTextToCard = useCallback(() => {
-    if (!clipTextPrompt) return;
-    const { value, label } = clipTextPrompt;
-    setClipTextPrompt(null);
-    dismissedTextRef.current.add(value);
+  /** Convert a non-text prompt (url / app / folder / text-as-card)
+   *  into a prefilled ItemDialog open. The dialog's allowedTypes
+   *  is implicit via the prefill type — caller doesn't need to
+   *  duplicate the type-narrowing logic here. */
+  const handleClipPromptToCard = useCallback(() => {
+    if (!clipPrompt) return;
+    const { type, value, label } = clipPrompt;
+    dismissedClipRef.current.add(value);
+    setClipPrompt(null);
     setEditItem(null);
-    setPrefilledItem({ type: 'text', value, title: label } as Partial<LauncherItem>);
+    setPrefilledItem({ type, value, title: label } as Partial<LauncherItem>);
     setEditSpaceId(data.spaces[0]?.id ?? '');
     setDialog('item');
-  }, [clipTextPrompt, data.spaces]);
+  }, [clipPrompt, data.spaces]);
 
-  const handleClipTextToMemo = useCallback(() => {
-    if (!clipTextPrompt) return;
-    const { value, html } = clipTextPrompt;
+  /** Hex prompt → instant color-swatch widget creation in the
+   *  first space, then the dialog opens on the new item so the
+   *  user can label it (matches openQuickAdd's existing hex flow). */
+  const handleClipPromptToColorSwatch = useCallback(() => {
+    if (!clipPrompt || clipPrompt.type !== 'hex') return;
+    const { value } = clipPrompt;
+    dismissedClipRef.current.add(value);
+    setClipPrompt(null);
+    const target = data.spaces[0]?.id;
+    if (!target) return;
+    const newItem = addColorSwatchRef.current?.(target, { hex: value }) ?? null;
+    if (newItem) {
+      setEditItem(newItem);
+      setEditSpaceId(target);
+      setDialog('item');
+    }
+  }, [clipPrompt, data.spaces]);
+
+  /** Text prompt → memo (only for type==='text'). HTML twin (when
+   *  present) is converted to proper markdown so a paste from
+   *  GPT / Notion lands as `## ` / `**` / `- ` instead of a flat
+   *  blob. Plain text saves verbatim. */
+  const handleClipPromptToMemo = useCallback(() => {
+    if (!clipPrompt || clipPrompt.type !== 'text') return;
+    const { value, html } = clipPrompt;
     const targetSpaceId = data.spaces[0]?.id;
-    setClipTextPrompt(null);
-    dismissedTextRef.current.add(value);
+    dismissedClipRef.current.add(value);
+    setClipPrompt(null);
     if (!targetSpaceId) return;
-    // When the source had structural HTML (GPT/Notion paste), use
-    // the html→markdown converter so the resulting memo body
-    // already has proper `## ` / `**...**` / `- ` syntax. The
-    // textarea-paste path can't access html (textarea strips it),
-    // but at clipboard-prompt time we still have it. Plain-text
-    // clipboard falls through to verbatim save.
     let body = value;
     if (html && htmlHasStructure(html)) {
       const converted = htmlToMarkdown(html).trim();
@@ -1315,12 +1356,12 @@ export default function App() {
         duration: 4000,
       });
     }
-  }, [clipTextPrompt, data.spaces, store, showToast]);
+  }, [clipPrompt, data.spaces, store, showToast]);
 
-  const handleClipTextDismiss = useCallback(() => {
-    if (clipTextPrompt) dismissedTextRef.current.add(clipTextPrompt.value);
-    setClipTextPrompt(null);
-  }, [clipTextPrompt]);
+  const handleClipPromptDismiss = useCallback(() => {
+    if (clipPrompt) dismissedClipRef.current.add(clipPrompt.value);
+    setClipPrompt(null);
+  }, [clipPrompt]);
 
   // ── Extension banner ──────────────────────────────────────
   const [extBannerDismissed, setExtBannerDismissed] = useState(
@@ -1696,6 +1737,11 @@ export default function App() {
     return newItem;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quotaChecks, store]);
+  // Wire the forward-ref so the clipboard hex handler (declared
+  // earlier, before this useCallback) can call into the swatch
+  // creator without a TDZ. Each render keeps the ref pointing to
+  // the latest closure.
+  addColorSwatchRef.current = handleAddColorSwatch;
 
   /**
    * Add a memo card. Creates the item with current settings.memo
@@ -3345,76 +3391,123 @@ export default function App() {
             }}
           />
 
-          {/* Clipboard quick-add suggestion was here. Retired in v3 —
-              clipboard auto-detect now feeds ItemDialog directly for
-              url/app/folder. v4 brings back ONLY the text-type prompt:
-              free text has two genuinely different destinations
-              (text card or memo), so the user picks. */}
-          {clipTextPrompt && (
-            <div style={{
-              flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '8px 14px',
-              borderBottom: '1px solid var(--border-rgba)',
-              background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
-              animation: 'slideDown 0.18s ease',
-            }}>
-              <Icon name="content_paste" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>텍스트가 복사되어 있어요</span>
-                <span style={{
-                  fontSize: 11, fontWeight: 600, color: 'var(--text-color)',
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  maxWidth: 340,
-                }}>
-                  "{clipTextPrompt.label}"
-                </span>
+          {/* ── Clipboard gateway banner ──────────────────────
+              Single banner, every detected clipboard type. Per-type
+              chrome (icon, label, action set) is computed from a
+              small map below so the JSX stays one shape. Hex gets
+              a colour swatch instead of a Material icon since the
+              swatch IS the value. Text gets two destinations
+              (clipboard card / memo); url/app/folder/hex get one. */}
+          {clipPrompt && (() => {
+            const meta = (() => {
+              switch (clipPrompt.type) {
+                case 'url':    return { icon: 'link',         summary: 'URL이 복사되어 있어요',     primaryLabel: 'URL 카드로',    primaryIcon: 'language' };
+                case 'app':    return { icon: 'apps',         summary: '앱 경로가 복사되어 있어요', primaryLabel: '앱 카드로',     primaryIcon: 'apps' };
+                case 'folder': return { icon: 'folder_open',  summary: '폴더 경로가 복사되어 있어요', primaryLabel: '폴더 카드로',  primaryIcon: 'folder' };
+                case 'hex':    return { icon: 'palette',      summary: '컬러 코드가 복사되어 있어요', primaryLabel: '컬러 위젯으로', primaryIcon: 'palette' };
+                case 'text':   return { icon: 'content_paste', summary: '텍스트가 복사되어 있어요',  primaryLabel: '클립보드 카드', primaryIcon: 'content_paste' };
+              }
+            })();
+            const isHex  = clipPrompt.type === 'hex';
+            const isText = clipPrompt.type === 'text';
+            return (
+              <div style={{
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                padding: '8px 14px',
+                borderBottom: '1px solid var(--border-rgba)',
+                background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
+                animation: 'slideDown 0.18s ease',
+              }}>
+                {/* Leading affordance — colour swatch for hex, icon for everything else. */}
+                {isHex ? (
+                  <span style={{
+                    width: 14, height: 14, borderRadius: 4,
+                    background: clipPrompt.value,
+                    border: '1px solid var(--border-rgba)',
+                    flexShrink: 0,
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
+                  }} />
+                ) : (
+                  <Icon name={meta.icon} size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                )}
+                <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{meta.summary}</span>
+                  <span style={{
+                    fontSize: 11, fontWeight: 600, color: 'var(--text-color)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    maxWidth: 340,
+                    fontFamily: (clipPrompt.type === 'url' || clipPrompt.type === 'folder' || clipPrompt.type === 'app' || clipPrompt.type === 'hex')
+                      ? 'ui-monospace, monospace'
+                      : 'inherit',
+                  }}>
+                    {clipPrompt.label}
+                  </span>
+                </div>
+
+                {/* Primary action — for text, this is "클립보드 카드";
+                    for hex, "컬러 위젯으로"; for the rest, the
+                    type-card label (URL/앱/폴더 카드로). Hex routes
+                    to the instant-create swatch handler; everything
+                    else opens ItemDialog with the prefill. */}
+                <button
+                  onClick={isHex ? handleClipPromptToColorSwatch : handleClipPromptToCard}
+                  title={isHex
+                    ? '컬러 스와치 위젯으로 즉시 추가 (이름 붙이기 다이얼로그가 열립니다)'
+                    : '카드 추가 다이얼로그가 열립니다'}
+                  style={{
+                    height: 28, padding: '0 10px', borderRadius: 6,
+                    background: isText ? 'var(--surface)' : 'var(--accent)',
+                    border: `1px solid ${isText ? 'var(--border-rgba)' : 'var(--accent)'}`,
+                    color: isText ? 'var(--text-color)' : '#fff',
+                    fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                    cursor: 'pointer', flexShrink: 0,
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                  }}
+                >
+                  <Icon name={meta.primaryIcon} size={12} color={isText ? 'currentColor' : '#fff'} />
+                  {meta.primaryLabel}
+                </button>
+
+                {/* Text-only second action — memo. Long pasted prose
+                    has a natural home in memos (auto html→md from
+                    the rich clipboard); short text is more of a
+                    clipboard-card thing. We expose both so the user
+                    picks based on intent, not heuristic. */}
+                {isText && (
+                  <button
+                    onClick={handleClipPromptToMemo}
+                    title="첫 스페이스에 메모로 저장 — 마크다운 구조 자동 복원"
+                    style={{
+                      height: 28, padding: '0 10px', borderRadius: 6,
+                      background: 'var(--accent)',
+                      border: '1px solid var(--accent)',
+                      color: '#fff',
+                      fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                      cursor: 'pointer', flexShrink: 0,
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                    }}
+                  >
+                    <Icon name="sticky_note_2" size={12} />메모로
+                  </button>
+                )}
+
+                <button
+                  onClick={handleClipPromptDismiss}
+                  title="닫기"
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    padding: 4, display: 'flex', alignItems: 'center',
+                    opacity: 0.55, flexShrink: 0,
+                  }}
+                >
+                  <Icon name="close" size={13} color="var(--text-muted)" />
+                </button>
               </div>
-              <button
-                onClick={handleClipTextToCard}
-                title="이 텍스트를 클릭하면 클립보드로 복사하는 카드"
-                style={{
-                  height: 28, padding: '0 10px', borderRadius: 6,
-                  background: 'var(--surface)',
-                  border: '1px solid var(--border-rgba)',
-                  color: 'var(--text-color)',
-                  fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
-                  cursor: 'pointer', flexShrink: 0,
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                }}
-              >
-                <Icon name="content_paste" size={12} />클립보드 카드
-              </button>
-              <button
-                onClick={handleClipTextToMemo}
-                title="첫 스페이스에 메모로 저장 — 본문에 자동으로 채워집니다"
-                style={{
-                  height: 28, padding: '0 10px', borderRadius: 6,
-                  background: 'var(--accent)',
-                  border: '1px solid var(--accent)',
-                  color: '#fff',
-                  fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
-                  cursor: 'pointer', flexShrink: 0,
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                }}
-              >
-                <Icon name="sticky_note_2" size={12} />메모로
-              </button>
-              <button
-                onClick={handleClipTextDismiss}
-                title="닫기"
-                style={{
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  padding: 4, display: 'flex', alignItems: 'center',
-                  opacity: 0.55, flexShrink: 0,
-                }}
-              >
-                <Icon name="close" size={13} color="var(--text-muted)" />
-              </button>
-            </div>
-          )}
+            );
+          })()}
 
           {/* ── Screen-pick mode banner ──────────
               Shown while the user is in "pick a space by clicking
