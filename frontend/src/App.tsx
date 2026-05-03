@@ -2156,8 +2156,10 @@ export default function App() {
     }
     store.incrementClickCount(spaceId, item.id);
     launchAndPosition(item, data.settings.closeAfterOpen);
-    // Tutorial trigger — quests waiting on a real launch advance here.
-    tutorialTriggers.fire('item-launched', { itemId: item.id, type: item.type });
+    // No trigger fire here — launchAndPosition is the SSOT for the
+    // 'item-launched' tutorial event (covers in-app card click,
+    // badge click, command bar). Duplicating here would advance
+    // a quest step twice on the badge path.
   }, [store, data.settings.closeAfterOpen, launchAndPosition]);
 
   const handleSetMonitor = useCallback((spaceId: string, itemId: string, monitor: number | undefined) => {

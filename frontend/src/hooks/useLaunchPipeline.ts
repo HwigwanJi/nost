@@ -1,6 +1,7 @@
 import { useCallback, useRef } from 'react';
 import { electronAPI } from '../electronBridge';
 import type { LauncherItem } from '../types';
+import { triggers as tutorialTriggers } from '../tutorial';
 
 // ── Polling constants ──────────────────────────────────────
 const POLL_INTERVAL = 400;   // ms between polls
@@ -50,6 +51,15 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
     closeAfter: boolean,
     monitor?: number,
   ): Promise<void> => {
+    // Tutorial trigger — fired up-front so quests waiting on a real
+    // launch advance immediately, regardless of whether the launch
+    // pipeline below is sync (text/cmd) or async (positioning poll).
+    // The previous wiring lived only in App.launchItem, which the
+    // in-app card click bypasses (ItemCard calls launchAndPosition
+    // directly). This is the SSOT — every card-launch path runs
+    // through this function, so subscribing here covers all cases.
+    tutorialTriggers.fire('item-launched', { itemId: item.id, type: item.type });
+
     const targetMonitor = monitor ?? item.monitor;
     const needsPositioning = POSITIONABLE_TYPES.has(item.type)
                               && !!targetMonitor && targetMonitor > 0;
