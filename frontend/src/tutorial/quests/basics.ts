@@ -1,41 +1,30 @@
 /**
  * Category 1 — Basics. Onboarding quests for the four core
- * concepts: Spaces · Cards · Templates · Quick Search.
+ * concepts: Spaces · Cards · Presets · Quick Search.
  *
- * Conventions for every quest in this file:
- *   - Reward = 1 day (basics tier per § 11 of the design doc).
- *   - provision() is no-op when the prerequisite resource already
- *     exists in the user's data; we never duplicate-add.
- *   - Steps prefer `expects` advance over `event`/`click-target`
- *     because it survives multi-path UIs (user can complete the
- *     same goal via shortcut OR menu). `event` is reserved for
- *     instantaneous signals (item-launched).
- *   - Every step has a `gesture` so the runner shows the input
- *     hint badge — accessibility win for keyboard / mouse-only
- *     users.
- *   - fallbackHint is set on any step where the spotlighted
- *     element might be visually subtle (collapsed accordion,
- *     small icon) — surfaces after 15 s of no progress.
+ * Conventions:
+ *   - Reward = 1 day per quest (basics tier).
+ *   - Tone: `~해요` 톤으로 통일 (basics는 가벼운 인사말).
+ *   - 본문은 1~2 문장, 평균 80자 이하. 과도한 친절·메타포·칭찬조 금지
+ *     (plans/tutorial-writing-style.md § 1).
+ *   - spotlight는 본문이 가리키는 요소와 일치 (§ 5.2). 동적 요소면
+ *     배열 fallback으로 안전망.
+ *   - "잘했어요" 류 칭찬 마무리 대신 다음 액션 또는 결과 요약.
+ *
+ * NOTE: 기존 `basics.templates` 였던 자리는 이번 polish에서
+ * `basics.presets`로 재정의. 사용자의 원래 의도("템플릿 = 1·2·3
+ * Tab 토글")가 시작 키트가 아닌 프리셋 토글이었음. advanced.preset
+ * 은 cross-preset 카드 이동 같은 심화 동작으로 별도 유지.
  */
 
 import type { Quest } from '../types';
-import type { AppData } from '../../types';
-
-const DEFAULT_TUTORIAL_SPACE_NAME = '튜토리얼 연습';
-
-/** Helper — find an existing space by name to detect "already
- *  done" state. The `provision` step uses this so reruns of the
- *  same quest don't pile up sandbox spaces. */
-function findSpaceByName(data: AppData, name: string) {
-  return data.spaces.find(s => s.name === name);
-}
 
 // ── basics.spaces ─────────────────────────────────────────────
 const basicsSpaces: Quest = {
   id: 'basics.spaces',
   category: 'basics',
   title: '스페이스란?',
-  summary: '카드를 담는 그릇 — 만들고, 이름 짓고, 정리하기',
+  summary: '카드를 모으는 단위 — 만들고, 이름 짓고, 정리',
   estimatedSec: 90,
   rewardDays: 1,
   prereqs: [],
@@ -43,33 +32,33 @@ const basicsSpaces: Quest = {
   steps: [
     {
       id: 'intro',
-      title: '스페이스는 카드를 담는 그릇입니다',
-      body: '주제별·맥락별로 카드를 묶어 한눈에 보고, 한 번에 다룹니다. 직접 하나 만들어볼까요?',
-      spotlight: 'space-header',
+      title: '스페이스 = 카드 묶음 단위',
+      body: '주제·맥락별로 카드를 묶어서 한 화면에 보여주는 단위입니다. 직접 하나 추가해봐요.',
+      spotlight: ['header-add-space', 'space-header'],
       advance: { kind: 'next-button' },
     },
     {
       id: 'add',
-      title: '+ 새 스페이스 추가',
+      title: '+ 새 스페이스 누르기',
       body: '오른쪽 위 + 아이콘을 누르면 빈 스페이스가 생겨요.',
       spotlight: 'header-add-space',
       gesture: 'left-click',
       advance: { kind: 'event', type: 'space-added' },
-      fallbackHint: '상단 우측의 + 동그라미 아이콘 — 닫기(✕) 버튼 옆에 있습니다.',
+      fallbackHint: '상단 우측 — 닫기(✕) 옆의 + 동그라미 아이콘.',
     },
     {
       id: 'rename',
-      title: '이름으로 의미 부여',
-      body: '방금 만든 스페이스의 이름을 더블클릭하면 바꿀 수 있어요. "업무" / "프로젝트" 등 떠오르는 이름으로.',
+      title: '이름 더블클릭으로 바꾸기',
+      body: '방금 만든 스페이스의 이름을 더블클릭하면 입력란으로 바뀌어요. "업무" / "프로젝트" 같은 이름 추천.',
       spotlight: 'space-header',
       gesture: 'left-click',
       advance: { kind: 'next-button' },
-      fallbackHint: '스페이스 이름 텍스트를 더블클릭하면 입력란으로 바뀝니다.',
+      fallbackHint: '스페이스 헤더 내의 이름 텍스트만 더블클릭. 아이콘이나 빈 영역은 동작 안 해요.',
     },
     {
-      id: 'success',
-      title: '잘했어요!',
-      body: '스페이스 = 작업 단위 컨테이너. 다음 퀘스트에서 이 안에 카드를 채워볼게요.',
+      id: 'wrap',
+      title: '다음은 카드 채우기',
+      body: '이름 붙인 스페이스 안에 카드가 들어갑니다. "카드란?" 퀘스트로 이어가봐요.',
       spotlight: 'space-header',
       advance: { kind: 'auto-advance', ms: 2200 },
     },
@@ -77,7 +66,7 @@ const basicsSpaces: Quest = {
   contextNudge: {
     trigger: { type: 'item-dialog-cancelled', cooldownMin: 60 * 24 * 7 },
     headline: '스페이스부터 만들어볼까요?',
-    body: '카드를 담을 곳이 있어야 합니다',
+    body: '카드를 둘 곳이 먼저 필요해요',
   },
 };
 
@@ -94,86 +83,87 @@ const basicsCards: Quest = {
   steps: [
     {
       id: 'intro',
-      title: '카드는 nost의 가장 작은 단위입니다',
-      body: 'URL, 앱, 폴더, 텍스트 — 무엇이든 카드로 묶어 클릭 한 번에 실행해요.',
-      spotlight: 'space-header',
+      title: '카드 = nost의 기본 단위',
+      body: 'URL · 앱 · 폴더 · 텍스트를 카드로 만들어 한 번 클릭에 실행해요. 직접 하나 추가해봐요.',
+      spotlight: ['add-card-button', 'space-header'],
       advance: { kind: 'next-button' },
     },
     {
       id: 'add-url',
-      title: 'URL 카드 추가',
-      body: '스페이스 하단의 + 추가를 눌러 URL 카드를 만들어 보세요. 예: https://github.com',
+      title: '+ 추가 → URL 카드',
+      body: '아무 스페이스 하단의 + 추가를 누르고 URL 유형으로 추가해보세요. 예: https://github.com',
       spotlight: 'add-card-button',
       gesture: 'left-click',
       advance: {
         kind: 'expects',
         check: (d) => d.spaces.some(s => s.items.some(i => i.type === 'url')),
       },
-      fallbackHint: '+ 추가 → 유형: URL → 값에 https://... 입력 → 추가 버튼',
+      fallbackHint: '+ 추가 → 유형: URL → 값에 https://... → 추가.',
     },
     {
       id: 'click-card',
-      title: '카드 클릭으로 실행',
-      body: '방금 만든 카드를 클릭하면 브라우저에서 URL이 열립니다. 한번 눌러보세요.',
-      spotlight: 'item-card',
+      title: '카드 클릭하면 실행',
+      body: '방금 만든 URL 카드를 한 번 클릭하면 브라우저에서 열려요.',
+      spotlight: ['item-card', 'add-card-button'],
       gesture: 'left-click',
       advance: { kind: 'event', type: 'item-launched' },
-      fallbackHint: '카드 본체를 한 번만 클릭하세요. 길게 누르면 다른 동작이 트리거됩니다.',
+      fallbackHint: '카드 본체를 짧게 한 번만 클릭. 길게 누르면 다른 동작이 트리거돼요.',
     },
     {
-      id: 'success',
-      title: '클릭 한 번 = 작업 시작',
-      body: '나머지 유형(앱·폴더·텍스트·창)도 같은 방식이에요. 다음 카테고리에서 더 빠른 추가법을 봐요.',
+      id: 'wrap',
+      title: '다른 유형도 같은 흐름',
+      body: '앱 · 폴더 · 텍스트 · 창 모두 같은 방식으로 추가하고 클릭해요. 다음 카테고리에서 더 빠른 추가법.',
       spotlight: 'item-card',
-      advance: { kind: 'auto-advance', ms: 2500 },
+      advance: { kind: 'auto-advance', ms: 2400 },
     },
   ],
   contextNudge: {
     trigger: { type: 'first-card-error', cooldownMin: 60 * 24 * 3 },
-    headline: '카드 추가에 막혔어요?',
-    body: '1분 안에 끝나는 가이드가 있어요',
+    headline: '카드 추가가 막혀요?',
+    body: '1분짜리 가이드',
   },
 };
 
-// ── basics.templates ──────────────────────────────────────────
-const basicsTemplates: Quest = {
-  id: 'basics.templates',
+// ── basics.presets (재정의: 1·2·3 Tab 토글) ────────────────────
+const basicsPresets: Quest = {
+  id: 'basics.presets',
   category: 'basics',
-  title: '템플릿이란?',
-  summary: '시작 키트로 한 번에 여러 카드 채우기',
-  estimatedSec: 60,
+  title: '프리셋이란?',
+  summary: '1·2·3 토글 — 통째로 다른 작업환경',
+  estimatedSec: 75,
   rewardDays: 1,
   prereqs: ['basics.spaces'],
   provision: async () => ({}),
   steps: [
     {
       id: 'intro',
-      title: '템플릿 = 미리 만들어둔 카드 묶음',
-      body: '시작 키트는 자주 쓰는 카드 모음을 한 번에 추가해주는 기능입니다. 환경설정에서 적용할 수 있어요.',
-      spotlight: 'header-settings',
+      title: '프리셋 = 독립된 작업환경 3벌',
+      body: '상단 좌측의 1·2·3 토글로 보이는 스페이스가 통째로 바뀌어요. 업무·개인·사이드 분리 용도.',
+      spotlight: 'preset-toggle',
       advance: { kind: 'next-button' },
     },
     {
-      id: 'open-settings',
-      title: '환경설정 열기',
-      body: '오른쪽 위 톱니바퀴 아이콘을 눌러 환경설정을 여세요.',
-      spotlight: 'header-settings',
+      id: 'switch-2',
+      title: '프리셋 2 클릭해서 이동',
+      body: '"2"를 누르면 빈 작업공간이 보여요. 1번에서 만든 카드는 안 보이고, 2번만의 카드를 따로 채울 수 있어요.',
+      spotlight: 'preset-toggle',
       gesture: 'left-click',
       advance: { kind: 'next-button' },
-      fallbackHint: '상단 우측에서 + 옆의 톱니바퀴(설정) 아이콘.',
+      fallbackHint: 'Tab 키로도 다음 프리셋으로 이동돼요.',
     },
     {
-      id: 'find-template',
-      title: '"시작 키트" 섹션 찾기',
-      body: '환경설정의 "일반" 탭에서 시작 키트 옵션을 찾아 마음에 드는 것을 적용해보세요. 한 번에 여러 카드가 추가됩니다.',
-      spotlight: 'header-settings',
+      id: 'switch-back',
+      title: '다시 1번으로',
+      body: '"1"을 누르면 원래 작업환경 그대로 돌아와요. 2번에 두고 온 카드도 그대로 보존돼 있어요.',
+      spotlight: 'preset-toggle',
+      gesture: 'left-click',
       advance: { kind: 'next-button' },
     },
     {
-      id: 'success',
-      title: '잘했어요!',
-      body: '템플릿은 새 환경 세팅이나 친구에게 nost를 소개할 때 유용해요.',
-      spotlight: 'space-header',
+      id: 'wrap',
+      title: '맥락 분리 = 집중력',
+      body: '한 화면에 한 맥락만 두면 머리가 덜 피로해요. 프리셋을 자주 활용해보세요.',
+      spotlight: 'preset-toggle',
       advance: { kind: 'auto-advance', ms: 2200 },
     },
   ],
@@ -184,7 +174,7 @@ const basicsSearch: Quest = {
   id: 'basics.search',
   category: 'basics',
   title: '빠른 검색이란?',
-  summary: '`/`로 무엇이든 한 번에 찾기',
+  summary: '`/`로 모든 카드 즉시 찾기',
   estimatedSec: 45,
   rewardDays: 1,
   prereqs: [],
@@ -192,33 +182,33 @@ const basicsSearch: Quest = {
   steps: [
     {
       id: 'intro',
-      title: '`/` 또는 검색창으로 모든 카드를 한번에',
-      body: '카드 이름·URL·경로 무엇으로든 검색됩니다. `/`로 시작하면 명령어도 실행할 수 있어요.',
+      title: '`/` 또는 검색창으로 즉시 호출',
+      body: '카드 이름·URL·경로 무엇으로든 검색돼요. `/`로 시작하면 명령어 실행도 가능.',
       spotlight: 'search-input',
       advance: { kind: 'next-button' },
     },
     {
       id: 'focus',
-      title: '검색창 클릭 또는 `/` 입력',
-      body: '상단 검색창을 클릭하거나 키보드 `/`를 누르면 즉시 입력 모드로 들어갑니다.',
+      title: '검색창 클릭 또는 `/` 누르기',
+      body: '상단 검색창을 클릭하거나 키보드 `/`를 누르면 즉시 입력 모드.',
       spotlight: 'search-input',
       gesture: 'left-click',
       advance: { kind: 'next-button' },
     },
     {
       id: 'try',
-      title: '아무 글자나 입력해보기',
-      body: '검색어를 입력하면 일치하는 카드가 실시간으로 추려져요. 결과 클릭으로 바로 실행됩니다.',
+      title: '글자 입력해서 결과 확인',
+      body: '검색어를 입력하면 일치하는 카드가 실시간으로 추려져요. 결과 클릭으로 바로 실행.',
       spotlight: 'search-input',
       gesture: 'keyboard',
       advance: { kind: 'next-button' },
     },
     {
-      id: 'success',
-      title: '`/`는 nost의 만능 입구예요',
-      body: '카드가 쌓일수록 검색이 빨라집니다. 손에 익을수록 마우스 의존도가 줄어요.',
+      id: 'wrap',
+      title: '카드 많을수록 검색이 빨라요',
+      body: '`/`는 nost의 만능 입구. 손에 익을수록 마우스 의존도가 줄어들어요.',
       spotlight: 'search-input',
-      advance: { kind: 'auto-advance', ms: 2200 },
+      advance: { kind: 'auto-advance', ms: 2000 },
     },
   ],
 };
@@ -226,11 +216,6 @@ const basicsSearch: Quest = {
 export const BASICS_QUESTS: Quest[] = [
   basicsSpaces,
   basicsCards,
-  basicsTemplates,
+  basicsPresets,
   basicsSearch,
 ];
-
-// Suppress "unused" lint — the helper is for future quests that
-// need provision side-effects (will land in cards.* etc.).
-void findSpaceByName;
-void DEFAULT_TUTORIAL_SPACE_NAME;

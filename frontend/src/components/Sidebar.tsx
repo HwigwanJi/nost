@@ -89,6 +89,7 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           expanded={expanded}
           onClick={() => onModeChange(activeMode === 'node' ? 'normal' : 'node')}
           accentColor="#6366f1"
+          dataTourId="node-mode-button"
         />
         <SidebarButton
           icon="stacks"
@@ -97,6 +98,7 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           expanded={expanded}
           onClick={() => onModeChange(activeMode === 'deck' ? 'normal' : 'deck')}
           accentColor="#f97316"
+          dataTourId="deck-mode-button"
         />
 
         <SidebarButton

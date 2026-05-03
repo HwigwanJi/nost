@@ -3459,7 +3459,7 @@ export default function App() {
             const isHex  = clipPrompt.type === 'hex';
             const isText = clipPrompt.type === 'text';
             return (
-              <div style={{
+              <div data-tour-id="gateway-banner" style={{
                 flexShrink: 0,
                 display: 'flex',
                 alignItems: 'center',

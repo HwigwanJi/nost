@@ -40,31 +40,75 @@ interface Props {
 }
 
 const FALLBACK_HINT_MS = 15_000;
-const RECT_POLL_MS = 250;
+// Rect re-check cadence — used as a slow safety net only. Primary
+// signal is ResizeObserver / IntersectionObserver / scroll listener.
+// 1 s is plenty for occasional layout shifts (tab switch, accordion
+// open) that the observers don't catch.
+const RECT_SLOW_POLL_MS = 1000;
+
+/** Resolve a spotlight selector list to the first matching DOM
+ *  element. Selectors are `data-tour-id` values OR raw CSS
+ *  selectors (must start with `[`, `.`, `#`). Returns null when
+ *  none match — caller falls back to the no-rect "full dim"
+ *  presentation. */
+function resolveSpotlight(spotlight: string | string[]): HTMLElement | null {
+  const list = Array.isArray(spotlight) ? spotlight : [spotlight];
+  for (const sel of list) {
+    if (!sel) continue;
+    const el =
+      document.querySelector<HTMLElement>(`[data-tour-id="${sel}"]`) ||
+      ((sel.startsWith('[') || sel.startsWith('.') || sel.startsWith('#'))
+        ? document.querySelector<HTMLElement>(sel)
+        : null);
+    if (el) return el;
+  }
+  return null;
+}
 
 export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }: Props) {
   const step: QuestStep | undefined = quest.steps[stepIdx];
 
-  // ── Spotlight rect (poll because target may mount/move) ─────
+  // ── Spotlight rect tracking ────────────────────────────────
+  // Prior versions polled getBoundingClientRect() at 250 ms which
+  // ran ~4× / sec for the entire quest duration — wasteful. v2:
+  // ResizeObserver on the target + a window scroll/resize listener,
+  // plus a 1 s safety poll for layout shifts neither observer sees
+  // (tab/accordion expand changes target identity, not size). Net:
+  // CPU drops noticeably during long quests.
   const [rect, setRect] = useState<DOMRect | null>(null);
   useLayoutEffect(() => {
     if (!step) return;
     let cancelled = false;
-    const compute = () => {
+    let target: HTMLElement | null = null;
+    let ro: ResizeObserver | null = null;
+
+    const recompute = () => {
       if (cancelled) return;
-      const sel = Array.isArray(step.spotlight) ? step.spotlight[0] : step.spotlight;
-      // dataTourId selector first (preferred), then raw CSS selector
-      const el =
-        document.querySelector(`[data-tour-id="${sel}"]`) ||
-        (sel.startsWith('[') || sel.startsWith('.') || sel.startsWith('#')
-          ? document.querySelector(sel)
-          : null);
-      setRect(el ? el.getBoundingClientRect() : null);
+      const next = resolveSpotlight(step.spotlight);
+      if (next !== target) {
+        // Target identity changed — rebind the ResizeObserver.
+        if (ro && target) ro.unobserve(target);
+        target = next;
+        if (target && ro) ro.observe(target);
+      }
+      setRect(target ? target.getBoundingClientRect() : null);
     };
-    compute();
-    const id = setInterval(compute, RECT_POLL_MS);
-    window.addEventListener('resize', compute);
-    return () => { cancelled = true; clearInterval(id); window.removeEventListener('resize', compute); };
+
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => recompute());
+    }
+    recompute();
+    window.addEventListener('resize', recompute);
+    window.addEventListener('scroll', recompute, true);
+    const slowPoll = setInterval(recompute, RECT_SLOW_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('resize', recompute);
+      window.removeEventListener('scroll', recompute, true);
+      clearInterval(slowPoll);
+      if (ro && target) { ro.unobserve(target); ro.disconnect(); }
+    };
   }, [step]);
 
   // ── Fallback hint timer ─────────────────────────────────────
@@ -76,13 +120,23 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
     return () => clearTimeout(t);
   }, [stepIdx, step?.fallbackHint]);
 
-  // ── Advance criteria dispatch ───────────────────────────────
   // Latest-onAdvance ref so the effect's listeners always invoke
   // the most recent handler without re-binding on every render.
-  // Updated in an effect (not during render) per React rules.
   const advanceRef = useRef(onAdvance);
   useEffect(() => { advanceRef.current = onAdvance; }, [onAdvance]);
 
+  // Latest-data ref — the `expects` poll reads via this so the
+  // SUBSCRIPTION effect doesn't take `data` as a dep (which would
+  // re-subscribe + unsubscribe on every store mutation, briefly
+  // dropping listeners and risking missed `event`-kind triggers
+  // fired during the gap).
+  const dataRef = useRef(data);
+  useEffect(() => { dataRef.current = data; }, [data]);
+
+  // ── Advance criteria dispatch (data-INDEPENDENT) ───────────
+  // Subscribes to triggers / click handlers / timers ONCE per step.
+  // The `expects` poll uses dataRef so it reads the latest store
+  // state without forcing the effect to re-run when data changes.
   useEffect(() => {
     if (!step) return;
     const a = step.advance;
@@ -92,13 +146,10 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
         return () => clearTimeout(t);
       }
       case 'expects': {
-        // Poll AppData; advance when check returns true.
         let stopped = false;
         const loop = () => {
           if (stopped) return;
-          if (a.check(data)) { advanceRef.current(); return; }
-          // Cheap: 600 ms poll. Live data updates re-trigger the
-          // useEffect via the deps array.
+          if (a.check(dataRef.current)) { advanceRef.current(); return; }
           setTimeout(loop, 600);
         };
         loop();
@@ -109,21 +160,16 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
         return off;
       }
       case 'click-target': {
-        const sel = Array.isArray(step.spotlight) ? step.spotlight[0] : step.spotlight;
-        const el =
-          document.querySelector(`[data-tour-id="${sel}"]`) ||
-          (sel.startsWith('[') || sel.startsWith('.') || sel.startsWith('#')
-            ? document.querySelector(sel)
-            : null);
+        const el = resolveSpotlight(step.spotlight);
         if (!el) return;
         const handler = () => advanceRef.current();
         el.addEventListener('click', handler);
         return () => el.removeEventListener('click', handler);
       }
-      // 'next-button' is handled inline in the popover.
+      // 'next-button' handled in popover.
     }
     return undefined;
-  }, [step, data, stepIdx]);
+  }, [step, stepIdx]);
 
   // ── ESC = pause ─────────────────────────────────────────────
   useEffect(() => {
