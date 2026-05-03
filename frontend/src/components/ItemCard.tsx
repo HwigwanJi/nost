@@ -634,6 +634,8 @@ export function ItemCard({
       ref={(el) => { setNodeRef(el); (cardRef as React.MutableRefObject<HTMLDivElement | null>).current = el; }}
       data-card
       data-card-id={item.id}
+      data-card-type={item.type}
+      data-tour-id="item-card"
       style={{
         ...style,
         background: isNodeAnchor ? 'var(--accent-dim)' : 'var(--surface)',

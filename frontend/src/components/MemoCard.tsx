@@ -219,6 +219,8 @@ export function MemoCard({
         ref={setNodeRef}
         data-card
         data-card-id={item.id}
+        data-card-type="memo"
+        data-tour-id="memo-card"
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         {...attributes}

@@ -226,6 +226,8 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
         {...handleProps}
         data-card
         data-card-id={item.id}
+        data-card-type="widget-color"
+        data-tour-id="color-widget"
         style={{
           ...(handleProps.style as CSSProperties),
           height: WIDGET.cardHeight,

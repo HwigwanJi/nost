@@ -258,6 +258,8 @@ function MediaWidgetImpl({ item, space, dragHandle, onContextMenu }: Props) {
         // card-reorder drag.
         data-card
         data-card-id={item.id}
+        data-card-type="widget-music"
+        data-tour-id="music-widget"
         style={wrapStyle}
         onPointerDown={handlePointerDown}
         onContextMenu={handleContextMenu}

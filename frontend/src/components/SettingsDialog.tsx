@@ -8,21 +8,23 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
+import { AccordionPanel } from '../tutorial';
 import { ExtensionInstallWizard } from './ExtensionInstallWizard';
 import { DEFAULT_DOCUMENT_EXTENSIONS } from '../lib/documentExtensions';
 import { useBusyMark } from '../lib/userBusy';
 import { TOURS } from '../tour/tours';
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'dev-mode' | 'error';
-type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data';
+type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'tutorial' | 'data';
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: 'general',   label: '일반',   icon: 'tune' },
-  { id: 'monitor',   label: '모니터', icon: 'desktop_windows' },
-  { id: 'docs',      label: '문서',   icon: 'description' },
-  { id: 'extension', label: '확장',   icon: 'extension' },
-  { id: 'memo',      label: '메모',   icon: 'sticky_note_2' },
-  { id: 'data',      label: '데이터', icon: 'save' },
+  { id: 'general',   label: '일반',     icon: 'tune' },
+  { id: 'monitor',   label: '모니터',   icon: 'desktop_windows' },
+  { id: 'docs',      label: '문서',     icon: 'description' },
+  { id: 'extension', label: '확장',     icon: 'extension' },
+  { id: 'memo',      label: '메모',     icon: 'sticky_note_2' },
+  { id: 'tutorial',  label: '튜토리얼', icon: 'school' },
+  { id: 'data',      label: '데이터',   icon: 'save' },
 ];
 
 interface MonitorInfo {
@@ -42,6 +44,9 @@ interface SettingsDialogProps {
   updateDownloaded?: boolean;
   downloadProgress?: number | null;
   initialTab?: Tab;
+  /** Optional — invoked when the user picks a quest from the
+   *  튜토리얼 tab. App routes through TutorialProvider.start. */
+  onStartTutorial?: (quest: import('../tutorial').Quest) => void;
   // ── Memo (사라지는 메모) ────────────────────────────────────────
   /** Open the trash dialog (memos are stored in the data tree, but the
    *  trash UI lives at App-level; we call up to surface it). */
@@ -236,7 +241,7 @@ function GhostBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttribut
 
 // ── Main component ───────────────────────────────────────────────────
 
-export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onOpenMemoTrash, onExtendAllMemos, onEmptyMemoTrash }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onStartTutorial, onOpenMemoTrash, onExtendAllMemos, onEmptyMemoTrash }: SettingsDialogProps) {
   useBusyMark('modal:settings', open);
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
   const [form, setForm] = useState<AppSettings>({ ...settings });
@@ -1068,6 +1073,22 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   {backupStatus && (
                     <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>{backupStatus}</p>
                   )}
+                </Section>
+              </>}
+
+              {tab === 'tutorial' && <>
+                <Section>
+                  <SectionLabel icon="school" text="튜토리얼" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 12 }}>
+                    퀘스트를 진행하며 nost를 익히세요. 완주할 때마다 무료 일수가 적립됩니다.
+                  </p>
+                  <AccordionPanel onStartQuest={(q) => {
+                    // Hand off to TutorialProvider via the prop
+                    // App threaded down. Closes settings so the
+                    // ScanLoader → QuestRunner flow gets the screen.
+                    onStartTutorial?.(q);
+                    onClose();
+                  }} />
                 </Section>
               </>}
 

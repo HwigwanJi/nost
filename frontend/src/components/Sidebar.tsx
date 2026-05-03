@@ -117,6 +117,7 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           expanded={expanded}
           onClick={() => onRecommendClick?.()}
           accentColor="var(--accent)"
+          dataTourId="recommend-button"
         />
       </div>
 
@@ -164,6 +165,7 @@ function SidebarButton({
   onClick,
   accentColor,
   badge,
+  dataTourId,
 }: {
   icon: string;
   label: string;
@@ -172,11 +174,14 @@ function SidebarButton({
   onClick: () => void;
   accentColor: string;
   badge?: string;
+  /** Optional `data-tour-id` for tutorial spotlight targeting. */
+  dataTourId?: string;
 }) {
   return (
     <button
       onClick={onClick}
       title={!expanded ? label : undefined}
+      {...(dataTourId ? { 'data-tour-id': dataTourId } : {})}
       style={{
         display: 'flex',
         alignItems: 'center',

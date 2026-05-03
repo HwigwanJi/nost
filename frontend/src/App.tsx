@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Toaster } from 'sonner';
+import { TutorialProvider, triggers as tutorialTriggers } from './tutorial';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -858,6 +859,29 @@ export default function App() {
   // A ref (not state) because we only consult it from a click handler;
   // no render needs to react to it.
   const lastAddedItemRef = useRef<{ spaceId: string; id: string } | null>(null);
+  // Tutorial public API reached up from <TutorialProvider onApiReady>.
+  // Threaded into SettingsDialog so the 튜토리얼 tab can start a quest.
+  const tutorialApiRef = useRef<{ start: (q: import('./tutorial').Quest) => void; showResumePromptIfAny: () => void } | null>(null);
+  // Wrapper around store.addSpace that publishes the space-added
+  // tutorial trigger. Used by every UI site (header +, accordion +,
+  // command bar) so quests don't need to subscribe per-site.
+  const addSpaceWithTrigger = useCallback((name?: string) => {
+    const before = data.spaces.length;
+    store.addSpace(name);
+    // We don't get the new id back from addSpace (legacy signature),
+    // but space-added subscribers only need the count delta to know
+    // a new one landed. After-the-fact diff is reliable enough.
+    setTimeout(() => {
+      // Defer one tick so data has rerendered and the diff sees the new space.
+      tutorialTriggers.fire('space-added', { previousCount: before });
+    }, 0);
+  }, [data.spaces.length, store]);
+  // Once on mount, after the provider has wired itself, prompt the
+  // user to resume any quest they paused last session.
+  useEffect(() => {
+    const t = setTimeout(() => tutorialApiRef.current?.showResumePromptIfAny(), 1500);
+    return () => clearTimeout(t);
+  }, []);
 
   // ── Text-clipboard prompt ──────────────────────────────────
   // When the user copies free text outside the app, we surface a
@@ -1343,6 +1367,7 @@ export default function App() {
       if (converted) body = converted;
     }
     const newItem = store.addMemo(targetSpaceId, body);
+    if (newItem) tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId: targetSpaceId, fromClipboard: true });
     if (newItem) {
       // Use the in-house toast queue (same chrome as every other
       // app toast) — sonner had a different look + position which
@@ -1359,7 +1384,10 @@ export default function App() {
   }, [clipPrompt, data.spaces, store, showToast]);
 
   const handleClipPromptDismiss = useCallback(() => {
-    if (clipPrompt) dismissedClipRef.current.add(clipPrompt.value);
+    if (clipPrompt) {
+      dismissedClipRef.current.add(clipPrompt.value);
+      tutorialTriggers.fire('gateway-banner-dismissed', { type: clipPrompt.type });
+    }
     setClipPrompt(null);
   }, [clipPrompt]);
 
@@ -1759,6 +1787,8 @@ export default function App() {
     if (newItem) {
       // Mark for cardEnter animation, same as the manual-add path.
       markItemsAsNew([newItem.id]);
+      // Tutorial trigger — widgets.memo / cards.memo advance on memo creation.
+      tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId, fromClipboard: false });
       // Open the editor on the next tick — let the card mount first
       // so its position is the spring-pop anchor.
       setTimeout(() => setEditingMemoId({ spaceId, itemId: newItem.id }), 0);
@@ -1862,6 +1892,8 @@ export default function App() {
     } else {
       ghostCards.toggle();
       showToast('💡 스마트 추천 — ESC로 종료', { persistent: true });
+      // Tutorial trigger — cards.scan advances on panel open.
+      tutorialTriggers.fire('recommend-panel-opened');
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ghostCards]);
@@ -1986,6 +2018,8 @@ export default function App() {
       markItemsAsNew([newId]);
       // Stash for the post-save "꾸미기" toast — see handleRequestAdvanced.
       lastAddedItemRef.current = { spaceId, id: newId };
+      // Tutorial trigger — basics.cards advances when an item is added.
+      tutorialTriggers.fire('item-added', { itemId: newId, spaceId, type: (item as LauncherItem).type });
       // First-card celebration: fired here so it covers manual adds, ghost
       // accepts, batch drops, and any other path that lands here. The
       // component itself dedupes via localStorage.
@@ -2122,6 +2156,8 @@ export default function App() {
     }
     store.incrementClickCount(spaceId, item.id);
     launchAndPosition(item, data.settings.closeAfterOpen);
+    // Tutorial trigger — quests waiting on a real launch advance here.
+    tutorialTriggers.fire('item-launched', { itemId: item.id, type: item.type });
   }, [store, data.settings.closeAfterOpen, launchAndPosition]);
 
   const handleSetMonitor = useCallback((spaceId: string, itemId: string, monitor: number | undefined) => {
@@ -2976,6 +3012,15 @@ export default function App() {
     <AppStateProvider value={appState}>
     <AppActionsProvider value={appActions}>
     <TooltipProvider delay={500}>
+    <TutorialProvider
+      data={data}
+      showToast={showToast}
+      deleteItem={(sid, iid) => store.deleteItem(sid, iid)}
+      deleteSpace={(sid) => store.deleteSpace(sid)}
+      deleteMemo={(sid, iid) => store.deleteItem(sid, iid)}
+      isBusy={() => dialog !== 'none'}
+      onApiReady={(api) => { tutorialApiRef.current = api; }}
+    >
       <div style={{ position: 'fixed', inset: '6px', display: 'flex', flexDirection: 'column', background: 'transparent' }}>
         {/* Glass card */}
         <div
@@ -3356,9 +3401,9 @@ export default function App() {
                 />
               </div>
               {[
-                { icon: 'add_circle', title: '새 스페이스', fn: () => { if (quotaChecks.space()) store.addSpace(); }, dim: true  },
-                { icon: 'settings',   title: '환경설정',   fn: () => setDialog('settings'),            dim: true  },
-                { icon: 'close',      title: '닫기(Esc)',  fn: () => electronAPI.hideApp(),            dim: false },
+                { icon: 'add_circle', title: '새 스페이스', fn: () => { if (quotaChecks.space()) addSpaceWithTrigger(); }, dim: true,  tourId: 'header-add-space' },
+                { icon: 'settings',   title: '환경설정',   fn: () => setDialog('settings'),            dim: true,  tourId: 'header-settings' },
+                { icon: 'close',      title: '닫기(Esc)',  fn: () => electronAPI.hideApp(),            dim: false, tourId: undefined },
               ].map(btn => (
                 <button
                   key={btn.icon}
@@ -3367,6 +3412,7 @@ export default function App() {
                   className="action-icon-btn"
                   style={{ width: 28, height: 28 }}
                   {...(btn.dim ? { 'data-mode-dim': 'true' } : {})}
+                  {...(btn.tourId ? { 'data-tour-id': btn.tourId } : {})}
                 >
                   <Icon name={btn.icon} size={17} />
                 </button>
@@ -3672,7 +3718,7 @@ export default function App() {
               <EmptyState
                 kind="no-spaces"
                 presetLabel={store.presets.find(p => p.id === store.activePresetId)?.label}
-                onAddBlank={() => { if (quotaChecks.space()) store.addSpace(); }}
+                onAddBlank={() => { if (quotaChecks.space()) addSpaceWithTrigger(); }}
                 onOpenTemplates={() => setWelcomeOpen(true)}
               />
             )}
@@ -4122,6 +4168,10 @@ export default function App() {
         }
         open={dialog === 'item'}
         onClose={() => {
+          // Publish cancel event for tutorial nudge subscribers
+          // (Sprint 1: registry empty so no-op; Sprint 2 wires
+          // basics.cards into this signal).
+          tutorialTriggers.fire('item-dialog-cancelled');
           setDialog('none'); setEditItem(null); setPrefilledItem(null);
           setItemDialogStartAdvanced(false);
         }}
@@ -4183,6 +4233,7 @@ export default function App() {
         onOpenMemoTrash={() => { setDialog('none'); setMemoTrashOpen(true); }}
         onExtendAllMemos={() => store.extendAllMemos()}
         onEmptyMemoTrash={() => store.emptyMemoTrash()}
+        onStartTutorial={(q) => tutorialApiRef.current?.start(q)}
       />
       {batchDrop && (
         <BatchDropDialog
@@ -4333,6 +4384,7 @@ export default function App() {
           },
         }}
       />
+    </TutorialProvider>
     </TooltipProvider>
     </AppActionsProvider>
     </AppStateProvider>

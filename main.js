@@ -2283,11 +2283,40 @@ function registerIpcHandlers() {
       } catch { /* fall through */ }
     }
 
-    // Windows absolute path
+    // Windows absolute path. Resolution order:
+    //   1. Filesystem stat — most reliable when the path actually
+    //      exists. Distinguishes folder vs file deterministically.
+    //   2. Heuristic fallback — when the path doesn't exist (yet)
+    //      OR fs throws (permission, network share offline). Includes
+    //      a dotfile-name carve-out: `D:\.claude` style paths used
+    //      to fail because `\.claude` matched the file-extension
+    //      regex (`.claude` looks like 6-char extension).
     if (/^[A-Za-z]:\\/.test(text) || text.startsWith('\\\\')) {
-      const name   = text.split(/[/\\]/).filter(Boolean).pop() || text;
-      const hasExt = /\.[a-zA-Z0-9]{1,6}$/.test(name);
-      if (/\.exe$/i.test(text)) return { type: 'app',    value: text, label: name.replace(/\.exe$/i, '') };
+      const name = text.split(/[/\\]/).filter(Boolean).pop() || text;
+
+      // (1) Filesystem stat — sync is fine; this handler is async
+      //     and clipboard analysis runs at most every 1.5 s.
+      try {
+        const stat = fs.statSync(text);
+        if (stat.isDirectory()) {
+          return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
+        }
+        if (stat.isFile()) {
+          if (/\.exe$/i.test(text)) return { type: 'app', value: text, label: name.replace(/\.exe$/i, '') };
+          // Other file types — surface as 'app' so the dialog
+          // routes to the launcher (Windows shell-execute handles
+          // documents via their default association).
+          return { type: 'app', value: text, label: name.replace(/\.[a-zA-Z0-9]+$/, '') };
+        }
+      } catch { /* path doesn't exist or no permission — fall through */ }
+
+      // (2) Heuristic. dotfile-style names (`.claude`, `.config`,
+      //     `.git`) are conventionally folders, NOT files with a
+      //     ".claude" extension. Detect by leading dot + no further
+      //     dot in the basename.
+      const isDotName = name.startsWith('.') && !name.slice(1).includes('.');
+      const hasExt = !isDotName && /\.[a-zA-Z0-9]{1,6}$/.test(name);
+      if (/\.exe$/i.test(text)) return { type: 'app', value: text, label: name.replace(/\.exe$/i, '') };
       if (!hasExt || /[/\\]$/.test(text)) return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
     }
 

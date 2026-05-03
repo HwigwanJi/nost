@@ -212,6 +212,7 @@ export function SpaceAccordion({
           action buttons remain pure click targets without needing stopPropagation
           gymnastics, and the cursor affordance is obvious only where drag works. */}
       <div
+        data-tour-id="space-header"
         className="flex items-center gap-2 px-3 py-2.5 select-none group space-accordion-header"
         style={{
           background: headerBg,
