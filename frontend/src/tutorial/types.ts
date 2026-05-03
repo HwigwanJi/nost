@@ -80,6 +80,15 @@ export interface QuestStep {
   gesture?: GestureKind;
   /** Soft fallback hint, shown after ~15 s of no progress. */
   fallbackHint?: string;
+  /** Keyboard combo for this step's action — rendered as styled
+   *  key-cap chips. Modifier names are normalised cross-platform
+   *  at render time (Ctrl → ⌘ on macOS). Single combo only; for
+   *  alternatives, mention them in body or use shortcutAsHint. */
+  shortcut?: string[];
+  /** When true, render the shortcut as a small "빠른 길" hint
+   *  below body (Pattern B). Default false = Pattern A header chip
+   *  treating the shortcut as the primary path. */
+  shortcutAsHint?: boolean;
 }
 
 /** Result of a quest's `provision()` — temp resources added to make

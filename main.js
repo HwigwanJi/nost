@@ -34,11 +34,26 @@ const store = new Store({ name: 'nost-data' });
 // ── 2. Module-level globals ──────────────────────────────────────────
 let mainWindow;
 let loadingWindow    = null;
-// Renderer-controlled flag — when true the main window's blur
-// handler skips its autoHide. Used by clean mode so a click on a
-// card-to-delete (which steals focus) doesn't hide the launcher
-// mid-cleanup.
-let suppressAutoHide = false;
+// Renderer-controlled suppression of automatic hides. Multiple
+// independent sources can request suppression (clean mode, active
+// tutorial, …); we hold a Set of source ids and skip the hide when
+// the set is non-empty. Without ref-counting, source A would clear
+// the flag and cancel source B's still-active need (e.g. tutorial
+// ends while clean mode is still on).
+//
+// Covers BOTH paths that automatically dismiss the window:
+//   1. blur → autoHide (handled inside the blur listener)
+//   2. card launch → closeAfterOpen (via maybeCloseAfter below)
+// Explicit user-driven hides (Esc, hide-app IPC, toggle shortcut)
+// stay independent and always work.
+const suppressAutoHideSources = new Set();
+
+function maybeCloseAfter(closeAfter, delayMs = 0) {
+  if (!closeAfter) return;
+  if (suppressAutoHideSources.size > 0) return;
+  if (delayMs > 0) setTimeout(() => mainWindow?.hide(), delayMs);
+  else mainWindow?.hide();
+}
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
 // One BrowserWindow per display — keyed by display.id. The previous
 // single-overlay-spans-all-displays design was broken on cross-DPI
@@ -1509,7 +1524,7 @@ function createWindow() {
   // active — clicking on cards-to-delete shouldn't accidentally
   // dismiss the window mid-cleanup).
   mainWindow.on('blur', () => {
-    if (suppressAutoHide) return;
+    if (suppressAutoHideSources.size > 0) return;
     const settings = store.get('appData')?.settings ?? {};
     if (settings.autoHide) mainWindow.hide();
   });
@@ -1816,7 +1831,10 @@ function registerIpcHandlers() {
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() ?? [0, 0]);
 
   ipcMain.on('set-opacity', (_, opacity) => mainWindow?.setOpacity(opacity));
-  ipcMain.on('set-suppress-autohide', (_, suppress) => { suppressAutoHide = !!suppress; });
+  ipcMain.on('set-suppress-autohide', (_, suppress, source = 'default') => {
+    if (suppress) suppressAutoHideSources.add(source);
+    else suppressAutoHideSources.delete(source);
+  });
 
   /** Re-register the global shortcut with a new key combo from settings. */
   ipcMain.on('update-shortcut', (_, newShortcut) => registerShortcut(newShortcut));
@@ -2382,7 +2400,7 @@ function registerIpcHandlers() {
     const tab = findChromeTabByHost(url);
     if (tab) sendSse({ action: 'focus', tabId: tab.id, windowId: tab.windowId });
     else     shell.openExternal(url);
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
   });
 
   ipcMain.on('open-path', (_, folderPath, closeAfter) => {
@@ -2390,7 +2408,7 @@ function registerIpcHandlers() {
     exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('open-path.ps1')}"`, {
       env: { ...process.env, QL_PATH: folderPath },
     });
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
   });
 
   ipcMain.on('run-cmd', (_, command, closeAfter) => {
@@ -2398,13 +2416,13 @@ function registerIpcHandlers() {
     exec(`cmd /c ${command}`, { windowsHide: false }, (err) => {
       if (err) console.error('[run-cmd]', err.message);
     });
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
   });
 
   ipcMain.on('copy-text', (_, text, closeAfter) => {
     clipboard.writeText(text);
     // Brief delay so React can finish rendering the "복사됨" toast before hiding
-    if (closeAfter) setTimeout(() => mainWindow.hide(), 700);
+    maybeCloseAfter(closeAfter, 700);
   });
 
   ipcMain.on('open-guide', () => {
@@ -2418,7 +2436,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('launch-or-focus-app', async (_, exePath, closeAfter, _monitor) => {
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
     try {
       const { stdout } = await runPsAsync('launch-or-focus-app.ps1', { QL_PATH: exePath }, { timeout: 10000 });
       // Defensive: even if runPsAsync's encoding guard fails for any reason,
@@ -2444,7 +2462,7 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('focus-window', async (_, title, closeAfter) => {
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
     try {
       const { stdout } = await runPsAsync('focus-window.ps1', { QL_TITLE: title }, { timeout: 5000 });
       return { success: stdout.trim().toUpperCase().includes('FOUND') };

@@ -93,9 +93,10 @@ const cardsClipboard: Quest = {
     {
       id: 'copy-url',
       title: '아무 URL이나 복사해보기',
-      body: '브라우저 주소창의 URL을 Ctrl+C로 복사하고 nost로 돌아오면 게이트웨이 배너가 뜹니다.',
+      body: '브라우저 주소창의 URL을 복사하고 nost로 돌아오면 게이트웨이 배너가 뜹니다.',
       spotlight: ['gateway-banner', 'space-header'],
       gesture: 'keyboard',
+      shortcut: ['Ctrl', 'C'],
       advance: { kind: 'next-button' },
       fallbackHint: 'nost를 잠깐 숨기고 (Esc) 브라우저에서 https://... URL 복사 → 다시 nost.',
     },
@@ -157,8 +158,9 @@ const cardsMemo: Quest = {
       body: '제목·목록·굵기가 있는 답변일수록 효과가 큽니다. 일반 텍스트도 동작.',
       spotlight: ['gateway-banner', 'space-header'],
       gesture: 'keyboard',
+      shortcut: ['Ctrl', 'C'],
       advance: { kind: 'next-button' },
-      fallbackHint: 'AI 챗 답변, Notion 페이지 본문 — 어디든 OK. Ctrl+C 복사.',
+      fallbackHint: 'AI 챗 답변, Notion 페이지 본문 — 어디든 OK.',
     },
     {
       id: 'memo-action',
@@ -255,8 +257,10 @@ const cardsDialog: Quest = {
     {
       id: 'phase-flow',
       title: '페이즈 진행 체험',
-      body: '유형 카드 클릭 → 값 입력 → 위치 선택. 각 페이즈에서 ⌘↵으로 즉시 저장하거나 다음으로 진행.',
+      body: '유형 카드 클릭 → 값 입력 → 위치 선택. 페이즈마다 다음으로 진행하거나, 어느 페이즈에서나 즉시 저장.',
       spotlight: ['item-dialog', 'add-card-button'],
+      shortcut: ['Ctrl', 'Enter'],
+      shortcutAsHint: true,
       advance: { kind: 'next-button' },
     },
     {

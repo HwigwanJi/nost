@@ -1581,8 +1581,9 @@ export default function App() {
     // Clean mode steals window focus on every card click (the deletion
     // dialog is OS-level), which would trigger autoHide and dismiss
     // the launcher mid-cleanup. Suppress autoHide while clean mode is
-    // active and restore on exit.
-    electronAPI.setSuppressAutoHide(activeMode === 'clean');
+    // active and restore on exit. Tagged source so the tutorial's
+    // independent suppression doesn't collide.
+    electronAPI.setSuppressAutoHide(activeMode === 'clean', 'clean-mode');
 
     return () => {
       document.body.classList.remove('mode-pin', 'mode-node', 'mode-deck', 'mode-clean', 'mode-tool');

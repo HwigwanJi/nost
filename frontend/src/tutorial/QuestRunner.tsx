@@ -190,11 +190,26 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
     ? { top: rect.top - PAD, left: rect.left - PAD, width: rect.width + PAD * 2, height: rect.height + PAD * 2 }
     : null;
 
+  // Observation steps (intro/wrap/observe — no gesture set) just ask
+  // the user to look at the target. Keep the static dim+outline.
+  // Action steps (gesture set) get an AE-style trim-path stroke
+  // animation overlaid on top to call the user to act — drawn on a
+  // SEPARATE SVG layer so the dim itself stays static (animating the
+  // dim div's outline made the giant boxShadow flash with it).
+  const isObservation = !step.gesture;
+
   return (
     <>
       <style>{`
         @keyframes questRunnerIn { from { opacity: 0 } to { opacity: 1 } }
         @keyframes questHintFade { from { opacity: 0; transform: translateY(2px) } to { opacity: 1; transform: none } }
+        @keyframes questStrokeDraw {
+          0%   { stroke-dashoffset: 100; }   /* dash queued before path start — invisible */
+          40%  { stroke-dashoffset: 0;   }   /* drawn in: leading edge reached path end */
+          55%  { stroke-dashoffset: 0;   }   /* brief hold so the eye catches it */
+          95%  { stroke-dashoffset: -100; }  /* slid off past path end — same direction wipe */
+          100% { stroke-dashoffset: -100; }  /* hold blank to give the loop breath */
+        }
       `}</style>
 
       {/* Dim overlay — uses inset shadow trick to "cut" the spotlight
@@ -208,15 +223,42 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
         }}
       >
         {sr ? (
-          <div style={{
-            position: 'absolute',
-            top: sr.top, left: sr.left, width: sr.width, height: sr.height,
-            borderRadius: 10,
-            boxShadow: '0 0 0 99999px rgba(0,0,0,0.55)',
-            outline: '2px solid var(--accent)',
-            outlineOffset: 0,
-            transition: 'top 0.18s, left 0.18s, width 0.18s, height 0.18s',
-          }} />
+          <>
+            <div style={{
+              position: 'absolute',
+              top: sr.top, left: sr.left, width: sr.width, height: sr.height,
+              borderRadius: 10,
+              boxShadow: '0 0 0 99999px rgba(0,0,0,0.55)',
+              outline: isObservation ? '2px solid var(--accent)' : 'none',
+              outlineOffset: 0,
+              transition: 'top 0.18s, left 0.18s, width 0.18s, height 0.18s',
+            }} />
+            {!isObservation && (
+              <svg
+                aria-hidden
+                style={{
+                  position: 'absolute',
+                  top: sr.top, left: sr.left, width: sr.width, height: sr.height,
+                  overflow: 'visible',
+                  pointerEvents: 'none',
+                }}
+              >
+                <rect
+                  x={1} y={1}
+                  width={sr.width - 2} height={sr.height - 2}
+                  rx={10} ry={10}
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeWidth={2}
+                  pathLength={100}
+                  strokeDasharray="100 100"
+                  style={{
+                    animation: 'questStrokeDraw 2s cubic-bezier(0.65, 0, 0.35, 1) infinite',
+                  }}
+                />
+              </svg>
+            )}
+          </>
         ) : (
           // Target not found (yet) — full dim. Step body still
           // floats so user can read what to do.
@@ -242,11 +284,12 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
           display: 'flex', flexDirection: 'column', gap: 10,
         }}
       >
-        {/* Header strip — gesture badge + step counter */}
+        {/* Header strip — gesture badge + (Pattern A) shortcut chip + step counter */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          {step.gesture
-            ? <GestureBadge kind={step.gesture} />
-            : <span />}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {step.gesture && <GestureBadge kind={step.gesture} />}
+            {step.shortcut && !step.shortcutAsHint && <ShortcutChips combo={step.shortcut} />}
+          </div>
           <span style={{ fontSize: 10, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
             {stepIdx + 1} / {quest.steps.length}
           </span>
@@ -259,6 +302,15 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
           <p style={{ margin: '6px 0 0', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.55 }}>
             {step.body}
           </p>
+          {step.shortcut && step.shortcutAsHint && (
+            <p style={{
+              margin: '8px 0 0', display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5,
+            }}>
+              💡 빠른 길:
+              <ShortcutChips combo={step.shortcut} />
+            </p>
+          )}
         </div>
 
         {showFallback && step.fallbackHint && (
@@ -347,6 +399,48 @@ function usePopoverPosition(rect: DOMRect | null): { top: number; left: number }
 }
 
 function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
+
+/** macOS users see ⌘ where Windows users see Ctrl, ⌥ where they
+ *  see Alt. Underlying quest data stays platform-neutral as
+ *  ['Ctrl', 'Enter']; the chip renderer normalises at display
+ *  time. We sniff via navigator.platform — Electron renderer
+ *  has it populated and it's stable enough for this UX hint. */
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+function displayKey(k: string): string {
+  if (!IS_MAC) return k;
+  switch (k) {
+    case 'Ctrl':  return '⌘';
+    case 'Alt':   return '⌥';
+    case 'Shift': return '⇧';
+    case 'Meta':  return '⌘';
+    default:      return k;
+  }
+}
+
+function ShortcutChips({ combo }: { combo: string[] }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+      {combo.map((k, i) => (
+        <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+          {i > 0 && <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>+</span>}
+          <kbd style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            minWidth: 22, height: 20, padding: '0 6px',
+            borderRadius: 4,
+            border: '1px solid var(--border-rgba)',
+            borderBottomWidth: 2,
+            background: 'var(--surface)',
+            color: 'var(--text-color)',
+            font: '600 10.5px ui-monospace, SFMono-Regular, Menlo, monospace',
+            lineHeight: 1,
+          }}>
+            {displayKey(k)}
+          </kbd>
+        </span>
+      ))}
+    </span>
+  );
+}
 
 function GestureBadge({ kind }: { kind: GestureKind }) {
   const meta: Record<GestureKind, { icon: string; label: string }> = {

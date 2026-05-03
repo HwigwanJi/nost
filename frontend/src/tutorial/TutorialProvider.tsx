@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppData } from '../types';
+import { electronAPI } from '../electronBridge';
 import type { Quest, ProvisionResult } from './types';
 import { useTutorialState, tutorialActions, readTutorialState } from './state';
 import { findQuest, nextQuestSameCategory, firstIncompleteQuest } from './registry';
@@ -63,6 +64,21 @@ export function TutorialProvider({ data, showToast, deleteItem, deleteSpace, del
   dataRef.current = data;
   const isBusyRef = useRef(isBusy);
   isBusyRef.current = isBusy;
+
+  // While a tutorial is on-screen (scanning loader, runner overlay,
+  // or completion modal) suppress the main window's autoHide-on-blur
+  // regardless of the user's setting — losing the launcher mid-step
+  // breaks immersion and the overlay would survive without anything
+  // to focus on. Tagged source 'tutorial' so clean mode's separate
+  // suppression isn't disturbed. Cleanup releases on every exit
+  // path: completion (keep/cleanup), skip, ESC pause, unmount.
+  useEffect(() => {
+    const active = phase.kind !== 'idle';
+    electronAPI.setSuppressAutoHide(active, 'tutorial');
+    return () => {
+      if (active) electronAPI.setSuppressAutoHide(false, 'tutorial');
+    };
+  }, [phase.kind]);
 
   useEffect(() => {
     const off = installNudges(
