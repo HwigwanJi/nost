@@ -8,6 +8,8 @@
     "dev:frontend": "npm run dev --prefix frontend",
     "electron-dev": "set ELECTRON_RENDERER_URL=http://127.0.0.1:5173&& electron .",
     "build:frontend": "cd frontend && npm run build",
+    "test": "cd frontend && npm test",
+    "test:e2e": "npm run build:frontend && playwright test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "release": "npm run build:frontend && electron-builder",
@@ -86,11 +88,13 @@
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "electron": "^41.1.0",
     "electron-builder": "^26.8.1",
     "electron-packager": "^17.1.2"
   },
   "dependencies": {
+    "@sentry/electron": "^7.13.0",
     "electron-log": "^5.4.3",
     "electron-store": "^8.2.0",
     "electron-updater": "^6.8.3",

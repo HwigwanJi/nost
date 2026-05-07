@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
+import { useAuth, signIn, signOut } from '../lib/auth';
 import { AccordionPanel } from '../tutorial';
 import { ExtensionInstallWizard } from './ExtensionInstallWizard';
 import { DEFAULT_DOCUMENT_EXTENSIONS } from '../lib/documentExtensions';
@@ -15,9 +16,10 @@ import { useBusyMark } from '../lib/userBusy';
 import { TOURS } from '../tour/tours';
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'dev-mode' | 'error';
-type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'tutorial' | 'data';
+type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'tutorial' | 'data' | 'account';
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'account',   label: '계정',     icon: 'account_circle' },
   { id: 'general',   label: '일반',     icon: 'tune' },
   { id: 'monitor',   label: '모니터',   icon: 'desktop_windows' },
   { id: 'docs',      label: '문서',     icon: 'description' },
@@ -202,6 +204,100 @@ function MemoTrashRetentionPicker({ value, onChange }: { value: 24 | 72 | 168; o
         );
       })}
     </div>
+  );
+}
+
+function AccountTab() {
+  const auth = useAuth();
+  if (!auth.configured) {
+    return (
+      <Section>
+        <SectionLabel icon="warning" text="Supabase 미설정" />
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+          로그인을 사용하려면 <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'var(--surface)' }}>frontend/.env</code>에
+          {' '}<code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'var(--surface)' }}>VITE_SUPABASE_URL</code>과
+          {' '}<code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'var(--surface)' }}>VITE_SUPABASE_ANON_KEY</code>를
+          {' '}설정한 뒤 nost를 다시 시작해주세요.
+        </p>
+      </Section>
+    );
+  }
+  if (auth.status === 'signed-in' && auth.user) {
+    const u = auth.user;
+    const name = (u.user_metadata?.full_name as string | undefined) ?? (u.user_metadata?.name as string | undefined) ?? u.email ?? '사용자';
+    const avatar = (u.user_metadata?.avatar_url as string | undefined) ?? null;
+    return (
+      <>
+        <Section>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {avatar ? (
+              <img src={avatar} alt="" referrerPolicy="no-referrer"
+                style={{ width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--border-rgba)' }} />
+            ) : (
+              <div style={{
+                width: 44, height: 44, borderRadius: '50%',
+                background: 'var(--accent-dim)', border: '1px solid var(--accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Icon name="person" size={22} color="var(--accent)" />
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-color)' }}>{name}</div>
+              {u.email && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{u.email}</div>}
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
+                {(u.app_metadata?.provider as string | undefined) ?? 'oauth'} · 로그인됨
+              </div>
+            </div>
+          </div>
+        </Section>
+        <Section>
+          <SectionLabel icon="cloud_sync" text="동기화" />
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+            카드·메모의 클라우드 동기화는 다음 단계에서 활성화됩니다 (Phase 2). 지금은 로그인만 가능해요.
+          </p>
+        </Section>
+        <Section>
+          <SectionLabel icon="logout" text="로그아웃" />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+              이 PC에서 로그아웃합니다. 로컬 카드·메모는 그대로 유지돼요.
+            </p>
+            <GhostBtn onClick={() => { signOut(); }}>로그아웃</GhostBtn>
+          </div>
+        </Section>
+      </>
+    );
+  }
+  // signed-out / authing / error
+  const isAuthing = auth.status === 'authing';
+  return (
+    <>
+      <Section>
+        <SectionLabel icon="login" text="로그인" />
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55, marginBottom: 10 }}>
+          로그인하면 다른 PC에서도 같은 카드와 메모를 이어서 쓸 수 있어요. (동기화는 다음 단계에 활성화)
+        </p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <AccentBtn onClick={() => signIn('google')} disabled={isAuthing} style={{ flex: 1 }}>
+            <Icon name="login" size={14} /> Google로 계속
+          </AccentBtn>
+          <GhostBtn onClick={() => signIn('github')} disabled={isAuthing} style={{ flex: 1 }}>
+            <Icon name="code" size={14} /> GitHub으로 계속
+          </GhostBtn>
+        </div>
+        {isAuthing && (
+          <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 8, lineHeight: 1.5 }}>
+            브라우저에서 인증을 완료해주세요. nost는 잠시 후 자동으로 이어집니다.
+          </p>
+        )}
+        {auth.errorMessage && (
+          <p style={{ fontSize: 10, color: 'var(--destructive, #ef4444)', marginTop: 8, lineHeight: 1.5 }}>
+            {auth.errorMessage}
+          </p>
+        )}
+      </Section>
+    </>
   );
 }
 
@@ -473,6 +569,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
           {/* Right content panel */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', scrollbarWidth: 'none' } as React.CSSProperties}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+
+              {/* ══ 계정 ═══════════════════════════════════════════ */}
+              {tab === 'account' && (
+                <AccountTab />
+              )}
 
               {/* ══ 일반 ═══════════════════════════════════════════ */}
               {tab === 'general' && <>

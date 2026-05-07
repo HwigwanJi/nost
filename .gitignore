@@ -29,6 +29,16 @@ main.log
 PROJECT_NOTES.md
 walkthrough.md
 설명서.txt
-create_release.ps1
-upload_assets.ps1
-get_token.ps1
+
+# Secrets — never commit. Env files and any token-bearing helpers.
+.env
+.env.local
+.env.*.local
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+# Top-level ps1 helpers are typically one-off scripts that contain
+# secrets (the historical create_release.ps1 / upload_assets.ps1 had
+# hardcoded GH tokens). The PS scripts the app actually ships live in
+# ps-scripts/ and chrome-extension/ — those are NOT blocked.
+/*.ps1

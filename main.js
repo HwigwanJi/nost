@@ -5,10 +5,38 @@
 
 'use strict';
 
+// ── 0. Sentry init (must be FIRST so we capture early errors) ────────
+// DSN comes from env (SENTRY_DSN) — no DSN = noop (safe in dev or
+// when the user opted out). Errors auto-captured from main + renderer
+// processes with breadcrumbs. Lightweight — adds ~80 KB to main bundle.
+const Sentry = require('@sentry/electron/main');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    release: require('./package.json').version,
+    environment: process.env.NODE_ENV || 'production',
+    // Don't sample performance traces by default — opt-in via env
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_RATE || '0'),
+    // Strip safeStorage encrypted blobs and other potentially sensitive
+    // payloads before they leave the device.
+    beforeSend(event) {
+      // Drop stored auth tokens that may sneak into breadcrumbs
+      if (event.breadcrumbs) {
+        event.breadcrumbs = event.breadcrumbs.filter(b => {
+          const msg = String(b.message ?? '').toLowerCase();
+          return !msg.includes('authsessionenc') && !msg.includes('access_token');
+        });
+      }
+      return event;
+    },
+  });
+}
+
 // ── 1. Requires & Store ──────────────────────────────────────────────
 const {
   app, BrowserWindow, globalShortcut, ipcMain, shell, clipboard,
   Tray, Menu, nativeImage, dialog, session, net, desktopCapturer,
+  safeStorage,
 } = require('electron');
 const path            = require('node:path');
 const { exec, spawn } = require('child_process');
@@ -34,25 +62,72 @@ const store = new Store({ name: 'nost-data' });
 // ── 2. Module-level globals ──────────────────────────────────────────
 let mainWindow;
 let loadingWindow    = null;
-// Renderer-controlled suppression of automatic hides. Multiple
+// Renderer-controlled suppression of automatic dismissals. Multiple
 // independent sources can request suppression (clean mode, active
-// tutorial, …); we hold a Set of source ids and skip the hide when
-// the set is non-empty. Without ref-counting, source A would clear
-// the flag and cancel source B's still-active need (e.g. tutorial
-// ends while clean mode is still on).
-//
-// Covers BOTH paths that automatically dismiss the window:
-//   1. blur → autoHide (handled inside the blur listener)
-//   2. card launch → closeAfterOpen (via maybeCloseAfter below)
-// Explicit user-driven hides (Esc, hide-app IPC, toggle shortcut)
-// stay independent and always work.
+// tutorial, …); ref-counted via a Set so source A's release doesn't
+// cancel source B's still-active need.
 const suppressAutoHideSources = new Set();
+
+// Hot cache of autoHide setting. Renderer pushes via setAutoHide IPC
+// on every settings save → blur handler reads from cache, no disk
+// roundtrip per event. Initialised from disk in createMainWindow.
+let cachedAutoHide = false;
+
+/**
+ * Single dismissal policy. EVERY automatic hide path funnels here.
+ *
+ * Reasons:
+ *   'blur'         — focus lost, autoHide setting respected
+ *   'close-after'  — card launched with closeAfterOpen, ditto
+ *
+ * Explicit user-initiated hides (Esc / X button / global toggle
+ * shortcut / screen picker) bypass this and call mainWindow.hide()
+ * directly — the user clearly meant to dismiss, no policy negotiation.
+ *
+ * Returns true if hide was performed.
+ */
+function tryDismissWindow(reason, opts = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (suppressAutoHideSources.size > 0) {
+    log.debug(`[dismiss] reason=${reason} skipped — suppress sources: [${Array.from(suppressAutoHideSources).join(',')}]`);
+    return false;
+  }
+  if (reason === 'blur' && !cachedAutoHide) return false;
+  if (reason === 'close-after' && !opts.closeAfter) return false;
+
+  const delay = opts.delayMs ?? 0;
+  const fire = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    log.debug(`[dismiss] reason=${reason} → hide`);
+    mainWindow.hide();
+  };
+  if (delay > 0) setTimeout(fire, delay);
+  else fire();
+  return true;
+}
 
 function maybeCloseAfter(closeAfter, delayMs = 0) {
   if (!closeAfter) return;
-  if (suppressAutoHideSources.size > 0) return;
-  if (delayMs > 0) setTimeout(() => mainWindow?.hide(), delayMs);
-  else mainWindow?.hide();
+  tryDismissWindow('close-after', { closeAfter: true, delayMs });
+}
+
+/**
+ * Reassert top-most z-order after an external app launch. On Windows,
+ * SetForegroundWindow from a freshly-launched process can shove a
+ * topmost window below until the user re-focuses it. We delay so the
+ * external window has time to actually appear before we re-claim the
+ * top, and bail if user closed nost in the interim (closeAfter true).
+ */
+function reassertTopAfterLaunch(closeAfter) {
+  if (closeAfter) return; // user opted to dismiss after launch — leave alone
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return;
+    try {
+      mainWindow.setAlwaysOnTop(true, 'screen-saver');
+      mainWindow.moveTop();
+    } catch (e) { log.debug('[reassert-top]', e?.message); }
+  }, 250);
 }
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
 // One BrowserWindow per display — keyed by display.id. The previous
@@ -509,10 +584,58 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+  app.on('second-instance', (_event, argv) => {
+    // Custom-scheme deep-link arrives here on Windows because the
+    // already-running primary instance receives the OS launch via
+    // single-instance lock. Look for the nost:// URL in argv.
+    const deepLink = argv.find(a => typeof a === 'string' && a.startsWith('nost://'));
+    if (deepLink) handleDeepLink(deepLink);
+    if (mainWindow) {
+      moveToCursorMonitor();
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
 }
+
+// ── Custom URL Scheme: nost:// ──────────────────────────────────────
+// Used for OAuth callbacks (Supabase auth → external browser →
+// system hands the redirect back to us via this scheme). On Windows
+// the OS launches a fresh exe with the URL in argv; the single-
+// instance lock above forwards it to the running primary instance.
+// On macOS the 'open-url' event delivers it directly.
+if (process.defaultApp) {
+  // Dev mode: the executable is electron.exe and the script is argv[1].
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('nost', process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('nost');
+}
+
+app.on('open-url', (event, url) => {
+  // macOS path
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
+function handleDeepLink(url) {
+  // Parse fragment / query for OAuth tokens. Supabase returns tokens
+  // either in the URL fragment (#access_token=…) or query, depending
+  // on the flow. Forward whatever we get to the renderer; the auth
+  // state machine there extracts what it needs and calls
+  // supabase.auth.setSession.
+  log.info('[deep-link]', url);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('auth:deep-link', url);
+  } else {
+    // Stash for the renderer-ready event to consume
+    pendingDeepLink = url;
+  }
+}
+let pendingDeepLink = null;
 
 // ── 8. Splash Window ─────────────────────────────────────────────────
 
@@ -575,6 +698,34 @@ body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%)
  * back to the original bounds in the same tick so the user never sees the
  * jiggle.
  */
+/**
+ * Move mainWindow to the display the cursor is on, centered in its
+ * work area. Spotlight/Raycast-style "follows me" behavior. Cheap —
+ * one screen lookup + one setBounds. Skip if window already on the
+ * right display to avoid pointless setBounds churn.
+ *
+ * Why centered: the user's natural gaze is roughly center of screen
+ * when they hit the shortcut. Anchoring elsewhere (last position) on
+ * a monitor they aren't using means hunting.
+ */
+function moveToCursorMonitor() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const sc = getScreen();
+    const cursor = sc.getCursorScreenPoint();
+    const target = sc.getDisplayNearestPoint(cursor);
+    const cur = sc.getDisplayMatching(mainWindow.getBounds());
+    if (cur && cur.id === target.id) return; // already on the right monitor
+    const wa = target.workArea;
+    const b = mainWindow.getBounds();
+    const x = wa.x + Math.round((wa.width - b.width) / 2);
+    const y = wa.y + Math.round((wa.height - b.height) / 2);
+    mainWindow.setBounds({ x, y, width: b.width, height: b.height });
+  } catch (e) {
+    log.debug('[moveToCursorMonitor]', e?.message);
+  }
+}
+
 function recoverTransparentBacking(win) {
   if (!win || win.isDestroyed()) return;
   try {
@@ -592,13 +743,24 @@ function toggleMainWindow() {
   _toggleLocked = true;
   setTimeout(() => { _toggleLocked = false; }, 150);
 
+  // Show-path timing for the lag investigation (decision 7 — user
+  // reported lag is most felt on app show). t0 = entry, t1 = post-
+  // moveToCursorMonitor, t2 = post-show, t3 = post-recover. Logged
+  // at debug level, easy to grep in main.log.
+  const tStart = Date.now();
+
   try {
     if (mainWindow.isVisible()) {
       mainWindow.hide();
     } else {
+      moveToCursorMonitor();
+      const tMove = Date.now();
       mainWindow.show();
       mainWindow.focus();
+      const tShow = Date.now();
       recoverTransparentBacking(mainWindow);
+      const tRec = Date.now();
+      log.debug(`[show-path] move=${tMove - tStart}ms show=${tShow - tMove}ms recover=${tRec - tShow}ms total=${tRec - tStart}ms`);
     }
   } catch (e) {
     console.warn('[toggleMainWindow]', e.message);
@@ -1433,6 +1595,11 @@ function createWindow() {
     minWidth: 400, minHeight: 400,
     show: false, frame: false, transparent: true,
     resizable: true, alwaysOnTop: true, skipTaskbar: false,
+    // Higher z-order level than default 'floating'. Default level
+    // can be pushed below another topmost window when an external
+    // app launch triggers SetForegroundWindow. 'screen-saver' sits
+    // above other topmost apps so launching Chrome/IDE/etc doesn't
+    // demote nost. Floating overlays already use this same level.
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload:        path.join(__dirname, 'preload.js'),
@@ -1474,6 +1641,12 @@ function createWindow() {
   mainWindow.on('ready-to-show', () => rdbg('window: ready-to-show'));
   mainWindow.on('show', () => rdbg('window: show'));
   mainWindow.on('hide', () => rdbg('window: hide'));
+
+  // Lock window to screen-saver z-order so external app launches
+  // (which trigger SetForegroundWindow on Windows) can't demote us.
+  // Constructor's alwaysOnTop:true defaults to 'floating' level —
+  // not enough.
+  mainWindow.setAlwaysOnTop(true, 'screen-saver');
 
   if (rendererUrl) {
     mainWindow.loadURL(rendererUrl);
@@ -1519,15 +1692,15 @@ function createWindow() {
       .catch(() => {});
   });
 
-  // Auto-hide on focus loss when the user has enabled it in settings.
-  // Renderer can ask us to suppress this (e.g. while clean mode is
-  // active — clicking on cards-to-delete shouldn't accidentally
-  // dismiss the window mid-cleanup).
-  mainWindow.on('blur', () => {
-    if (suppressAutoHideSources.size > 0) return;
-    const settings = store.get('appData')?.settings ?? {};
-    if (settings.autoHide) mainWindow.hide();
-  });
+  // Initialise the autoHide cache from disk so the very first blur
+  // (before the renderer has had a chance to push) reads a sane value.
+  cachedAutoHide = !!store.get('appData')?.settings?.autoHide;
+
+  // Auto-hide on focus loss. Funnel through the single dismissal
+  // policy — same place blur, closeAfter, and any future automatic
+  // dismissal share. Suppression sources + autoHide setting checked
+  // inside tryDismissWindow.
+  mainWindow.on('blur', () => tryDismissWindow('blur'));
 
   // Debounced bounds save — avoids thrashing electron-store on every pixel drag.
   // Position is intentionally NOT persisted (SSOT: cold start always centers
@@ -1834,6 +2007,82 @@ function registerIpcHandlers() {
   ipcMain.on('set-suppress-autohide', (_, suppress, source = 'default') => {
     if (suppress) suppressAutoHideSources.add(source);
     else suppressAutoHideSources.delete(source);
+  });
+  ipcMain.on('set-auto-hide', (_, autoHide) => {
+    cachedAutoHide = !!autoHide;
+  });
+
+  // ── Auth: safeStorage-backed token persistence ─────────────────
+  // Tokens (Supabase access/refresh) live in OS-encrypted storage
+  // (DPAPI on Windows, Keychain on macOS) via Electron's safeStorage.
+  // We store as a single JSON blob keyed under appData.authSession so
+  // the renderer reads/writes the whole session atomically.
+  ipcMain.handle('auth:get-session', () => {
+    try {
+      const enc = store.get('authSessionEnc');
+      if (!enc || !safeStorage.isEncryptionAvailable()) return null;
+      const raw = safeStorage.decryptString(Buffer.from(enc, 'base64'));
+      return JSON.parse(raw);
+    } catch (err) {
+      log.warn('[auth] get-session failed:', err.message);
+      return null;
+    }
+  });
+  ipcMain.handle('auth:set-session', (_, session) => {
+    try {
+      if (!safeStorage.isEncryptionAvailable()) {
+        log.error('[auth] safeStorage unavailable — refusing to persist session in plain text');
+        return false;
+      }
+      if (!session) {
+        store.delete('authSessionEnc');
+        return true;
+      }
+      const enc = safeStorage.encryptString(JSON.stringify(session));
+      store.set('authSessionEnc', enc.toString('base64'));
+      return true;
+    } catch (err) {
+      log.warn('[auth] set-session failed:', err.message);
+      return false;
+    }
+  });
+  ipcMain.handle('auth:open-oauth-url', (_, url) => {
+    // Open the Supabase-issued OAuth URL in the user's default browser.
+    // The browser does the provider dance and the OS hands the
+    // nost://auth-callback#tokens redirect back to us via the deep
+    // link handler at the top of this file.
+    return shell.openExternal(url);
+  });
+  // Renderer asks for the deep link captured before mainWindow was ready
+  ipcMain.handle('auth:consume-pending-deep-link', () => {
+    const url = pendingDeepLink;
+    pendingDeepLink = null;
+    return url;
+  });
+
+  // Read a small text file from disk for the memo drag-drop flow.
+  // Cap at 1 MB — anything bigger probably isn't a note and shouldn't
+  // live inside a memo card. Detect BOM-marked UTF-16/8 first; for
+  // bare bytes try UTF-8 strict, fall back to EUC-KR (cp949) which
+  // covers the common Korean Windows .txt case.
+  ipcMain.handle('read-text-file', async (_, filePath, maxBytes = 1024 * 1024) => {
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size > maxBytes) return { ok: false, reason: 'too-large', size: stat.size };
+      const buf = await fs.promises.readFile(filePath);
+      let enc = 'utf-8';
+      if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) enc = 'utf-16le';
+      else if (buf.length >= 2 && buf[0] === 0xFE && buf[1] === 0xFF) enc = 'utf-16be';
+      else if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) enc = 'utf-8';
+      else {
+        try { new TextDecoder('utf-8', { fatal: true }).decode(buf); enc = 'utf-8'; }
+        catch { enc = 'euc-kr'; }
+      }
+      const text = new TextDecoder(enc, { fatal: false }).decode(buf);
+      return { ok: true, text, encoding: enc };
+    } catch (err) {
+      return { ok: false, reason: 'read-error', error: String(err?.message ?? err) };
+    }
   });
 
   /** Re-register the global shortcut with a new key combo from settings. */
@@ -2401,6 +2650,7 @@ function registerIpcHandlers() {
     if (tab) sendSse({ action: 'focus', tabId: tab.id, windowId: tab.windowId });
     else     shell.openExternal(url);
     maybeCloseAfter(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
   });
 
   ipcMain.on('open-path', (_, folderPath, closeAfter) => {
@@ -2409,6 +2659,7 @@ function registerIpcHandlers() {
       env: { ...process.env, QL_PATH: folderPath },
     });
     maybeCloseAfter(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
   });
 
   ipcMain.on('run-cmd', (_, command, closeAfter) => {
@@ -2417,12 +2668,14 @@ function registerIpcHandlers() {
       if (err) console.error('[run-cmd]', err.message);
     });
     maybeCloseAfter(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
   });
 
   ipcMain.on('copy-text', (_, text, closeAfter) => {
     clipboard.writeText(text);
     // Brief delay so React can finish rendering the "복사됨" toast before hiding
     maybeCloseAfter(closeAfter, 700);
+    // copy doesn't launch external app — no top reassert needed
   });
 
   ipcMain.on('open-guide', () => {
@@ -2437,6 +2690,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('launch-or-focus-app', async (_, exePath, closeAfter, _monitor) => {
     maybeCloseAfter(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
     try {
       const { stdout } = await runPsAsync('launch-or-focus-app.ps1', { QL_PATH: exePath }, { timeout: 10000 });
       // Defensive: even if runPsAsync's encoding guard fails for any reason,
@@ -2463,6 +2717,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('focus-window', async (_, title, closeAfter) => {
     maybeCloseAfter(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
     try {
       const { stdout } = await runPsAsync('focus-window.ps1', { QL_TITLE: title }, { timeout: 5000 });
       return { success: stdout.trim().toUpperCase().includes('FOUND') };

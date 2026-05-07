@@ -83,6 +83,7 @@ const TYPE_OPTIONS: Array<{ value: LauncherItem['type']; label: string; icon: st
   { value: 'url',     label: '웹 URL',      icon: 'language',       hint: 'https://...' },
   { value: 'folder',  label: '폴더',        icon: 'folder',         hint: 'C:\\...' },
   { value: 'app',     label: '앱',          icon: 'apps',           hint: '.exe / .lnk' },
+  { value: 'memo',    label: '메모',        icon: 'sticky_note_2',  hint: '본문 내용 직접' },
   { value: 'text',    label: '텍스트',      icon: 'content_paste',  hint: '클립보드 복사' },
   { value: 'cmd',     label: '커맨드',      icon: 'terminal',       hint: 'cmd 한 줄' },
   { value: 'window',  label: '창 포커스',   icon: 'select_window',  hint: '창 제목' },
@@ -394,7 +395,9 @@ export function ItemDialog({
       return true;
     }
     if (p === 0) return !!form.type;
-    if (p === 1) return !!form.value.trim() && !valueError;
+    // Memo body can be empty — user fills it in the editor after save.
+    // form.value carries the body for type==='memo'; no validation gate.
+    if (p === 1) return form.type === 'memo' ? true : (!!form.value.trim() && !valueError);
     if (p === 2) return !!form.spaceId;
     return false;
   }, [form.type, form.value, form.title, form.spaceId, valueError, isWidgetMode, isColorSwatch, swatchHex]);
@@ -609,9 +612,15 @@ export function ItemDialog({
 
   /* ── Save ─────────────────────────────────────────────────── */
   function buildItemPayload(): Omit<LauncherItem, 'id'> | LauncherItem | null {
-    const finalTitle = form.title.trim() || derivedTitle;
-    if (!finalTitle) return null;
-    if (!isWidgetMode && !form.value.trim()) return null;
+    // Memo type: title and body are both optional (addMemo computes a
+    // title from the body, and an empty memo is a valid blank scratchpad
+    // matching the existing handleAddMemo button flow).
+    const isMemoType = form.type === 'memo';
+    const finalTitle = isMemoType
+      ? form.title.trim()
+      : (form.title.trim() || derivedTitle);
+    if (!isMemoType && !finalTitle) return null;
+    if (!isWidgetMode && !isMemoType && !form.value.trim()) return null;
 
     const base = {
       title: finalTitle,
@@ -674,7 +683,22 @@ export function ItemDialog({
 
   /* ── Phase auto-advance handlers ────────────────────────── */
   const handlePickType = (t: LauncherItem['type']) => {
-    f({ type: t });
+    // If the current value is incompatible with the new type, clear it.
+    // Concretely: a .txt drag-drop pre-fills the dialog with type=memo
+    // and value=file body. If the user pivots to type=app, the body
+    // would otherwise sit in the file-path input — incoherent. The
+    // plausibility check gives us a free incompatibility test.
+    const v = form.value.trim();
+    if (v) {
+      const okTypes = plausibleTypes(v);
+      if (!okTypes.has(t)) {
+        f({ type: t, value: '' });
+      } else {
+        f({ type: t });
+      }
+    } else {
+      f({ type: t });
+    }
     setClipboardHint(null);
     // Tiny dwell so the user sees the selection state before sliding.
     window.setTimeout(() => goPhase(1), 120);
@@ -876,16 +900,22 @@ export function ItemDialog({
         {/* Phase slider — overflow hidden, transform-translateX.
             Phase navigation: tab buttons above, arrow keys, or footer
             buttons. Pointer-drag/swipe was removed (caused accidental
-            phase changes during marquee selection of chips). */}
-        <div style={{ overflow: 'hidden', userSelect: 'none' }}>
+            phase changes during marquee selection of chips).
+            Width/box-sizing locked at every layer so content-driven
+            growth (long unbreakable tokens in inputs/textareas) can't
+            inflate the inner flex past the viewport — that would make
+            translateX(-100%) over-shift and bleed the next phase in. */}
+        <div style={{ overflow: 'hidden', userSelect: 'none', width: '100%', boxSizing: 'border-box' }}>
           <div style={{
             display: 'flex',
+            width: '100%',
+            boxSizing: 'border-box',
             transform: sliderTransform,
             transition: sliderTransition,
             minHeight: 380,
           }}>
             {/* Phase ① — Type / (widget) Color+Name */}
-            <div style={{ flex: '0 0 100%', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+            <div style={{ flex: '0 0 100%', width: '100%', boxSizing: 'border-box', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0, overflow: 'hidden' }}>
               {isWidgetMode ? (
                 renderWidgetPhase({
                   isColorSwatch, swatchHex, setSwatchHex, swatchName, setSwatchName,
@@ -903,7 +933,7 @@ export function ItemDialog({
             </div>
 
             {/* Phase ② — Value + Name */}
-            <div style={{ flex: '0 0 100%', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+            <div style={{ flex: '0 0 100%', width: '100%', boxSizing: 'border-box', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0, overflow: 'hidden' }}>
               {!isWidgetMode && renderValuePhase({
                 form, f,
                 valueInputRef, titleInputRef,
@@ -914,7 +944,7 @@ export function ItemDialog({
             </div>
 
             {/* Phase ③ — Place */}
-            <div style={{ flex: '0 0 100%', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+            <div style={{ flex: '0 0 100%', width: '100%', boxSizing: 'border-box', padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0, overflow: 'hidden' }}>
               {renderPlacePhase({
                 visibleSpaces, recommendedSpaceId,
                 form, f, isEdit, presets,
@@ -1178,6 +1208,7 @@ function renderValuePhase({
     form.type === 'app' ? '실행 파일' :
     form.type === 'cmd' ? '커맨드' :
     form.type === 'text' ? '텍스트' :
+    form.type === 'memo' ? '메모 본문 (선택)' :
     form.type === 'window' ? '창 제목' : '값';
   const valuePlaceholder =
     form.type === 'url' ? 'https://...'
@@ -1185,21 +1216,47 @@ function renderValuePhase({
     : form.type === 'app' ? 'C:\\Program Files\\...'
     : form.type === 'cmd' ? 'notepad.exe  /  start "" "C:\\..."'
     : form.type === 'text' ? '클립보드에 복사될 텍스트'
+    : form.type === 'memo' ? '본문은 비워두고 나중에 에디터에서 작성해도 됩니다.'
     : form.type === 'window' ? '창 제목 (Alt+Tab에 보이는 이름)'
     : '값 입력';
+  // Memo body uses a multi-line textarea — markdown notes don't fit in
+  // a single-line input. The same form.value field carries the body
+  // through to handleSave, where the memo-routing branch in App.tsx
+  // hands it to store.addMemo.
+  const isMemoType = form.type === 'memo';
   return (
     <>
       <h2 style={phaseHeadingStyle}>{valueLabel}</h2>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <Input
-          ref={valueInputRef}
-          value={form.value}
-          onChange={e => f({ value: e.target.value })}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); onEnterCommit(); } }}
-          placeholder={valuePlaceholder}
-          className="font-mono text-xs"
-          style={{ flex: 1, height: 44, fontSize: 13, borderColor: valueError ? 'var(--destructive, #ef4444)' : undefined }}
-        />
+      <div style={{ display: 'flex', gap: 8, minWidth: 0, width: '100%' }}>
+        {isMemoType ? (
+          <textarea
+            value={form.value}
+            onChange={e => f({ value: e.target.value })}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onEnterCommit(); } }}
+            placeholder={valuePlaceholder}
+            style={{
+              flex: '1 1 auto', minWidth: 0, width: '100%',
+              minHeight: 160, maxHeight: 280, padding: '10px 12px',
+              borderRadius: 8, border: '1px solid var(--border-rgba)',
+              background: 'var(--surface)', color: 'var(--text-color)',
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              fontSize: 12, lineHeight: 1.55, resize: 'vertical',
+              outline: 'none',
+              overflowWrap: 'anywhere', wordBreak: 'break-word',
+              boxSizing: 'border-box',
+            }}
+          />
+        ) : (
+          <Input
+            ref={valueInputRef}
+            value={form.value}
+            onChange={e => f({ value: e.target.value })}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); onEnterCommit(); } }}
+            placeholder={valuePlaceholder}
+            className="font-mono text-xs"
+            style={{ flex: '1 1 auto', minWidth: 0, width: '100%', height: 44, fontSize: 13, borderColor: valueError ? 'var(--destructive, #ef4444)' : undefined }}
+          />
+        )}
         {form.type === 'folder' && (
           <button type="button" onClick={onPickFolder} title="폴더 선택" style={pickerBtnStyle}>
             <Icon name="folder_open" size={18} />

@@ -19,6 +19,18 @@ export interface ElectronAPI {
   getOpenWindows: () => Promise<{ windows: import('./types').WindowEntry[]; browserTabs: import('./types').ChromeTab[] }>;
   setOpacity: (opacity: number) => void;
   setSuppressAutoHide: (suppress: boolean, source?: string) => void;
+  setAutoHide: (autoHide: boolean) => void;
+  readTextFile: (filePath: string, maxBytes?: number) => Promise<
+    | { ok: true; text: string; encoding: string }
+    | { ok: false; reason: 'too-large' | 'read-error'; size?: number; error?: string }
+  >;
+
+  // ── Auth ─────────────────────────────────────────────────────
+  authGetSession: () => Promise<unknown | null>;
+  authSetSession: (session: unknown | null) => Promise<boolean>;
+  authOpenOAuthUrl: (url: string) => Promise<unknown>;
+  authConsumePendingDeepLink: () => Promise<string | null>;
+  onAuthDeepLink: (cb: (url: string) => void) => () => void;
   updateShortcut: (shortcut: string) => void;
   detectDialog: () => Promise<{ isDialog: boolean; title?: string; className?: string }>;
   jumpToDialogFolder: (folderPath: string) => void;
@@ -157,6 +169,13 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   getOpenWindows: async () => ({ windows: [], browserTabs: [] }),
   setOpacity: noop,
   setSuppressAutoHide: noop,
+  setAutoHide: noop,
+  readTextFile: async () => ({ ok: false, reason: 'read-error', error: 'dev-mode' }),
+  authGetSession: async () => null,
+  authSetSession: async () => true,
+  authOpenOAuthUrl: async () => ({}),
+  authConsumePendingDeepLink: async () => null,
+  onAuthDeepLink: () => () => {},
   updateShortcut: noop,
   detectDialog: async () => ({ isDialog: false }),
   jumpToDialogFolder: noop,

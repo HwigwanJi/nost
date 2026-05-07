@@ -40,11 +40,23 @@ const WIN_PATH_RE = /^[A-Za-z]:[\\/]/;
 const UNC_PATH_RE = /^\\\\[^\\]+\\/;
 const POSIX_PATH_RE = /^\//;
 const EXE_EXT_RE = /\.(exe|lnk|bat|cmd|com|msi)$/i;
+// Subset used to disambiguate URL vs exe for BARE values. `.com` is
+// excluded because it's overwhelmingly a TLD in modern URLs
+// (github.com, weather.com); the rare DOS .com executable can still
+// be launched by typing the path explicitly. The other extensions
+// have no TLD conflict so we treat them as exe-only.
+const STRICT_EXE_RE = /\.(exe|lnk|bat|cmd|msi)$/i;
+const TEXT_DOC_EXT_RE = /\.(txt|md|markdown)$/i;
 const HEX_RE = /^#?[0-9A-Fa-f]{3,8}$/;
 
 export function isUrlLike(v: string): boolean {
-  if (URL_PROTO_RE.test(v)) return true;
+  if (URL_PROTO_RE.test(v)) return true; // explicit protocol always wins
   if (v.includes('\\') || v.includes(' ') || v.startsWith('/')) return false;
+  // Bare exe-like names (notepad.exe, code.cmd) look like domains to
+  // BARE_DOMAIN_RE but the user's intent is "launch this executable".
+  // STRICT_EXE_RE excludes `.com` so github.com still classifies as
+  // URL. Caught by typePlausibility.test.ts.
+  if (STRICT_EXE_RE.test(v)) return false;
   return BARE_DOMAIN_RE.test(v);
 }
 
@@ -56,8 +68,12 @@ export function isExeLike(v: string): boolean {
   return EXE_EXT_RE.test(v);
 }
 
+export function isTextDocLike(v: string): boolean {
+  return TEXT_DOC_EXT_RE.test(v);
+}
+
 const ALL_TYPES: Set<PlausibleType> = new Set([
-  'url', 'browser', 'folder', 'app', 'window', 'text', 'cmd',
+  'url', 'browser', 'folder', 'app', 'window', 'text', 'cmd', 'memo',
 ]);
 
 /**
@@ -72,9 +88,9 @@ export function plausibleTypes(rawValue: string): Set<PlausibleType> {
   const v = rawValue.trim();
   if (!v) return new Set(ALL_TYPES);
 
-  // Multiline blob → only text. URLs / paths / window titles /
-  // cmd are all single-line by convention.
-  if (v.includes('\n')) return new Set<PlausibleType>(['text']);
+  // Multiline blob → text or memo. Both store the literal content;
+  // text is for clipboard-paste, memo is for editable notes.
+  if (v.includes('\n')) return new Set<PlausibleType>(['memo', 'text']);
 
   // Hex code → text only here (color-swatch creation is a
   // separate flow that doesn't go through this dialog).
@@ -89,6 +105,9 @@ export function plausibleTypes(rawValue: string): Set<PlausibleType> {
   // Windows / UNC / POSIX path → folder or app, never URL.
   if (isPathLike(v)) {
     if (isExeLike(v)) return new Set<PlausibleType>(['app', 'text', 'cmd']);
+    // Text docs (.txt/.md/.markdown) — memo is a sensible alt to the
+    // standard file-card path; load contents into a memo body.
+    if (isTextDocLike(v)) return new Set<PlausibleType>(['memo', 'folder', 'app', 'text']);
     return new Set<PlausibleType>(['folder', 'app', 'text']);
   }
 

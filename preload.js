@@ -24,6 +24,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   hideApp: () => ipcRenderer.send('hide-app'),
   setOpacity: (opacity) => ipcRenderer.send('set-opacity', opacity),
   setSuppressAutoHide: (suppress, source) => ipcRenderer.send('set-suppress-autohide', !!suppress, source ?? 'default'),
+  setAutoHide: (autoHide) => ipcRenderer.send('set-auto-hide', !!autoHide),
+  readTextFile: (filePath, maxBytes) => ipcRenderer.invoke('read-text-file', filePath, maxBytes),
+
+  // ── Auth ────────────────────────────────────────────────────────
+  authGetSession: () => ipcRenderer.invoke('auth:get-session'),
+  authSetSession: (session) => ipcRenderer.invoke('auth:set-session', session),
+  authOpenOAuthUrl: (url) => ipcRenderer.invoke('auth:open-oauth-url', url),
+  authConsumePendingDeepLink: () => ipcRenderer.invoke('auth:consume-pending-deep-link'),
+  onAuthDeepLink: (cb) => {
+    const handler = (_e, url) => cb(url);
+    ipcRenderer.on('auth:deep-link', handler);
+    return () => ipcRenderer.removeListener('auth:deep-link', handler);
+  },
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),
   launchOrFocusApp: (exePath, closeAfter, monitor) => ipcRenderer.invoke('launch-or-focus-app', exePath, closeAfter, monitor),

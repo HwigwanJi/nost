@@ -2047,6 +2047,21 @@ export default function App() {
     } else {
       // New item — pre-generate ID so we can trigger the entry animation immediately
       if (!quotaChecks.card()) return;
+      // Memo type: route to store.addMemo so MemoData (body, TTL,
+      // timestamps) is constructed correctly. addItem alone produces
+      // a half-built memo with no expiry, which would silently expire
+      // on the next sweep. The dialog stuffs the body into `value`.
+      if ((item as LauncherItem).type === 'memo') {
+        const body = ((item as Omit<LauncherItem, 'id'>).value ?? '').toString();
+        const newItem = store.addMemo(spaceId, body);
+        if (newItem) {
+          markItemsAsNew([newItem.id]);
+          lastAddedItemRef.current = { spaceId, id: newItem.id };
+          tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId, fromClipboard: false });
+          fireFirstCardCelebration();
+        }
+        return;
+      }
       const newId = generateId();
       store.addItem(spaceId, item as Omit<LauncherItem, 'id'>, newId);
       markItemsAsNew([newId]);
@@ -2376,9 +2391,34 @@ export default function App() {
       return electronAPI.getFilePath(file) ?? file.name;
     };
     if (files.length === 1) {
-      // Single file → open ItemDialog pre-filled so the user can confirm/tweak
       const filePath = resolvePath(files[0]);
       const { type, title } = inferItemFromPath(filePath);
+
+      // .txt / .md / .markdown → open ItemDialog at the TYPE phase with
+      // memo as the recommended choice. We read the file contents up
+      // front and stash them in form.value so that if the user picks
+      // memo, the body is already there. If they pick a different type
+      // (file card / text), the dialog overwrites value with the file
+      // path on type-pick. plausibleTypes elevates memo for these
+      // extensions so the type card grid shows it first-class.
+      const ext = (filePath.match(/\.([^.]+)$/)?.[1] ?? '').toLowerCase();
+      if (ext === 'txt' || ext === 'md' || ext === 'markdown') {
+        electronAPI.readTextFile(filePath).then(r => {
+          if (r.ok) {
+            setPrefilledItem({ type: 'memo', title, value: r.text });
+          } else {
+            // Read failed (too big or unreadable) — fall back to the
+            // regular file-card flow so the user still gets something.
+            setPrefilledItem({ type, title, value: filePath });
+          }
+          setEditItem(null);
+          setEditSpaceId(targetSpaceId);
+          setDialog('item');
+        });
+        return;
+      }
+
+      // Default: open ItemDialog pre-filled so the user can confirm/tweak
       setPrefilledItem({ type, title, value: filePath });
       setEditItem(null);
       setEditSpaceId(targetSpaceId);

@@ -1206,6 +1206,9 @@ export function useAppData() {
   const updateSettings = useCallback((settings: AppSettings) => {
     electronAPI.setOpacity(settings.opacity);
     electronAPI.updateShortcut(settings.shortcut);
+    // Push autoHide to main's hot cache so the blur handler doesn't
+    // have to re-read electron-store (which had a staleness bug).
+    electronAPI.setAutoHide(!!settings.autoHide);
     save({ ...data, settings });
   }, [data, save]);
 
