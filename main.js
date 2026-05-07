@@ -641,17 +641,21 @@ let pendingDeepLink = null;
 
 function createLoadingWindow() {
   loadingWindow = new BrowserWindow({
-    width: 300, height: 210,
+    width: 300, height: 240,
     show: true, frame: false, transparent: true,
     resizable: false, alwaysOnTop: true, skipTaskbar: true, center: true,
-    webPreferences: { nodeIntegration: false, contextIsolation: true },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload-splash.js'),
+    },
   });
 
   const html = encodeURIComponent(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:100%;background:transparent}
-body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%);border:1px solid rgba(255,255,255,0.9);box-shadow:0 8px 32px rgba(0,0,0,0.12),0 2px 8px rgba(0,0,0,0.08),inset 0 1px 0 #fff;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;user-select:none;-webkit-app-region:no-drag}
+body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%);border:1px solid rgba(255,255,255,0.9);box-shadow:0 8px 32px rgba(0,0,0,0.12),0 2px 8px rgba(0,0,0,0.08),inset 0 1px 0 #fff;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;user-select:none;-webkit-app-region:no-drag;padding:14px}
 .logo{font-size:34px;font-weight:800;letter-spacing:-2px;background:linear-gradient(135deg,#6366f1 0%,#818cf8 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
 .sub{font-size:11px;color:rgba(80,80,120,0.55);margin-top:5px;letter-spacing:0.5px;font-weight:500}
 .ring{margin-top:18px;width:22px;height:22px;border:2.5px solid rgba(99,102,241,0.18);border-top-color:#6366f1;border-radius:50%;animation:spin 0.75s linear infinite}
@@ -659,12 +663,41 @@ body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%)
 .tip{margin-top:20px;padding:8px 14px;background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.15);border-radius:8px;font-size:10px;color:rgba(80,80,120,0.65);line-height:1.5;text-align:center;max-width:240px;animation:fadeIn 0.6s ease 0.3s both}
 @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .tip-label{font-size:9px;color:rgba(99,102,241,0.6);font-weight:600;letter-spacing:0.5px;margin-bottom:3px}
+.err-msg{font-size:11px;color:#b91c1c;margin-top:14px;text-align:center;line-height:1.5;padding:0 8px}
+.err-actions{display:flex;gap:8px;margin-top:12px;-webkit-app-region:no-drag}
+.btn{font-family:inherit;font-size:11px;padding:6px 12px;border-radius:6px;border:1px solid rgba(80,80,120,0.18);background:rgba(255,255,255,0.6);color:#374151;cursor:pointer;font-weight:500}
+.btn:hover{background:rgba(99,102,241,0.08);border-color:rgba(99,102,241,0.3)}
+.btn.primary{background:linear-gradient(135deg,#6366f1,#818cf8);color:white;border-color:transparent}
+.btn.primary:hover{filter:brightness(1.05)}
+.hidden{display:none}
 </style></head>
 <body>
-  <div class="logo">nost</div>
-  <div class="sub" id="ql-status">시작하는 중...</div>
-  <div class="ring"></div>
-  <div class="tip"><div class="tip-label">💡 팁</div>${getRandomTip()}</div>
+  <div id="loading-state">
+    <div class="logo">nost</div>
+    <div class="sub" id="ql-status">시작하는 중...</div>
+    <div class="ring"></div>
+    <div class="tip"><div class="tip-label">💡 팁</div>${getRandomTip()}</div>
+  </div>
+  <div id="error-state" class="hidden">
+    <div class="logo" style="font-size:24px">nost</div>
+    <div class="err-msg">앱이 시작되지 못했어요.<br>네트워크 또는 데이터 폴더 문제일 수 있어요.</div>
+    <div class="err-actions">
+      <button class="btn" id="btn-logs">로그 보기</button>
+      <button class="btn primary" id="btn-restart">재시작</button>
+    </div>
+  </div>
+  <script>
+    // Toggle to error state when main signals it. preload exposes
+    // splashAPI; if missing (older bundle) we silently no-op.
+    if (window.splashAPI && window.splashAPI.onError) {
+      window.splashAPI.onError(() => {
+        document.getElementById('loading-state').classList.add('hidden');
+        document.getElementById('error-state').classList.remove('hidden');
+      });
+      document.getElementById('btn-restart').addEventListener('click', () => window.splashAPI.restart());
+      document.getElementById('btn-logs').addEventListener('click', () => window.splashAPI.openLogs());
+    }
+  </script>
 </body></html>`);
 
   loadingWindow.loadURL(`data:text/html;charset=utf-8,${html}`);
@@ -1676,16 +1709,38 @@ function createWindow() {
     mainWindow.focus();
   };
   ipcMain.once('renderer-ready', () => { rdbg('IPC: renderer-ready received'); showMainWindow('renderer-ready'); });
+
+  // Splash recovery actions — only used when boot-stuck error UI fires
+  ipcMain.on('splash:restart', () => {
+    log.info('[splash] user clicked restart');
+    app.relaunch();
+    app.exit(0);
+  });
+  ipcMain.on('splash:open-logs', () => {
+    try { shell.showItemInFolder(log.transports.file.getFile().path); } catch (e) { log.warn('[splash] open-logs failed', e?.message); }
+  });
   setTimeout(() => showMainWindow('5s-fallback'), 5000);
   // Diagnostic: if 8 s in we still haven't transitioned, the renderer
   // is wedged — open devtools so the user sees the console error and
-  // can report it. Better than a silent dark splash.
+  // signal the splash to swap to its error state (restart + open logs
+  // buttons). Better than a silent dark splash.
   setTimeout(() => {
     if (!windowShown) {
-      log.warn('[boot-stuck] renderer-ready not received in 8s — opening devtools for diagnostic');
+      log.warn('[boot-stuck] renderer-ready not received in 8s — opening devtools + splash error state');
       try { mainWindow.webContents.openDevTools({ mode: 'detach' }); } catch (e) { log.warn('[boot-stuck] devtools open failed', e?.message); }
-      // Force show too — splash might still be on top
-      showMainWindow('8s-diagnostic');
+      // Don't kill the splash here — the user needs the restart button.
+      // Instead toggle splash to error UI and leave mainWindow shown
+      // behind it (devtools console attached) for diagnosis.
+      if (loadingWindow && !loadingWindow.isDestroyed()) {
+        try { loadingWindow.webContents.send('splash:show-error'); } catch (e) { log.warn('[boot-stuck] splash signal failed', e?.message); }
+      }
+      // Show mainWindow but DON'T destroy splash — splash stays on top
+      // with the recovery UI. windowShown guard still trips so any
+      // later renderer-ready won't fight us.
+      if (!windowShown) {
+        windowShown = true;
+        try { mainWindow.show(); mainWindow.focus(); } catch { /* no-op */ }
+      }
     }
   }, 8000);
 
