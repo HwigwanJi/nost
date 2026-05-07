@@ -19,6 +19,12 @@ export type ToastItem = {
 
 export type ToastState = ToastItem | null; // kept for ToastOverlay compat
 
+/** Hard cap on simultaneously-visible toasts. New toasts evict the
+ *  oldest non-protected (non-spinner, non-persistent) one. Three is
+ *  the natural read-aloud limit before users start dismissing
+ *  reflexively without reading. */
+const MAX_TOASTS = 3;
+
 export function useToastQueue() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   // Map from toast id → dismiss timer
@@ -82,7 +88,25 @@ export function useToastQueue() {
 
     // Normal: push new toast
     const newItem: ToastItem = { id, msg, actions: options?.actions, persistent: isPersistent, spinner: isSpinner, createdAt: Date.now() };
-    setToasts(prev => [...prev, newItem]);
+    setToasts(prev => {
+      const next = [...prev, newItem];
+      // FIFO cap at MAX_TOASTS. Spinner / persistent toasts are
+      // *protected* — they represent ongoing pipelines / important
+      // status the user must see, so they don't get evicted just
+      // because lots of normal toasts are firing. We trim the oldest
+      // *non-protected* toasts until we're under the cap. If even
+      // protected toasts alone exceed MAX_TOASTS (rare — would mean
+      // many concurrent pipelines), they all stay; the cap is a
+      // soft suggestion in that pathological case.
+      while (next.length > MAX_TOASTS) {
+        const evictIdx = next.findIndex(t => !t.spinner && !t.persistent);
+        if (evictIdx === -1) break;
+        const evicted = next[evictIdx];
+        clearTimer(evicted.id);
+        next.splice(evictIdx, 1);
+      }
+      return next;
+    });
 
     if (isSpinner || isPersistent) {
       spinnerIdRef.current = id;

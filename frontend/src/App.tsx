@@ -47,6 +47,8 @@ import { faviconCandidates } from './hooks/useFavicon';
 import { setBusy, whenIdle, isUserBusy } from './lib/userBusy';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
 import { useTileOverlay } from './hooks/useTileOverlay';
+import { pushUndo } from './hooks/useUndoStack';
+import { useGlobalUndoShortcut } from './hooks/useGlobalUndoShortcut';
 import { useLaunchPipeline } from './hooks/useLaunchPipeline';
 import { useWindowDrag } from './hooks/useWindowDrag';
 import { useNodeDeckMode } from './hooks/useNodeDeckMode';
@@ -881,6 +883,11 @@ export default function App() {
     setTimeout(() => {
       tutorialTriggers.fire('space-added', { previousCount: before, spaceId: created.id });
     }, 0);
+    pushUndo({
+      description: `스페이스 "${created.name}" 추가`,
+      undo: () => store.deleteSpace(created.id),
+      redo: () => store.restoreSpace(created),
+    });
     showToastRef.current?.(`스페이스 "${created.name}" 추가됨`, {
       actions: [
         { label: '실행취소', icon: 'undo', onClick: () => store.deleteSpace(created.id) },
@@ -955,6 +962,18 @@ export default function App() {
   const { toasts, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
   // Wire forward-declared ref now that showToast exists.
   showToastRef.current = showToast;
+
+  // App-level Ctrl+Z / Ctrl+Shift+Z. Yields to native browser undo
+  // when focus is on an editable surface (input / textarea /
+  // contenteditable) — typing inside a memo body still uses the
+  // textarea's own history. Outside any editor, the shortcut walks
+  // the action stack populated by registerUndo() callsites below.
+  useGlobalUndoShortcut({
+    onUndo: (desc) => showToast(`되돌렸어요 — ${desc}`, { duration: 2400 }),
+    onRedo: (desc) => showToast(`다시 적용 — ${desc}`, { duration: 2400 }),
+    onNothingToUndo: () => showToast('되돌릴 작업이 없어요', { duration: 1400 }),
+    onNothingToRedo: () => showToast('다시 적용할 작업이 없어요', { duration: 1400 }),
+  });
 
   // ── Onboarding — applyTemplate (post-toast) ─────────────────
   // Declared here (not at the top of the component) because it depends on
@@ -2039,10 +2058,38 @@ export default function App() {
 
       // Edit existing within the same preset — find item's CURRENT space (may have changed in dialog)
       const currentSpaceId = data.spaces.find(s => s.items.some(i => i.id === itemId))?.id;
+      // Snapshot pre-edit state for undo. Skip if we couldn't locate
+      // the item (would mean the dialog had a stale reference).
+      const before = currentSpaceId
+        ? data.spaces.find(s => s.id === currentSpaceId)?.items.find(i => i.id === itemId)
+        : undefined;
       if (currentSpaceId && currentSpaceId !== spaceId) {
         store.updateItemAndMove(currentSpaceId, spaceId, item as LauncherItem);
       } else {
         store.updateItem(currentSpaceId ?? spaceId, item as LauncherItem);
+      }
+      if (before && currentSpaceId) {
+        const sourceSpaceId = currentSpaceId;
+        const destSpaceId   = spaceId;
+        const after = item as LauncherItem;
+        pushUndo({
+          description: `"${after.title || '카드'}" 편집`,
+          undo: () => {
+            // If edit also moved the card across spaces, move back first.
+            if (sourceSpaceId !== destSpaceId) {
+              store.updateItemAndMove(destSpaceId, sourceSpaceId, before);
+            } else {
+              store.updateItem(sourceSpaceId, before);
+            }
+          },
+          redo: () => {
+            if (sourceSpaceId !== destSpaceId) {
+              store.updateItemAndMove(sourceSpaceId, destSpaceId, after);
+            } else {
+              store.updateItem(destSpaceId, after);
+            }
+          },
+        });
       }
     } else {
       // New item — pre-generate ID so we can trigger the entry animation immediately
@@ -2059,6 +2106,11 @@ export default function App() {
           lastAddedItemRef.current = { spaceId, id: newItem.id };
           tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId, fromClipboard: false });
           fireFirstCardCelebration();
+          pushUndo({
+            description: `메모 추가`,
+            undo: () => store.deleteItem(spaceId, newItem.id),
+            redo: () => store.restoreItem(spaceId, newItem),
+          });
         }
         return;
       }
@@ -2073,6 +2125,12 @@ export default function App() {
       // accepts, batch drops, and any other path that lands here. The
       // component itself dedupes via localStorage.
       fireFirstCardCelebration();
+      const addedSnapshot = { ...item, id: newId } as LauncherItem;
+      pushUndo({
+        description: `"${addedSnapshot.title || '카드'}" 추가`,
+        undo: () => store.deleteItem(spaceId, newId),
+        redo: () => store.restoreItem(spaceId, addedSnapshot),
+      });
     }
   }, [store, data.spaces, markItemsAsNew, quotaChecks]);
 
@@ -2321,6 +2379,14 @@ export default function App() {
     const item = space?.items.find(i => i.id === itemId);
     if (!item) return;
     store.deleteItem(spaceId, itemId);
+    // Toast undo button (one-shot, expires with toast) AND undo
+    // stack entry (Ctrl+Z, lasts 10 actions). Both call the same
+    // restore — the stack also needs a redo for Ctrl+Shift+Z.
+    pushUndo({
+      description: `"${item.title}" 삭제`,
+      undo: () => store.restoreItem(spaceId, item),
+      redo: () => store.deleteItem(spaceId, itemId),
+    });
     showToast(`"${item.title}" 삭제됨`, {
       actions: [{
         label: '실행 취소',
@@ -2334,6 +2400,11 @@ export default function App() {
     const space = data.spaces.find(s => s.id === spaceId);
     if (!space) return;
     store.deleteSpace(spaceId);
+    pushUndo({
+      description: `"${space.name}" 스페이스 삭제`,
+      undo: () => store.restoreSpace(space),
+      redo: () => store.deleteSpace(spaceId),
+    });
     showToast(`"${space.name}" 스페이스 삭제됨`, {
       actions: [{
         label: '실행 취소',
@@ -2814,12 +2885,32 @@ export default function App() {
     const sourceSpace = data.spaces.find(s => s.items.some(i => i.id === activeId));
     if (!sourceSpace) return;
 
+    // Diagnostic for backlog #1 (empty-slot drop intermittent failures).
+    // Logs which branch handles each drop so future failure reports can
+    // be triaged from main.log instead of guesswork.
+    appLog.debug(`[drag] drop: activeId=${activeId} overId=${overId} from=${sourceSpace.id}`);
+
     // Dropped onto a space droppable zone
     if (overId.startsWith('drop-space-')) {
       const toSpaceId = overId.replace('drop-space-', '');
       if (toSpaceId !== sourceSpace.id) {
+        appLog.debug(`[drag] branch=drop-space, cross-space → ${toSpaceId}`);
         store.moveItemToSpace(activeId, sourceSpace.id, toSpaceId);
         tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: toSpaceId });
+      } else {
+        // Same-space drop on empty droppable area (no item under cursor):
+        // user wants the card moved to the END of the same space. Without
+        // this, dropping in same-space-empty was a silent no-op — backlog
+        // #1's primary cause.
+        appLog.debug(`[drag] branch=drop-space, same-space → reorder to end`);
+        const items = sourceSpace.items;
+        const oldIdx = items.findIndex(i => i.id === activeId);
+        if (oldIdx !== -1 && oldIdx !== items.length - 1) {
+          const [moved] = items.slice(oldIdx, oldIdx + 1);
+          const next = [...items.slice(0, oldIdx), ...items.slice(oldIdx + 1), moved];
+          store.reorderItems(sourceSpace.id, next);
+          tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: sourceSpace.id, kind: 'reorder' });
+        }
       }
       return;
     }
@@ -2833,8 +2924,11 @@ export default function App() {
     const directSpaceMatch = data.spaces.find(s => s.id === overId);
     if (directSpaceMatch) {
       if (directSpaceMatch.id !== sourceSpace.id) {
+        appLog.debug(`[drag] branch=directSpaceMatch, cross-space → ${directSpaceMatch.id}`);
         store.moveItemToSpace(activeId, sourceSpace.id, directSpaceMatch.id);
         tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: directSpaceMatch.id });
+      } else {
+        appLog.debug(`[drag] branch=directSpaceMatch, same-space — no-op`);
       }
       return;
     }
@@ -2844,7 +2938,8 @@ export default function App() {
     if (!targetSpace) {
       // Last-resort fallback: hit-test the pointer against every
       // visible space rect. Covers cases where collision detection
-      // returns null (rare DPI / scroll edge cases).
+      // returns null (rare DPI / scroll edge cases) and drops over
+      // the "+ 추가" button area which doesn't carry a droppable id.
       const start = event.activatorEvent as PointerEvent | MouseEvent | undefined;
       if (start) {
         const px = (start.clientX ?? 0) + event.delta.x;
@@ -2854,12 +2949,31 @@ export default function App() {
           const r = el.getBoundingClientRect();
           if (px >= r.left && px <= r.right && py >= r.top && py <= r.bottom) {
             const spaceId = el.dataset.spaceId;
-            if (spaceId && spaceId !== sourceSpace.id) {
+            if (!spaceId) return;
+            if (spaceId !== sourceSpace.id) {
+              appLog.debug(`[drag] branch=hit-test fallback, cross-space → ${spaceId}`);
               store.moveItemToSpace(activeId, sourceSpace.id, spaceId);
+              tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: spaceId });
+            } else {
+              // Same-space hit-test fallback — same as drop-space same-space:
+              // move to the end. Without this, hit-test landed on source
+              // space and silently no-op'd (backlog #1 secondary cause).
+              appLog.debug(`[drag] branch=hit-test fallback, same-space → reorder to end`);
+              const items = sourceSpace.items;
+              const oldIdx = items.findIndex(i => i.id === activeId);
+              if (oldIdx !== -1 && oldIdx !== items.length - 1) {
+                const [moved] = items.slice(oldIdx, oldIdx + 1);
+                const next = [...items.slice(0, oldIdx), ...items.slice(oldIdx + 1), moved];
+                store.reorderItems(sourceSpace.id, next);
+                tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: sourceSpace.id, kind: 'reorder' });
+              }
             }
             return;
           }
         }
+        appLog.debug(`[drag] no branch matched — drop discarded. overId=${overId} px=${px} py=${py}`);
+      } else {
+        appLog.debug(`[drag] no branch matched — no activatorEvent. overId=${overId}`);
       }
       return;
     }
@@ -3849,8 +3963,15 @@ export default function App() {
                             space={space}
                             headerDragActivator={dragActivator}
                             onRename={name => {
+                              const prevName = space.name;
+                              if (prevName === name) return;
                               store.renameSpace(space.id, name);
                               tutorialTriggers.fire('space-renamed', { spaceId: space.id, name });
+                              pushUndo({
+                                description: `스페이스 이름 변경`,
+                                undo: () => store.renameSpace(space.id, prevName),
+                                redo: () => store.renameSpace(space.id, name),
+                              });
                             }}
                             onDelete={() => handleDeleteSpace(space.id)}
                             onDuplicate={() => store.duplicateSpace(space.id)}

@@ -50,6 +50,7 @@ import {
   htmlHasStructure,
 } from '../lib/memoUtils';
 import { useEscapeKey } from '../hooks/useEscapeKey';
+import { pushUndo } from '../hooks/useUndoStack';
 import { renderMemoMarkdown } from '../lib/memoMarkdown';
 
 interface MemoEditorProps {
@@ -479,19 +480,28 @@ export function MemoEditor({
     }
     if (cleanupMode === 'inPlace') {
       // Destructive: rewrite the memo body. The autosave debounce
-      // picks this up and commits. We snapshot the previous body so
-      // the toast can restore it — Ctrl+Z doesn't work for
-      // programmatic state changes (textarea native undo only
-      // tracks user keystrokes).
+      // picks this up and commits. Snapshot the previous body for
+      // both the toast button (one-shot) and the global undo stack
+      // (Ctrl+Z, lasts 10 actions). textarea's native undo only
+      // tracks per-keystroke history — programmatic body swaps are
+      // outside its scope, which is why we route through the global
+      // stack here.
       if (cleaned === body) {
         showToast?.('이미 정리된 상태예요');
         return;
       }
       const before = body;
       setBody(cleaned);
-      // Use the in-house toast queue so the visual matches every
-      // other toast in the app (sonner had a different chrome and
-      // bottom-positioned look that the user flagged as off-brand).
+      pushUndo({
+        description: `정리 — ${tool.label}`,
+        // Both paths: setBody updates the editor textarea immediately
+        // when it's still open; onChangeBodyRef.current pushes the
+        // change up to the parent so the store persists it even if
+        // the editor has since closed (autosave debounce wouldn't
+        // fire from an unmounted component).
+        undo: () => { setBody(before); onChangeBodyRef.current(before); },
+        redo: () => { setBody(cleaned); onChangeBodyRef.current(cleaned); },
+      });
       showToast?.(`본문에 적용됨 — ${tool.label}`, {
         actions: [{
           label: '되돌리기',
