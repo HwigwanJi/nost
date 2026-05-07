@@ -24,6 +24,11 @@ Thumbs.db
 main.log
 *.log
 
+# Test artifacts
+playwright-report/
+test-results/
+coverage/
+
 # Claude
 .claude/
 PROJECT_NOTES.md
