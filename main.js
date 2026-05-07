@@ -1654,14 +1654,22 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'));
   }
 
-  // Show only after renderer signals it's fully loaded; 5 s safety fallback
+  // Show only after renderer signals it's fully loaded; 5 s safety fallback.
+  // Splash → main transition has TWO failure modes we now defend against:
+  //   1. renderer-ready IPC never fires (renderer threw mid-mount, IPC
+  //      bridge broken, etc.) → 5 s fallback shows mainWindow anyway.
+  //   2. Both fallback fires AND mainWindow renders blank (renderer
+  //      crashed) → at 8 s we open devtools so the user sees the
+  //      console error instead of a silent void.
+  // .destroy() over .close() — close is cancellable by 'close' event
+  // listeners (we don't have any but defensive); destroy is forced.
   let windowShown = false;
   const showMainWindow = (reason) => {
     if (windowShown) { rdbg(`showMainWindow skipped (already shown) reason=${reason}`); return; }
     windowShown = true;
     rdbg(`showMainWindow firing. reason=${reason}`);
     if (loadingWindow && !loadingWindow.isDestroyed()) {
-      loadingWindow.close();
+      loadingWindow.destroy();
       loadingWindow = null;
     }
     mainWindow.show();
@@ -1669,6 +1677,17 @@ function createWindow() {
   };
   ipcMain.once('renderer-ready', () => { rdbg('IPC: renderer-ready received'); showMainWindow('renderer-ready'); });
   setTimeout(() => showMainWindow('5s-fallback'), 5000);
+  // Diagnostic: if 8 s in we still haven't transitioned, the renderer
+  // is wedged — open devtools so the user sees the console error and
+  // can report it. Better than a silent dark splash.
+  setTimeout(() => {
+    if (!windowShown) {
+      log.warn('[boot-stuck] renderer-ready not received in 8s — opening devtools for diagnostic');
+      try { mainWindow.webContents.openDevTools({ mode: 'detach' }); } catch (e) { log.warn('[boot-stuck] devtools open failed', e?.message); }
+      // Force show too — splash might still be on top
+      showMainWindow('8s-diagnostic');
+    }
+  }, 8000);
 
   // Accept renderer-side logs (explicit, typed level)
   ipcMain.on('nost-log', (_e, level, msg, extra) => {
