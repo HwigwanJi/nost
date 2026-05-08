@@ -20,6 +20,23 @@ function Get-NativeWorkArea {
     # Electron's (the original concern that motivated the old fix), fall
     # back to searching by primary flag.
 
+    # ── 2026-05 update: cached fast path ──────────────────────────────
+    # Electron caches the PS-unaware work area between tile calls and
+    # invalidates on screen.on('display-added/removed/metrics-changed').
+    # When the cache is hot, QL_PS_WA_* arrives pre-populated and we
+    # skip the System.Windows.Forms Add-Type entirely (~250-400 ms saved
+    # on first-call cold and ~60 ms warm). The diagnostic 'picked PS-enum'
+    # line is still emitted for parity so log analysis tooling stays
+    # consistent between fast/slow paths.
+    if ($env:QL_PS_WA_W -and $env:QL_PS_WA_H) {
+        $cachedX = [int]$env:QL_PS_WA_X
+        $cachedY = [int]$env:QL_PS_WA_Y
+        $cachedW = [int]$env:QL_PS_WA_W
+        $cachedH = [int]$env:QL_PS_WA_H
+        Write-Output "[diag] picked PS-enum mon#$MonitorIndex name=cache primary=? work=($cachedX,$cachedY,$cachedW,$cachedH) [cached]"
+        return @{ X = $cachedX; Y = $cachedY; W = $cachedW; H = $cachedH }
+    }
+
     try {
         [void][System.Windows.Forms.Screen]
     } catch {

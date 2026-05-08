@@ -1,6 +1,11 @@
 @import "tailwindcss";
 @import 'pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css';
-@import '@fontsource-variable/material-symbols-rounded/full.css';
+/* Material Symbols (5MB woff2) is intentionally NOT @import'd here.
+   Synchronous @import blocks CSSOM construction → blocks first paint
+   on cold start, which dominates the renderer's path-to-interactive.
+   Loaded dynamically from main.tsx instead — see comment there for
+   why icons may briefly render as ligature text on a slow first
+   load (font-display: swap fallback). */
 
 /* ─── Tailwind v4: shadcn CSS 변수 매핑 ─────────────────── */
 /* Tailwind v4는 --color-* 패턴을 사용하므로, shadcn의 --primary 등을

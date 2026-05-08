@@ -81,35 +81,66 @@ export async function bootstrapAuth(): Promise<void> {
     return;
   }
 
-  await hydrateSession();
+  // Hard deadline: AppShell renders <BootSplash /> while status==='idle',
+  // which means App (and therefore useAppData / dismissLoadingScreen)
+  // is gated behind us reaching a non-idle state. If hydrateSession or
+  // getSession ever hang (offline, IPC bridge slow, electron-store
+  // wedged) the user stares at the dark #ql-loading overlay forever.
+  // Force a fallback transition after 3 s so the app shell always
+  // mounts; auth can finish in the background and flip status later
+  // via onAuthStateChange.
+  let bailedOut = false;
+  const bailoutTimer = setTimeout(() => {
+    bailedOut = true;
+    console.warn('[auth] bootstrap exceeded 3 s — falling back to signed-out so the app shell can mount');
+    setState(prev => prev.status === 'idle'
+      ? { ...prev, status: 'signed-out' }
+      : prev);
+  }, 3000);
 
-  // Subscribe to supabase-js's own auth state changes — single source
-  // of truth for what session is active.
-  supabase.auth.onAuthStateChange((_event, session) => {
-    setState(prev => ({
-      ...prev,
-      status: session ? 'signed-in' : 'signed-out',
-      user: session?.user ?? null,
-      session: session ?? null,
-      errorMessage: null,
-    }));
-  });
+  try {
+    await hydrateSession();
 
-  // Initial getSession (after hydrate populates memCache)
-  const { data: { session } } = await supabase.auth.getSession();
-  setState(prev => ({
-    ...prev,
-    status: session ? 'signed-in' : 'signed-out',
-    user: session?.user ?? null,
-    session: session ?? null,
-  }));
+    // Subscribe to supabase-js's own auth state changes — single source
+    // of truth for what session is active.
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setState(prev => ({
+        ...prev,
+        status: session ? 'signed-in' : 'signed-out',
+        user: session?.user ?? null,
+        session: session ?? null,
+        errorMessage: null,
+      }));
+    });
 
-  // Wire renderer-side deep-link handler. Both the live event (subsequent
-  // OAuth callbacks) and the consume-pending API (any callback that
-  // landed before this listener was attached) feed the same handler.
-  electronAPI.onAuthDeepLink(handleDeepLink);
-  const pending = await electronAPI.authConsumePendingDeepLink();
-  if (pending) handleDeepLink(pending);
+    // Initial getSession (after hydrate populates memCache)
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!bailedOut) {
+      setState(prev => ({
+        ...prev,
+        status: session ? 'signed-in' : 'signed-out',
+        user: session?.user ?? null,
+        session: session ?? null,
+      }));
+    } else if (session) {
+      // Bail-out fired but we eventually got a session — promote.
+      setState(prev => ({
+        ...prev,
+        status: 'signed-in',
+        user: session.user,
+        session,
+      }));
+    }
+
+    // Wire renderer-side deep-link handler. Both the live event (subsequent
+    // OAuth callbacks) and the consume-pending API (any callback that
+    // landed before this listener was attached) feed the same handler.
+    electronAPI.onAuthDeepLink(handleDeepLink);
+    const pending = await electronAPI.authConsumePendingDeepLink();
+    if (pending) handleDeepLink(pending);
+  } finally {
+    clearTimeout(bailoutTimer);
+  }
 }
 
 async function handleDeepLink(url: string): Promise<void> {

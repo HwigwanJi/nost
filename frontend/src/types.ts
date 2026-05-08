@@ -191,9 +191,32 @@ export interface AppSettings {
    * glance. Range matches the FAB slider (28..72 px) for muscle memory.
    */
   badgeSize?: number;
+  /**
+   * Launcher window size, expressed as a percentage of the active
+   * monitor's work area (25..100). Same semantic as the `/75`
+   * slash command: `setBounds(workArea * pct/100, centered)`. NOT a
+   * content zoom — the BrowserWindow itself shrinks/grows on screen.
+   *
+   * Single source of truth for every code path that resizes the
+   * launcher: `/N` slash command, status-bar slider, settings dialog
+   * preset, and cold-start initial sizing all read/write this field.
+   * Persisted, so the size survives restarts and applies on every
+   * subsequent invocation.
+   */
+  windowSizePct?: number;
   license?: License;             // Phase 5: paid-tier entitlement cache
   memo?: MemoSettings;           // Memo feature (v1.3.16+)
 }
+
+/** Default launcher size = full work area on cold start when the
+ *  field is absent. */
+export const DEFAULT_WINDOW_SIZE_PCT = 100;
+export const WINDOW_SIZE_PCT_MIN = 25;
+export const WINDOW_SIZE_PCT_MAX = 100;
+/** Presets shown in the status-bar dropdown and settings preset modal.
+ *  Mirrors the canonical `/N` slash commands plus a couple of in-between
+ *  steps for fine control without typing. */
+export const WINDOW_SIZE_PCT_PRESETS = [25, 33, 50, 66, 75, 100] as const;
 
 /** Default pixel size for floating badges — matches the historical
  *  hardcoded constant in Badge.tsx so users on existing installs see no

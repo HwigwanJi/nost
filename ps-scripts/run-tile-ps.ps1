@@ -41,32 +41,49 @@ public class DpiAware {
 . "$PSScriptRoot\_Position.ps1"
 
 # ── Diagnostic header ─────────────────────────────────────────────────
-try {
-    [void][System.Windows.Forms.Screen]
-} catch {
-    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
-}
+#
+# Fast path: when Electron's PS work-area cache is hot it sets
+# QL_SKIP_MONITOR_DIAG=1 and supplies QL_PS_WA_* directly. Skipping the
+# Add-Type System.Windows.Forms + per-monitor DPI loop saves ~250-400 ms
+# on cold-start runs and ~60 ms on warm runs. Cache invalidation on the
+# Electron side is wired to screen.on('display-added/removed/
+# metrics-changed') so a stale cache can't outlive a configuration change.
+#
+# Slow path (cache miss / first run): full enumeration as before. The
+# 'picked PS-enum' line in _Position.ps1's Get-NativeWorkArea is what
+# Electron parses to populate the cache for next time.
+$skipMonitorDiag = ($env:QL_SKIP_MONITOR_DIAG -eq '1') -and ($env:QL_PS_WA_W) -and ($env:QL_PS_WA_H)
 
-try {
-    $ctx = [DpiAware]::GetThreadDpiAwarenessContext()
-    $awareness = [DpiAware]::GetAwarenessFromDpiAwarenessContext($ctx)
-    Write-Output "[diag] ps-dpi-awareness=$awareness (0=unaware, 1=system, 2=per-monitor, 3=per-monitor-v2)"
-} catch { Write-Output "[diag] ps-dpi-awareness probe failed: $($_.Exception.Message)" }
-
-# Dump every monitor so we can compare against what Electron sees.
-$allScreens = [System.Windows.Forms.Screen]::AllScreens
-for ($s = 0; $s -lt $allScreens.Count; $s++) {
-    $sc = $allScreens[$s]
-    $b = $sc.Bounds; $w = $sc.WorkingArea
+if (-not $skipMonitorDiag) {
     try {
-        $pt = New-Object DpiAware+POINT
-        $pt.X = $b.X + 1; $pt.Y = $b.Y + 1
-        $hmon = [DpiAware]::MonitorFromPoint($pt, 2)  # MONITOR_DEFAULTTONEAREST
-        $dpiX = 0; $dpiY = 0
-        [DpiAware]::GetDpiForMonitor($hmon, 0, [ref]$dpiX, [ref]$dpiY) | Out-Null
-        $scale = [math]::Round($dpiX / 96.0, 2)
-    } catch { $dpiX = 0; $scale = 0 }
-    Write-Output "[diag] mon#$($s+1) primary=$($sc.Primary) bounds=($($b.X),$($b.Y),$($b.Width)x$($b.Height)) work=($($w.X),$($w.Y),$($w.Width)x$($w.Height)) dpi=$dpiX scale=$scale"
+        [void][System.Windows.Forms.Screen]
+    } catch {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+    }
+
+    try {
+        $ctx = [DpiAware]::GetThreadDpiAwarenessContext()
+        $awareness = [DpiAware]::GetAwarenessFromDpiAwarenessContext($ctx)
+        Write-Output "[diag] ps-dpi-awareness=$awareness (0=unaware, 1=system, 2=per-monitor, 3=per-monitor-v2)"
+    } catch { Write-Output "[diag] ps-dpi-awareness probe failed: $($_.Exception.Message)" }
+
+    # Dump every monitor so we can compare against what Electron sees.
+    $allScreens = [System.Windows.Forms.Screen]::AllScreens
+    for ($s = 0; $s -lt $allScreens.Count; $s++) {
+        $sc = $allScreens[$s]
+        $b = $sc.Bounds; $w = $sc.WorkingArea
+        try {
+            $pt = New-Object DpiAware+POINT
+            $pt.X = $b.X + 1; $pt.Y = $b.Y + 1
+            $hmon = [DpiAware]::MonitorFromPoint($pt, 2)  # MONITOR_DEFAULTTONEAREST
+            $dpiX = 0; $dpiY = 0
+            [DpiAware]::GetDpiForMonitor($hmon, 0, [ref]$dpiX, [ref]$dpiY) | Out-Null
+            $scale = [math]::Round($dpiX / 96.0, 2)
+        } catch { $dpiX = 0; $scale = 0 }
+        Write-Output "[diag] mon#$($s+1) primary=$($sc.Primary) bounds=($($b.X),$($b.Y),$($b.Width)x$($b.Height)) work=($($w.X),$($w.Y),$($w.Width)x$($w.Height)) dpi=$dpiX scale=$scale"
+    }
+} else {
+    Write-Output "[diag] monitor enumeration skipped (cached PS-WA from Electron)"
 }
 
 # Get work area from Windows directly — no Electron coordinate translation needed.

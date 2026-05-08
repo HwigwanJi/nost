@@ -18,6 +18,22 @@ export interface ElectronAPI {
   copyText: (text: string, closeAfter: boolean) => void;
   getOpenWindows: () => Promise<{ windows: import('./types').WindowEntry[]; browserTabs: import('./types').ChromeTab[] }>;
   setOpacity: (opacity: number) => void;
+  /** Set the launcher's physical size as % of the active monitor's
+   *  work area (25..100). Same semantic as `/N` slash commands.
+   *  Main clamps + persists into settings.windowSizePct + applies
+   *  setBounds so every code path stays in sync. */
+  setWindowSizePct: (pct: number) => void;
+  /** Snapshot of the launcher's process-tree resource usage. cpuPct
+   *  is normalised to % of total system CPU (0..100) so the number
+   *  is comparable to Task Manager. perProc breaks down the same
+   *  numbers per child process for the status-bar tooltip. */
+  getResourceStats: () => Promise<{
+    cpuPct: number;
+    memMB: number;
+    procs: number;
+    cores: number;
+    perProc: Array<{ type: string; cpuPct: number; memMB: number }>;
+  }>;
   setSuppressAutoHide: (suppress: boolean, source?: string) => void;
   setAutoHide: (autoHide: boolean) => void;
   readTextFile: (filePath: string, maxBytes?: number) => Promise<
@@ -168,6 +184,8 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   copyText: noop,
   getOpenWindows: async () => ({ windows: [], browserTabs: [] }),
   setOpacity: noop,
+  setWindowSizePct: noop,
+  getResourceStats: async () => ({ cpuPct: 0, memMB: 0, procs: 0, cores: 1, perProc: [] }),
   setSuppressAutoHide: noop,
   setAutoHide: noop,
   readTextFile: async () => ({ ok: false, reason: 'read-error', error: 'dev-mode' }),

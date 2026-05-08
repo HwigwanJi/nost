@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import type { AppSettings } from '../types';
-import { MEMO_TTL_DAYS_MIN, MEMO_TTL_DAYS_MAX, DEFAULT_MEMO_SETTINGS } from '../types';
+import {
+  MEMO_TTL_DAYS_MIN, MEMO_TTL_DAYS_MAX, DEFAULT_MEMO_SETTINGS,
+} from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { electronAPI } from '../electronBridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -172,6 +174,7 @@ function MemoTtlPicker({ value, onChange }: { value: number; onChange: (days: nu
     </div>
   );
 }
+
 
 function MemoTrashRetentionPicker({ value, onChange }: { value: 24 | 72 | 168; onChange: (h: 24 | 72 | 168) => void }) {
   const opts: Array<{ h: 24 | 72 | 168; label: string }> = [
@@ -612,6 +615,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     onValueChange={val => f('opacity', Array.isArray(val) ? (val as number[])[0] : (val as number))}
                     className="w-full" />
                 </Section>
+
+                {/* 창 크기 섹션은 status bar 우측 슬라이더 + `/N`
+                    슬래시 명령에서 이미 노출되므로 설정에서 제거.
+                    설정값(settings.windowSizePct)은 그대로 유지 —
+                    삭제한 건 UI surface일 뿐. */}
 
                 <Section>
                   <SwitchRow icon="start" title="Windows 시작 시 자동 실행"

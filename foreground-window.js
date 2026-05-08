@@ -23,6 +23,8 @@ const log = require('electron-log');
 let supported = false;
 let initialised = false;
 let user32 = null;
+let koffiRef = null;       // cached koffi module for alloc/decode/address
+let RECT_TYPE = null;      // koffi struct type handle, used by alloc/decode
 let GetForegroundWindow = null;
 let GetWindowTextW = null;
 let GetClassNameW = null;
@@ -41,6 +43,7 @@ function init() {
 
   try {
     const koffi = require('koffi');
+    koffiRef = koffi;
     user32 = koffi.load('user32.dll');
 
     // HWND is a pointer; koffi treats it as void* for opaque-handle use.
@@ -49,13 +52,23 @@ function init() {
     // Pass a raw Buffer for the Inout char buffer — declared as void*
     // for maximum compatibility across koffi versions. We size buffers
     // ourselves and let the caller manage encoding.
-    GetWindowTextW = user32.func('int GetWindowTextW(void*, void*, int)');
-    GetClassNameW  = user32.func('int GetClassNameW(void*, void*, int)');
+    GetWindowTextW = user32.func('int GetWindowTextW(void *hwnd, void *buf, int max)');
+    GetClassNameW  = user32.func('int GetClassNameW(void *hwnd, void *buf, int max)');
 
     // RECT is a 4×int32 struct. koffi.struct lets us read fields off
     // the JS object after the call without manually unpacking bytes.
-    const RECT = koffi.struct('RECT', { left: 'int32', top: 'int32', right: 'int32', bottom: 'int32' });
-    GetWindowRect = user32.func('bool GetWindowRect(void*, _Out_ RECT*)', { RECT });
+    // NOTE: `_Out_` SAL qualifier requires a parameter name in koffi's
+    // prototype parser — leaving `_Out_ RECT*` unnamed makes koffi throw
+    // "Unexpected character '(' in type specifier" and abort all
+    // bindings (so the entire foreground-window module fails init,
+    // not just this one symbol). Always supply names alongside SAL.
+    // Also: Windows BOOL is `int`, not C99 `bool` — using `bool` is
+    // tolerated on most koffi builds but `int` matches the ABI exactly.
+    RECT_TYPE = koffi.struct('RECT', { left: 'int32', top: 'int32', right: 'int32', bottom: 'int32' });
+    // No SAL annotations on the prototype — we manage the RECT buffer
+    // ourselves via koffi.alloc/decode below. Avoids koffi version
+    // differences in how `_Out_` shapes the return value.
+    GetWindowRect = user32.func('int GetWindowRect(void *hwnd, void *rect)');
 
     supported = true;
     log.info('foreground-window: koffi user32 bindings ready.');
@@ -100,9 +113,15 @@ function detect() {
 
     let rect = null;
     if (isDialog) {
-      const r = { left: 0, top: 0, right: 0, bottom: 0 };
-      const ok = GetWindowRect(hwnd, r);
+      // Allocate a RECT-sized buffer and let user32 fill it; then
+      // decode the bytes back into a JS object via the registered
+      // struct type. This pattern works on every koffi 2.x build
+      // because it doesn't rely on koffi's auto-marshal of mutable
+      // JS objects (which differs between versions).
+      const buf = koffiRef.alloc(RECT_TYPE, 1);
+      const ok = GetWindowRect(hwnd, buf);
       if (ok) {
+        const r = koffiRef.decode(buf, RECT_TYPE);
         rect = {
           x: r.left,
           y: r.top,

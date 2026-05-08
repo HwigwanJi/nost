@@ -30,6 +30,7 @@ import type { AppNotification } from './types';
 import { runTopEscape } from './lib/escapeStack';
 import { ScanDialog } from './components/ScanDialog';
 import { SettingsDialog } from './components/SettingsDialog';
+import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
 import { RecommendPanel } from './components/RecommendPanel';
 import { useGhostCards } from './hooks/useGhostCards';
@@ -57,17 +58,46 @@ import Fuse from 'fuse.js';
 import { generateId } from './lib/utils';
 import { createLogger } from './lib/logger';
 import type { LauncherItem, Space } from './types';
+import { DEFAULT_WINDOW_SIZE_PCT } from './types';
 import { AppStateProvider, AppActionsProvider } from './contexts/AppContext';
 import type { AppActions, AppState } from './contexts/AppContext';
 import {
   DndContext,
   closestCorners,
+  pointerWithin,
+  rectIntersection,
   PointerSensor,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   DragOverlay,
 } from '@dnd-kit/core';
+
+// Pointer-priority collision detection.
+//
+// Default `closestCorners` ranks droppables by the dragged element's four
+// corners — fine for compact card sortables, terrible for the wide-space
+// reorder UX where the user intuitively aims with the cursor, not the
+// dragged rect's nearest corner. Symptom: dropping a wide space on the
+// right edge of another wide space silently lands on a *different* row
+// because the dragged left corner is closer to that other row's
+// droppable than the right corner is to the actual target.
+//
+// Strategy:
+//   1. `pointerWithin` first — any droppable whose rect literally
+//      contains the cursor wins. Matches user mental model 1:1.
+//   2. `rectIntersection` next — covers cases where the cursor is in a
+//      gap (between rows) but the dragged rect overlaps a droppable.
+//   3. `closestCorners` as a last resort so we never return [] when
+//      there *is* a sensible target nearby.
+const pointerFirstCollision: CollisionDetection = (args) => {
+  const p = pointerWithin(args);
+  if (p.length > 0) return p;
+  const r = rectIntersection(args);
+  if (r.length > 0) return r;
+  return closestCorners(args);
+};
 
 // ── Unified pointer sensor ──────────────────────────────────
 // One sensor handles BOTH left-click (space reorder) and right-click (card
@@ -204,9 +234,19 @@ function SortableSpace({
       ref={combinedNodeRef}
       data-space-id={id}
       style={{
-        transform: CSS.Transform.toString(transform),
+        // While THIS space is the active drag source, the visible
+        // cursor follower is provided by <DragOverlay /> (App.tsx,
+        // bottom of DndContext). Applying useSortable's translate
+        // transform on top of the overlay made the original drift
+        // diagonally underneath the ghost — the "우스꽝스러운 프리뷰"
+        // bug. Strip the transform when isDragging; the placeholder
+        // stays put so the layout doesn't reflow until drop. Other
+        // sortable peers still receive their reflow transform via
+        // the `transform` value (this only zeroes out for the active
+        // dragged element).
+        transform: isDragging ? 'none' : CSS.Transform.toString(transform),
         transition: resizing ? undefined : transition,
-        opacity: isDragging ? 0.45 : 1,
+        opacity: isDragging ? 0.35 : 1,
         height: '100%',
         position: 'relative',
         minWidth: 0,  // let grid tracks shrink without forcing overflow
@@ -1477,11 +1517,24 @@ export default function App() {
   }, [extConnected]);
 
   // ── Settings initial tab ──────────────────────────────────
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | undefined>(undefined);
-  const openSettingsTab = (tab: 'general' | 'monitor' | 'docs' | 'extension' | 'data') => {
+  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | 'account' | undefined>(undefined);
+  const openSettingsTab = (tab: 'general' | 'monitor' | 'docs' | 'extension' | 'data' | 'account') => {
     setSettingsInitialTab(tab);
     setDialog('settings');
   };
+
+  // Listen for `nost:open-settings` custom events from anywhere in the
+  // tree (e.g. StatusBar's AuthChip → 계정 tab). Decouples the chip
+  // from App's dialog state without prop-drilling through StatusBar.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { tab?: 'general' | 'monitor' | 'docs' | 'extension' | 'data' | 'account' } | undefined;
+      openSettingsTab(detail?.tab ?? 'general');
+    };
+    window.addEventListener('nost:open-settings', handler);
+    return () => window.removeEventListener('nost:open-settings', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Inactive window tracking ──────────────────────────────
   // Stale closures are fine here — we read data.spaces via a ref at tick
@@ -2839,10 +2892,14 @@ export default function App() {
     // continue with the normal drag-end logic below (sortable, etc.).
     closeBloom();
 
-    if (!over) return;
+    if (!over) {
+      appLog.info(`[drag] drop SWALLOWED — over=null, activeId=${active.id}`);
+      return;
+    }
 
     const activeId = active.id as string;
     const overId = over.id as string;
+    appLog.info(`[drag] drop START — activeId=${activeId} overId=${overId}`);
 
     // ── Drop onto node/deck building zones ──────────────
     if (overId === 'drop-node-building' && nodeEditMode) {
@@ -2888,13 +2945,13 @@ export default function App() {
     // Diagnostic for backlog #1 (empty-slot drop intermittent failures).
     // Logs which branch handles each drop so future failure reports can
     // be triaged from main.log instead of guesswork.
-    appLog.debug(`[drag] drop: activeId=${activeId} overId=${overId} from=${sourceSpace.id}`);
+    appLog.info(`[drag] drop: activeId=${activeId} overId=${overId} from=${sourceSpace.id}`);
 
     // Dropped onto a space droppable zone
     if (overId.startsWith('drop-space-')) {
       const toSpaceId = overId.replace('drop-space-', '');
       if (toSpaceId !== sourceSpace.id) {
-        appLog.debug(`[drag] branch=drop-space, cross-space → ${toSpaceId}`);
+        appLog.info(`[drag] branch=drop-space, cross-space → ${toSpaceId}`);
         store.moveItemToSpace(activeId, sourceSpace.id, toSpaceId);
         tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: toSpaceId });
       } else {
@@ -2902,7 +2959,7 @@ export default function App() {
         // user wants the card moved to the END of the same space. Without
         // this, dropping in same-space-empty was a silent no-op — backlog
         // #1's primary cause.
-        appLog.debug(`[drag] branch=drop-space, same-space → reorder to end`);
+        appLog.info(`[drag] branch=drop-space, same-space → reorder to end`);
         const items = sourceSpace.items;
         const oldIdx = items.findIndex(i => i.id === activeId);
         if (oldIdx !== -1 && oldIdx !== items.length - 1) {
@@ -2924,11 +2981,11 @@ export default function App() {
     const directSpaceMatch = data.spaces.find(s => s.id === overId);
     if (directSpaceMatch) {
       if (directSpaceMatch.id !== sourceSpace.id) {
-        appLog.debug(`[drag] branch=directSpaceMatch, cross-space → ${directSpaceMatch.id}`);
+        appLog.info(`[drag] branch=directSpaceMatch, cross-space → ${directSpaceMatch.id}`);
         store.moveItemToSpace(activeId, sourceSpace.id, directSpaceMatch.id);
         tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: directSpaceMatch.id });
       } else {
-        appLog.debug(`[drag] branch=directSpaceMatch, same-space — no-op`);
+        appLog.info(`[drag] branch=directSpaceMatch, same-space — no-op`);
       }
       return;
     }
@@ -2951,14 +3008,14 @@ export default function App() {
             const spaceId = el.dataset.spaceId;
             if (!spaceId) return;
             if (spaceId !== sourceSpace.id) {
-              appLog.debug(`[drag] branch=hit-test fallback, cross-space → ${spaceId}`);
+              appLog.info(`[drag] branch=hit-test fallback, cross-space → ${spaceId}`);
               store.moveItemToSpace(activeId, sourceSpace.id, spaceId);
               tutorialTriggers.fire('item-moved', { itemId: activeId, from: sourceSpace.id, to: spaceId });
             } else {
               // Same-space hit-test fallback — same as drop-space same-space:
               // move to the end. Without this, hit-test landed on source
               // space and silently no-op'd (backlog #1 secondary cause).
-              appLog.debug(`[drag] branch=hit-test fallback, same-space → reorder to end`);
+              appLog.info(`[drag] branch=hit-test fallback, same-space → reorder to end`);
               const items = sourceSpace.items;
               const oldIdx = items.findIndex(i => i.id === activeId);
               if (oldIdx !== -1 && oldIdx !== items.length - 1) {
@@ -2971,9 +3028,9 @@ export default function App() {
             return;
           }
         }
-        appLog.debug(`[drag] no branch matched — drop discarded. overId=${overId} px=${px} py=${py}`);
+        appLog.info(`[drag] no branch matched — drop discarded. overId=${overId} px=${px} py=${py}`);
       } else {
-        appLog.debug(`[drag] no branch matched — no activatorEvent. overId=${overId}`);
+        appLog.info(`[drag] no branch matched — no activatorEvent. overId=${overId}`);
       }
       return;
     }
@@ -3233,7 +3290,13 @@ export default function App() {
           style={{
             flex: 1,
             display: 'flex',
-            flexDirection: 'row',
+            // Glass card is now a COLUMN so the StatusBar (last child)
+            // can span full width at the bottom — previously it was
+            // a row, which left the bar tucked inside the main-content
+            // column and visually misaligned with NodePanel's bottom
+            // edge. The actual sidebar/main/right tri-column layout
+            // lives in the inner div below.
+            flexDirection: 'column',
             position: 'relative',
             background: 'var(--bg-rgba)',
             backdropFilter: 'blur(40px) saturate(140%)',
@@ -3245,6 +3308,11 @@ export default function App() {
             transition: 'border-color 0.15s',
           }}
         >
+        {/* Inner row: sidebar + main + right panel. Wraps the original
+            tri-column layout so the new StatusBar at the bottom isn't
+            forced into the row. flex:1 makes it consume all height
+            above the bar. */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'row', minHeight: 0 }}>
           {/* ── File drag pill banner ─────────────────── */}
           {/* Bottom-center pill instead of full overlay, so the user can see   */}
           {/* each SpaceAccordion's highlight and target a specific space.      */}
@@ -3299,7 +3367,7 @@ export default function App() {
           {/* ── Unified DnD: space grip (left-click) + card right-click drag ───── */}
           <DndContext
             sensors={allSensors}
-            collisionDetection={closestCorners}
+            collisionDetection={pointerFirstCollision}
             onDragStart={e => {
               const activeId = e.active.id as string;
               // Mark busy so auto-popups (welcome wizard, tour starts) defer
@@ -4109,62 +4177,6 @@ export default function App() {
 
           </div>
 
-          {/* ── Update progress strip ─────────────────── */}
-          {/* Slim persistent bar at the bottom of the main content column.     */}
-          {/* Visible during download and after download (until user installs). */}
-          {(downloadProgress != null || updateDownloaded) && (
-            <div style={{
-              flexShrink: 0,
-              borderTop: '1px solid var(--border-rgba)',
-              background: 'var(--surface)',
-              padding: '6px 14px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-            }}>
-              {updateDownloaded ? (
-                /* ── Downloaded: install button ── */
-                <>
-                  <Icon name="system_update" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
-                  <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>
-                    {updateNewVer ? `v${updateNewVer}` : '업데이트'} 준비됨
-                  </span>
-                  <button
-                    onClick={() => electronAPI.installUpdate()}
-                    style={{
-                      flexShrink: 0, padding: '4px 12px', borderRadius: 6,
-                      background: 'var(--accent)', border: 'none',
-                      color: '#fff', fontSize: 11, fontWeight: 600,
-                      cursor: 'pointer', fontFamily: 'inherit',
-                      display: 'flex', alignItems: 'center', gap: 5,
-                    }}
-                  >
-                    <Icon name="restart_alt" size={13} />
-                    재시작하여 설치
-                  </button>
-                </>
-              ) : (
-                /* ── Downloading: progress bar ── */
-                <>
-                  <Icon name="download" size={14} color="var(--text-dim)" style={{ flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 10, color: 'var(--text-dim)' }}>
-                      <span>{updateNewVer ? `v${updateNewVer} 다운로드 중...` : '업데이트 다운로드 중...'}</span>
-                      <span>{downloadProgress}%</span>
-                    </div>
-                    <div style={{ height: 3, background: 'var(--border-rgba)', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{
-                        width: `${downloadProgress}%`, height: '100%',
-                        background: 'var(--accent)', borderRadius: 2,
-                        transition: 'width 0.5s ease',
-                      }} />
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
           </div>{/* close main content */}
 
           {/* ── Right Panel: Node + Deck (tabs) ──── */}
@@ -4260,8 +4272,68 @@ export default function App() {
             )}
           </DragOverlay>
           </DndContext>
-        </div>
-      </div>
+        </div>{/* close inner-row */}
+
+        {/* ── Update progress strip — spans full glass-card width ──── */}
+        {(downloadProgress != null || updateDownloaded) && (
+          <div style={{
+            flexShrink: 0,
+            borderTop: '1px solid var(--border-rgba)',
+            background: 'var(--surface)',
+            padding: '6px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+          }}>
+            {updateDownloaded ? (
+              <>
+                <Icon name="system_update" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>
+                  {updateNewVer ? `v${updateNewVer}` : '업데이트'} 준비됨
+                </span>
+                <button
+                  onClick={() => electronAPI.installUpdate()}
+                  style={{
+                    flexShrink: 0, padding: '4px 12px', borderRadius: 6,
+                    background: 'var(--accent)', border: 'none',
+                    color: '#fff', fontSize: 11, fontWeight: 600,
+                    cursor: 'pointer', fontFamily: 'inherit',
+                    display: 'flex', alignItems: 'center', gap: 5,
+                  }}
+                >
+                  <Icon name="restart_alt" size={13} />
+                  재시작하여 설치
+                </button>
+              </>
+            ) : (
+              <>
+                <Icon name="download" size={14} color="var(--text-dim)" style={{ flexShrink: 0 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 10, color: 'var(--text-dim)' }}>
+                    <span>{updateNewVer ? `v${updateNewVer} 다운로드 중...` : '업데이트 다운로드 중...'}</span>
+                    <span>{downloadProgress}%</span>
+                  </div>
+                  <div style={{ height: 3, background: 'var(--border-rgba)', borderRadius: 2, overflow: 'hidden' }}>
+                    <div style={{
+                      width: `${downloadProgress}%`, height: '100%',
+                      background: 'var(--accent)', borderRadius: 2,
+                      transition: 'width 0.5s ease',
+                    }} />
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Persistent status bar — spans full glass-card width ───── */}
+        <StatusBar
+          sizePct={data.settings.windowSizePct ?? DEFAULT_WINDOW_SIZE_PCT}
+          onSizePctChange={(p) => store.updateSettings({ ...data.settings, windowSizePct: p })}
+        />
+
+        </div>{/* close glass-card */}
+      </div>{/* close outer fixed div */}
 
       {/* ── Node Tile Overlay (after split-screen launch) ─────── */}
       <TileOverlay

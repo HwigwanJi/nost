@@ -212,20 +212,24 @@ function setLoadingProgress(pct: number) {
 
 function dismissLoadingScreen() {
   const el = document.getElementById('ql-loading');
-  log.debug(`dismissLoadingScreen called, overlay=${!!el}`);
+  // Promoted to info: production debug logs are stripped, so we can't
+  // see whether dismiss fires in user logs. Without that visibility
+  // the boot-stuck path is undebuggable. Keep this until we have
+  // enough confidence the unified flow is reliable.
+  log.info(`[boot] dismissLoadingScreen called, overlay=${!!el}`);
   if (!el) return;
   setLoadingProgress(100);
   // Signal Electron main that renderer is fully ready — window will be shown now
-  log.debug('electronAPI.signalReady() →');
+  log.info('[boot] electronAPI.signalReady() →');
   electronAPI.signalReady();
   setTimeout(() => {
     el.classList.add('fade-out');
-    setTimeout(() => { el.remove(); log.debug('loading overlay removed'); }, 280);
+    setTimeout(() => { el.remove(); log.info('[boot] loading overlay removed'); }, 280);
   }, 150);
 }
 
 export function useAppData() {
-  log.debug('useAppData() function called');
+  log.info('[boot] useAppData() function called');
   // `raw` is the true on-disk shape (presets[] + globals). All mutating
   // callers still see a backward-compat "flat" view via `data` (below) — the
   // `save` shim intercepts their writes and redirects per-preset keys into
@@ -235,14 +239,20 @@ export function useAppData() {
 
   // On mount: load from electron-store (migrating from localStorage if needed)
   useEffect(() => {
-    log.debug('useAppData mount effect running');
+    log.info('[boot] useAppData mount effect running');
     setLoadingProgress(60);
+    // Push a status string into the in-window #ql-loading overlay.
+    // boot-recovery.js wires `window.__bootStatus` for both main-IPC
+    // and direct calls; this is the direct path used by React.
+    (window as { __bootStatus?: (s: string) => void }).__bootStatus?.('데이터 불러오는 중...');
     electronAPI.setLoadingStatus('데이터 불러오는 중...');
+    log.info('[boot] electronAPI.storeLoad() →');
     electronAPI.storeLoad().then(stored => {
       const hasStore = !!(stored && typeof stored === 'object' && (
         'presets' in (stored as AppData) || 'spaces' in (stored as AppData)
       ));
-      log.debug(`storeLoad resolved. hasStore=${hasStore}`);
+      log.info(`[boot] storeLoad resolved. hasStore=${hasStore}`);
+      (window as { __bootStatus?: (s: string) => void }).__bootStatus?.('마무리하는 중...');
       if (hasStore) {
         // Run the memo auto-purge sweep RIGHT after migration so the
         // first paint already reflects expired→trash and trash→deleted
@@ -264,11 +274,23 @@ export function useAppData() {
       }
       setLoadingProgress(90);
       electronAPI.setLoadingStatus('화면 그리는 중...');
+      // Notify the boot-gate orchestrator (AppShell) that data is
+      // ready. AppShell waits for this + auth + fonts before it
+      // dismisses the overlay. Going through a window event keeps
+      // useAppData's old call-site simple (no callback prop) and
+      // dodges a wider context refactor for a one-shot signal.
+      try { window.dispatchEvent(new Event('nost:store-ready')); } catch { /* noop */ }
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        log.debug('double-rAF fired → dismissLoadingScreen');
-        dismissLoadingScreen();
+        log.debug('double-rAF fired (store-ready dispatched)');
       }));
-    }).catch(err => log.error('storeLoad rejected', err));
+    }).catch(err => {
+      // Crucial: even if storeLoad rejects, dismiss the overlay so the
+      // user sees the (possibly empty) app shell rather than being
+      // stuck on the loading screen forever. signalReady() inside
+      // dismissLoadingScreen also unblocks main's window-show path.
+      log.error('storeLoad rejected — dismissing overlay anyway', err);
+      try { dismissLoadingScreen(); } catch (e) { log.error('dismiss after error failed', e); }
+    });
   }, []);
 
   // `raw` already has its top-level flat fields mirrored to the active preset
@@ -1209,6 +1231,14 @@ export function useAppData() {
     // Push autoHide to main's hot cache so the blur handler doesn't
     // have to re-read electron-store (which had a staleness bug).
     electronAPI.setAutoHide(!!settings.autoHide);
+    // Live-apply launcher window size %. Main owns the persistence
+    // path (it writes into electron-store's appData.settings directly)
+    // so we only fire when the value actually changed — sending it on
+    // every settings save would cause unnecessary setBounds churn.
+    if (typeof settings.windowSizePct === 'number' &&
+        settings.windowSizePct !== data.settings.windowSizePct) {
+      electronAPI.setWindowSizePct(settings.windowSizePct);
+    }
     save({ ...data, settings });
   }, [data, save]);
 

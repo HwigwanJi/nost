@@ -15,6 +15,24 @@ if (!__cachedHome) {
     || '';
 }
 
+// Recovery API consumed by the inline boot script in
+// `frontend/index.html`. Mirrors the API previously exposed only to
+// the external splash window's preload (preload-splash.js); duplicated
+// here so the in-window `#ql-loading` overlay can wire up restart /
+// open-logs buttons without going through the main `electronAPI`
+// (which carries a much larger surface area we don't want the boot
+// shell taking a hard dependency on).
+contextBridge.exposeInMainWorld('splashAPI', {
+  onError:  (cb) => ipcRenderer.on('boot:show-error', () => cb()),
+  // Receive status text updates from main (ext-warmup stages, etc.).
+  // The corresponding writer in main.js fires `boot:status` with a
+  // single string payload; boot-recovery.js routes it into the
+  // overlay's status text via `window.__bootStatus`.
+  onStatus: (cb) => ipcRenderer.on('boot:status', (_e, text) => cb(text)),
+  restart:  () => ipcRenderer.send('splash:restart'),
+  openLogs: () => ipcRenderer.send('splash:open-logs'),
+});
+
 contextBridge.exposeInMainWorld('electronAPI', {
   log: (level, msg, extra) => ipcRenderer.send('nost-log', level, msg, extra),
   openLogsFolder: () => ipcRenderer.send('open-logs-folder'),
@@ -23,6 +41,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   copyText: (text, closeAfter) => ipcRenderer.send('copy-text', text, closeAfter),
   hideApp: () => ipcRenderer.send('hide-app'),
   setOpacity: (opacity) => ipcRenderer.send('set-opacity', opacity),
+  setWindowSizePct: (pct) => ipcRenderer.send('set-window-size-pct', pct),
+  getResourceStats: () => ipcRenderer.invoke('get-resource-stats'),
   setSuppressAutoHide: (suppress, source) => ipcRenderer.send('set-suppress-autohide', !!suppress, source ?? 'default'),
   setAutoHide: (autoHide) => ipcRenderer.send('set-auto-hide', !!autoHide),
   readTextFile: (filePath, maxBytes) => ipcRenderer.invoke('read-text-file', filePath, maxBytes),

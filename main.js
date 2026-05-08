@@ -61,7 +61,13 @@ const store = new Store({ name: 'nost-data' });
 
 // ── 2. Module-level globals ──────────────────────────────────────────
 let mainWindow;
-let loadingWindow    = null;
+// Hot cache of the user's preferred launcher size as a % of the
+// active display's work area (25..100). Read once from electron-store
+// at app ready, mutated by every code path that resizes the launcher
+// (slash `/N`, status-bar slider, settings preset, IPC), applied at
+// cold-start window creation AND on every show (so a settings change
+// while hidden takes effect on the next pop-in).
+let cachedWindowSizePct = 100;
 // Renderer-controlled suppression of automatic dismissals. Multiple
 // independent sources can request suppression (clean mode, active
 // tutorial, …); ref-counted via a Set so source A's release doesn't
@@ -226,6 +232,55 @@ function getMonitorWorkArea(monitorIndex) {
     ? displays[monitorIndex - 1]
     : screen.getPrimaryDisplay();
   return { wa: disp.workArea, disp };
+}
+
+// ── PS-unaware work-area cache ──────────────────────────────────────
+//
+// Why this exists: every `run-tile-ps.ps1` invocation pays ~250-400 ms
+// just to `Add-Type -AssemblyName System.Windows.Forms` and enumerate
+// `[System.Windows.Forms.Screen]::AllScreens` so it can compute work
+// areas in DPI-unaware coordinates (which differ from Electron's DIP
+// coords on cross-DPI multi-monitor setups — see monitorEnvFor's
+// comment block). Those numbers don't change between tile calls UNLESS
+// the user's display configuration changes — plugging/unplugging a
+// monitor, swapping primary, changing scale factor, rotating, etc.
+//
+// So we cache them keyed by monitorIndex, capture them from the first
+// real PS run via the existing onLine stream, and serve them as env
+// vars on every subsequent run. Both the script header (diagnostic
+// block) and `Get-NativeWorkArea` then take a fast path that doesn't
+// touch System.Windows.Forms at all.
+//
+// Robustness: Electron's `screen` module emits the three events below
+// whenever Windows reports any layout change. We clear the entire
+// cache on any of them — the next tile call pays the enumeration cost
+// once to repopulate, then we're cheap again. This means a freshly-
+// plugged monitor is correctly tiled to without manual restart.
+const psWorkAreaCache = new Map();   // monitorIndex (number) → { X, Y, W, H }
+let psCacheLogged = false;           // suppress repeat "cache cleared" lines
+
+function clearPsWorkAreaCache(reason) {
+  if (psWorkAreaCache.size === 0) return;
+  psWorkAreaCache.clear();
+  if (!psCacheLogged) {
+    log.debug(`[tile-cache] cleared (${reason}) — next tile will repopulate from PS`);
+    psCacheLogged = true;
+    setTimeout(() => { psCacheLogged = false; }, 500);  // re-arm after burst settles
+  }
+}
+
+// Wire screen events as soon as Electron's app is ready. Wrapped in a
+// function so we can call it from app.whenReady (where `screen` is
+// guaranteed initialized) without polluting module load order.
+function bindMonitorChangeInvalidator() {
+  try {
+    const sc = getScreen();
+    sc.on('display-added',           (_e, d) => clearPsWorkAreaCache(`display-added id=${d?.id}`));
+    sc.on('display-removed',         (_e, d) => clearPsWorkAreaCache(`display-removed id=${d?.id}`));
+    sc.on('display-metrics-changed', (_e, d, changed) => clearPsWorkAreaCache(`display-metrics-changed id=${d?.id} changed=${(changed||[]).join(',')}`));
+  } catch (e) {
+    log.warn('[tile-cache] could not bind screen events:', e?.message);
+  }
 }
 
 /**
@@ -638,10 +693,32 @@ function handleDeepLink(url) {
 let pendingDeepLink = null;
 
 // ── 8. Splash Window ─────────────────────────────────────────────────
+// (removed) The external splash BrowserWindow used to be created here
+// while mainWindow loaded its frontend. We unified onto a single
+// loading surface: the in-window `#ql-loading` overlay defined in
+// `frontend/index.html`. mainWindow is now shown on `ready-to-show`
+// (same ~240 ms cold-start gate) so the user sees that overlay
+// directly, with no two-stage transition. Recovery UI (restart /
+// open-logs) lives inside the same overlay — see force-show-error
+// IPC below and the `#ql-loading` markup in index.html.
+// Stub: previously created an external glass splash BrowserWindow.
+// We now rely solely on the in-window `#ql-loading` overlay (see
+// frontend/index.html); mainWindow is shown on `ready-to-show` so
+// the user sees that overlay directly. Function kept (no-op) so any
+// stragglers calling it don't ReferenceError.
+function createLoadingWindow() { /* no-op — unified onto #ql-loading */ }
 
-function createLoadingWindow() {
-  loadingWindow = new BrowserWindow({
-    width: 300, height: 240,
+// Dead code below preserved temporarily so commit history shows
+// what the splash markup looked like; safe to delete in a follow-up.
+function _unused_legacySplashMarkup() {  // eslint-disable-line no-unused-vars
+  const loadingWindow = new BrowserWindow({
+    // Match the rough proportions of the in-window #ql-loading overlay
+    // (frontend/index.html). The user found phase 2's design more on-
+    // brand, so phase 1 (this external splash) was redesigned to share
+    // the same visual language: dark surface, square SVG logo, thin
+    // 2-px progress bar — no light glassmorphism, no gradient text,
+    // no spinner ring, no tips. Error-state retains its own buttons.
+    width: 240, height: 180,
     show: true, frame: false, transparent: true,
     resizable: false, alwaysOnTop: true, skipTaskbar: true, center: true,
     webPreferences: {
@@ -654,32 +731,65 @@ function createLoadingWindow() {
   const html = encodeURIComponent(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:transparent}
-body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%);border:1px solid rgba(255,255,255,0.9);box-shadow:0 8px 32px rgba(0,0,0,0.12),0 2px 8px rgba(0,0,0,0.08),inset 0 1px 0 #fff;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;user-select:none;-webkit-app-region:no-drag;padding:14px}
-.logo{font-size:34px;font-weight:800;letter-spacing:-2px;background:linear-gradient(135deg,#6366f1 0%,#818cf8 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.sub{font-size:11px;color:rgba(80,80,120,0.55);margin-top:5px;letter-spacing:0.5px;font-weight:500}
-.ring{margin-top:18px;width:22px;height:22px;border:2.5px solid rgba(99,102,241,0.18);border-top-color:#6366f1;border-radius:50%;animation:spin 0.75s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.tip{margin-top:20px;padding:8px 14px;background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.15);border-radius:8px;font-size:10px;color:rgba(80,80,120,0.65);line-height:1.5;text-align:center;max-width:240px;animation:fadeIn 0.6s ease 0.3s both}
-@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-.tip-label{font-size:9px;color:rgba(99,102,241,0.6);font-weight:600;letter-spacing:0.5px;margin-bottom:3px}
-.err-msg{font-size:11px;color:#b91c1c;margin-top:14px;text-align:center;line-height:1.5;padding:0 8px}
-.err-actions{display:flex;gap:8px;margin-top:12px;-webkit-app-region:no-drag}
-.btn{font-family:inherit;font-size:11px;padding:6px 12px;border-radius:6px;border:1px solid rgba(80,80,120,0.18);background:rgba(255,255,255,0.6);color:#374151;cursor:pointer;font-weight:500}
-.btn:hover{background:rgba(99,102,241,0.08);border-color:rgba(99,102,241,0.3)}
-.btn.primary{background:linear-gradient(135deg,#6366f1,#818cf8);color:white;border-color:transparent}
-.btn.primary:hover{filter:brightness(1.05)}
+html,body{width:100%;height:100%;background:transparent;overflow:hidden;user-select:none}
+body{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;
+  height:100vh;
+  background:rgba(5,5,8,0.97);
+  border:1px solid rgba(255,255,255,0.07);
+  border-radius:14px;
+  font-family:'Pretendard Variable',Pretendard,'Segoe UI',system-ui,sans-serif;
+  -webkit-app-region:drag;
+}
+.logo{
+  width:40px;height:40px;border-radius:12px;
+  background:rgba(99,102,241,0.12);
+  border:1px solid rgba(99,102,241,0.2);
+  display:flex;align-items:center;justify-content:center;
+  -webkit-app-region:no-drag;
+}
+.bar-wrap{
+  width:120px;height:2px;border-radius:99px;
+  background:rgba(255,255,255,0.06);overflow:hidden;
+}
+.bar{
+  height:100%;width:0%;border-radius:99px;
+  background:rgba(99,102,241,0.7);
+  animation:bar-init 1.2s cubic-bezier(0.4,0,0.2,1) forwards;
+}
+@keyframes bar-init{from{width:0%}to{width:35%}}
+.text{font-size:12px;color:rgba(255,255,255,0.3);letter-spacing:0.02em}
+.err-msg{font-size:11px;color:rgba(248,113,113,0.92);text-align:center;line-height:1.5;padding:0 14px}
+.err-actions{display:flex;gap:8px;-webkit-app-region:no-drag}
+.btn{
+  font-family:inherit;font-size:11px;padding:6px 12px;border-radius:6px;
+  border:1px solid rgba(255,255,255,0.08);
+  background:rgba(255,255,255,0.04);
+  color:rgba(255,255,255,0.7);cursor:pointer;font-weight:500;
+}
+.btn:hover{background:rgba(99,102,241,0.16);border-color:rgba(99,102,241,0.35)}
+.btn.primary{
+  background:rgba(99,102,241,0.7);color:#fff;border-color:transparent;
+}
+.btn.primary:hover{background:rgba(99,102,241,0.85)}
 .hidden{display:none}
 </style></head>
 <body>
-  <div id="loading-state">
-    <div class="logo">nost</div>
-    <div class="sub" id="ql-status">시작하는 중...</div>
-    <div class="ring"></div>
-    <div class="tip"><div class="tip-label">💡 팁</div>${getRandomTip()}</div>
+  <div id="loading-state" style="display:flex;flex-direction:column;align-items:center;gap:20px">
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(99, 102, 241, 0.9)"/>
+      </svg>
+    </div>
+    <div class="bar-wrap"><div class="bar"></div></div>
+    <div class="text">불러오는 중...</div>
   </div>
-  <div id="error-state" class="hidden">
-    <div class="logo" style="font-size:24px">nost</div>
+  <div id="error-state" class="hidden" style="flex-direction:column;align-items:center;gap:14px">
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(248, 113, 113, 0.9)"/>
+      </svg>
+    </div>
     <div class="err-msg">앱이 시작되지 못했어요.<br>네트워크 또는 데이터 폴더 문제일 수 있어요.</div>
     <div class="err-actions">
       <button class="btn" id="btn-logs">로그 보기</button>
@@ -692,7 +802,9 @@ body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%)
     if (window.splashAPI && window.splashAPI.onError) {
       window.splashAPI.onError(() => {
         document.getElementById('loading-state').classList.add('hidden');
-        document.getElementById('error-state').classList.remove('hidden');
+        const err = document.getElementById('error-state');
+        err.classList.remove('hidden');
+        err.style.display = 'flex';
       });
       document.getElementById('btn-restart').addEventListener('click', () => window.splashAPI.restart());
       document.getElementById('btn-logs').addEventListener('click', () => window.splashAPI.openLogs());
@@ -704,6 +816,7 @@ body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%)
 }
 
 // ── 9. Main Window ────────────────────────────────────────────────────
+//   (closing brace for the _unused_legacySplashMarkup wrapper above)
 
 /**
  * Register (or re-register) the global toggle shortcut.
@@ -787,6 +900,12 @@ function toggleMainWindow() {
       mainWindow.hide();
     } else {
       moveToCursorMonitor();
+      // Re-apply the saved size every time we pop in. moveToCursorMonitor
+      // may have parked the window on a different display (different
+      // work area), and the user may have changed `windowSizePct`
+      // while we were hidden — both paths land here. applyWindowSizePct
+      // recomputes against the *current* monitor's work area.
+      applyWindowSizePct(mainWindow, cachedWindowSizePct);
       const tMove = Date.now();
       mainWindow.show();
       mainWindow.focus();
@@ -846,6 +965,62 @@ function centeredBounds(pct = 75) {
     y: wa.y + Math.round((wa.height - h) / 2),
     width: w, height: h,
   };
+}
+
+/**
+ * SSOT for launcher resizing. Used by:
+ *   - cold-start (createWindow reads cachedWindowSizePct)
+ *   - showMainWindow (re-applies before show so an in-hidden settings
+ *     change takes effect on the next pop-in)
+ *   - `set-window-size-pct` IPC (status bar slider, preset dropdown,
+ *     settings dialog)
+ *   - `resize-active-window` IPC (`/N` slash command)
+ *
+ * Picks the work area of whichever display the window currently sits
+ * on (matches `/N`'s historical behaviour) and centers within it.
+ * `pct >= 100` collapses to "fill work area" so the slash `/100`
+ * still produces an exactly-fit window with no rounding wobble.
+ */
+function applyWindowSizePct(win, pct) {
+  if (!win || win.isDestroyed()) return;
+  const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
+  let wa;
+  try {
+    wa = getScreen().getDisplayMatching(win.getBounds()).workArea;
+  } catch {
+    wa = getScreen().getPrimaryDisplay().workArea;
+  }
+  if (clamped >= 100) {
+    win.setBounds({ x: wa.x, y: wa.y, width: wa.width, height: wa.height }, true);
+    return;
+  }
+  const w = Math.round(wa.width  * clamped / 100);
+  const h = Math.round(wa.height * clamped / 100);
+  win.setBounds({
+    x: wa.x + Math.round((wa.width  - w) / 2),
+    y: wa.y + Math.round((wa.height - h) / 2),
+    width: w, height: h,
+  }, true);
+}
+
+/**
+ * Write the size percentage into electron-store's appData.settings.
+ * Done from main (rather than asking the renderer to round-trip the
+ * full settings object) so origin-of-the-mutation doesn't matter:
+ * `/N` typed in the renderer command bar, the status-bar slider, the
+ * settings dialog preset, and the IPC handler all converge on the
+ * same persistence path. The renderer's reactive store will pick up
+ * the new value on its next load (and immediately for the
+ * `set-window-size-pct` flow because the renderer drove the change).
+ */
+function persistWindowSizePct(pct) {
+  try {
+    const data = store.get('appData') || {};
+    data.settings = { ...(data.settings || {}), windowSizePct: pct };
+    store.set('appData', data);
+  } catch (e) {
+    log.warn('[window-size] persist failed', e?.message);
+  }
 }
 
 // ── Floating orb window (Phase 1 MVP) ────────────────────────────────
@@ -1687,30 +1862,38 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'));
   }
 
-  // Show only after renderer signals it's fully loaded; 5 s safety fallback.
-  // Splash → main transition has TWO failure modes we now defend against:
-  //   1. renderer-ready IPC never fires (renderer threw mid-mount, IPC
-  //      bridge broken, etc.) → 5 s fallback shows mainWindow anyway.
-  //   2. Both fallback fires AND mainWindow renders blank (renderer
-  //      crashed) → at 8 s we open devtools so the user sees the
-  //      console error instead of a silent void.
-  // .destroy() over .close() — close is cancellable by 'close' event
-  // listeners (we don't have any but defensive); destroy is forced.
+  // Unified loading flow: mainWindow is shown as soon as Electron tells
+  // us the frame is composited (`ready-to-show`, ~250 ms cold-start),
+  // and the in-window `#ql-loading` overlay (defined in
+  // frontend/index.html) carries the visual until the renderer finishes
+  // hydrating + storeLoad resolves. The previous "wait for
+  // renderer-ready IPC" gate is gone — it was the source of stuck-on-
+  // loading reports, because if useAppData mounted but storeLoad never
+  // resolved, no IPC fired and the app stalled behind the splash.
+  //
+  // Two safety nets remain:
+  //   - 5 s fallback: shows mainWindow even if `ready-to-show` never
+  //     fires (very rare on Windows; defensive only).
+  //   - 8 s force-error: if the renderer is still showing `#ql-loading`
+  //     8 s in, push an IPC asking it to swap to the error panel
+  //     (restart + open-logs buttons). DevTools is opened concurrently
+  //     so the underlying exception is visible.
   let windowShown = false;
   const showMainWindow = (reason) => {
     if (windowShown) { rdbg(`showMainWindow skipped (already shown) reason=${reason}`); return; }
     windowShown = true;
     rdbg(`showMainWindow firing. reason=${reason}`);
-    if (loadingWindow && !loadingWindow.isDestroyed()) {
-      loadingWindow.destroy();
-      loadingWindow = null;
-    }
     mainWindow.show();
     mainWindow.focus();
   };
-  ipcMain.once('renderer-ready', () => { rdbg('IPC: renderer-ready received'); showMainWindow('renderer-ready'); });
 
-  // Splash recovery actions — only used when boot-stuck error UI fires
+  mainWindow.once('ready-to-show', () => showMainWindow('ready-to-show'));
+
+  // Recovery actions — invoked from the in-window `#ql-loading` error
+  // panel. Channel names retained from the old external splash so the
+  // preload script (preload-splash.js, no longer used by a splash
+  // window but still semantically the same surface) and any frontend
+  // listeners don't need renaming.
   ipcMain.on('splash:restart', () => {
     log.info('[splash] user clicked restart');
     app.relaunch();
@@ -1719,29 +1902,23 @@ function createWindow() {
   ipcMain.on('splash:open-logs', () => {
     try { shell.showItemInFolder(log.transports.file.getFile().path); } catch (e) { log.warn('[splash] open-logs failed', e?.message); }
   });
+
+  // Defensive: ensure the user never stares at a hidden window. If
+  // ready-to-show somehow never fires, force a show at 5 s.
   setTimeout(() => showMainWindow('5s-fallback'), 5000);
-  // Diagnostic: if 8 s in we still haven't transitioned, the renderer
-  // is wedged — open devtools so the user sees the console error and
-  // signal the splash to swap to its error state (restart + open logs
-  // buttons). Better than a silent dark splash.
+
+  // Force-error path. After 8 s, if the renderer hasn't called
+  // signalReady() (which fires `renderer-ready` from
+  // dismissLoadingScreen), assume mount stalled and tell it to
+  // surface the recovery UI inside `#ql-loading`.
+  let rendererReady = false;
+  ipcMain.once('renderer-ready', () => { rendererReady = true; rdbg('IPC: renderer-ready received'); });
   setTimeout(() => {
-    if (!windowShown) {
-      log.warn('[boot-stuck] renderer-ready not received in 8s — opening devtools + splash error state');
-      try { mainWindow.webContents.openDevTools({ mode: 'detach' }); } catch (e) { log.warn('[boot-stuck] devtools open failed', e?.message); }
-      // Don't kill the splash here — the user needs the restart button.
-      // Instead toggle splash to error UI and leave mainWindow shown
-      // behind it (devtools console attached) for diagnosis.
-      if (loadingWindow && !loadingWindow.isDestroyed()) {
-        try { loadingWindow.webContents.send('splash:show-error'); } catch (e) { log.warn('[boot-stuck] splash signal failed', e?.message); }
-      }
-      // Show mainWindow but DON'T destroy splash — splash stays on top
-      // with the recovery UI. windowShown guard still trips so any
-      // later renderer-ready won't fight us.
-      if (!windowShown) {
-        windowShown = true;
-        try { mainWindow.show(); mainWindow.focus(); } catch { /* no-op */ }
-      }
-    }
+    if (rendererReady) return;
+    log.warn('[boot-stuck] renderer-ready not received in 8s — opening devtools + asking renderer to show error state');
+    try { mainWindow.webContents.openDevTools({ mode: 'detach' }); } catch (e) { log.warn('[boot-stuck] devtools open failed', e?.message); }
+    try { mainWindow.webContents.send('boot:show-error'); } catch (e) { log.warn('[boot-stuck] in-window error signal failed', e?.message); }
+    showMainWindow('boot-stuck');
   }, 8000);
 
   // Accept renderer-side logs (explicit, typed level)
@@ -1757,18 +1934,40 @@ function createWindow() {
     shell.showItemInFolder(logFile);
   });
 
-  // Relay loading-status messages from renderer to the splash window
-  ipcMain.on('set-loading-status', (_, msg) => {
-    if (!loadingWindow || loadingWindow.isDestroyed()) return;
-    const safe = JSON.stringify(String(msg));
-    loadingWindow.webContents
-      .executeJavaScript(`var el=document.querySelector('#ql-status');if(el)el.textContent=${safe};`)
-      .catch(() => {});
-  });
+  // Relay loading-status messages from renderer (no-op now). The
+  // external splash that consumed these is gone; the in-window
+  // `#ql-loading` overlay updates its own text directly via DOM, so
+  // this IPC is purely vestigial. Kept as a swallow to avoid
+  // breaking the renderer's `electronAPI.setLoadingStatus()` call.
+  ipcMain.on('set-loading-status', () => { /* no-op */ });
 
   // Initialise the autoHide cache from disk so the very first blur
   // (before the renderer has had a chance to push) reads a sane value.
   cachedAutoHide = !!store.get('appData')?.settings?.autoHide;
+
+  // Same for the saved launcher size %. Apply BEFORE the window's
+  // first show so the user never sees a 100% → snap-to-saved flash.
+  const savedPct = Number(store.get('appData')?.settings?.windowSizePct);
+  if (Number.isFinite(savedPct) && savedPct >= 25 && savedPct <= 100) {
+    cachedWindowSizePct = Math.round(savedPct);
+    applyWindowSizePct(mainWindow, cachedWindowSizePct);
+  }
+
+  // Force webContents zoom back to 1.0 on every load. The previous
+  // build briefly used `webContents.setZoomFactor()` for "창 크기"
+  // before we switched to physical setBounds (which is the correct
+  // semantic — see settings.windowSizePct). Chromium persists zoom
+  // factor per-origin in its own storage, so users who ran the bad
+  // build still have e.g. 2.0× content zoom stuck on file:// — text
+  // appears huge in SignInScreen / settings until explicitly reset.
+  // setZoomLevel(0) === setZoomFactor(1.0); we use both setters for
+  // belt-and-suspenders since some Electron versions only honour one.
+  mainWindow.webContents.on('did-finish-load', () => {
+    try {
+      mainWindow.webContents.setZoomLevel(0);
+      mainWindow.webContents.setZoomFactor(1.0);
+    } catch (e) { log.warn('[zoom-reset] failed', e?.message); }
+  });
 
   // Auto-hide on focus loss. Funnel through the single dismissal
   // policy — same place blur, closeAfter, and any future automatic
@@ -2077,7 +2276,75 @@ function registerIpcHandlers() {
 
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() ?? [0, 0]);
 
+  // Resource snapshot for the status bar's CPU / RAM monitor. Aggregates
+  // every Electron process (main, renderer, GPU, utility) via
+  // `app.getAppMetrics()`. Returning a single rollup keeps the status
+  // bar simple — users don't care which sub-process owns which slice,
+  // only "is the launcher heavy right now".
+  //
+  //   - cpuPct: % of TOTAL system CPU (0..100). Electron's
+  //     `percentCPUUsage` is per-core (100 == one full core), so a
+  //     naive sum can hit 800+ on an 8-core CPU during a render
+  //     burst, which reads to users as "the launcher is eating my
+  //     PC". We normalize against `os.cpus().length` so the number
+  //     is comparable to Task Manager's overall CPU column.
+  //   - memMB:  resident RAM in megabytes. Sum across procs.
+  //     workingSet is the closest analogue to what Task Manager
+  //     shows on Windows.
+  //   - procs:  process count, useful for spotting GPU/utility leaks.
+  //   - perProc: optional list of {type, cpuPct, memMB} for the
+  //     status-bar tooltip. Lets curious users see who's using what
+  //     without forcing the always-visible label to look noisy.
+  const os = require('os');
+  ipcMain.handle('get-resource-stats', () => {
+    try {
+      const metrics = app.getAppMetrics();
+      const cores = Math.max(1, os.cpus()?.length || 1);
+      let cpuRawSum = 0;     // sum of per-core percentages (0..cores*100)
+      let memKB = 0;
+      const perProc = metrics.map(m => {
+        const c = m.cpu?.percentCPUUsage ?? 0;
+        const k = m.memory?.workingSetSize ?? 0;
+        cpuRawSum += c;
+        memKB     += k;
+        return {
+          type:   m.type || 'unknown',
+          cpuPct: Math.round((c / cores) * 10) / 10,
+          memMB:  Math.round(k / 1024),
+        };
+      });
+      const cpuPctNormalized = Math.min(100, cpuRawSum / cores);
+      return {
+        cpuPct: Math.round(cpuPctNormalized * 10) / 10,    // % of total system CPU
+        memMB:  Math.round(memKB / 1024),                  // KB → MB
+        procs:  metrics.length,
+        cores,
+        perProc,
+      };
+    } catch (e) {
+      log.warn('[resource-stats] failed', e?.message);
+      return { cpuPct: 0, memMB: 0, procs: 0, cores: 1, perProc: [] };
+    }
+  });
+
   ipcMain.on('set-opacity', (_, opacity) => mainWindow?.setOpacity(opacity));
+
+  // Launcher size as % of the active monitor's work area. SSOT for
+  // every resize code path (/N slash, slider, preset, settings). The
+  // handler clamps to the valid range, persists into electron-store,
+  // updates the in-memory cache, and applies setBounds. Persistence
+  // is done from main rather than relying on the renderer's
+  // updateSettings round-trip so /N (which originates in the
+  // renderer's command bar but lands here via resize-active-window
+  // too) and settings stay perfectly in sync.
+  ipcMain.on('set-window-size-pct', (_, pct) => {
+    const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
+    cachedWindowSizePct = clamped;
+    persistWindowSizePct(clamped);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      applyWindowSizePct(mainWindow, clamped);
+    }
+  });
   ipcMain.on('set-suppress-autohide', (_, suppress, source = 'default') => {
     if (suppress) suppressAutoHideSources.add(source);
     else suppressAutoHideSources.delete(source);
@@ -2867,18 +3134,15 @@ function registerIpcHandlers() {
   ipcMain.handle('resize-active-window', async (event, { pct }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return { success: false };
-    const wa = getScreen().getDisplayMatching(win.getBounds()).workArea;
-    if (pct >= 100) {
-      win.setBounds({ x: wa.x, y: wa.y, width: wa.width, height: wa.height }, true);
-    } else {
-      const w = Math.round(wa.width  * pct / 100);
-      const h = Math.round(wa.height * pct / 100);
-      win.setBounds({
-        x: wa.x + Math.round((wa.width  - w) / 2),
-        y: wa.y + Math.round((wa.height - h) / 2),
-        width: w, height: h,
-      }, true);
-    }
+    // Funnel through the SSOT resize helper so `/N` matches the slider
+    // and preset paths byte-for-byte. Persist the new pct into
+    // settings so subsequent invocations (cold start, show after
+    // hide, hidden→show settings change) reuse it — the user's
+    // "code policy unification" requirement.
+    const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
+    applyWindowSizePct(win, clamped);
+    cachedWindowSizePct = clamped;
+    persistWindowSizePct(clamped);
     return { success: true };
   });
 
@@ -3031,8 +3295,30 @@ function registerIpcHandlers() {
     const flagged    = identifiers.map(item => ({
       ...item, isBrowser: item.type === 'url' || item.type === 'browser',
     }));
+
+    // Fast path env: when we have a cached PS-unaware work area for this
+    // monitor, hand it to PS so the script can skip Add-Type
+    // System.Windows.Forms (~250-400 ms first-time) and the monitor
+    // enumeration loop. Cache invalidates on every Electron display
+    // event, so a stale value can only persist within a single tile
+    // invocation — not across configuration changes.
+    const cachedWA = psWorkAreaCache.get(monitor);
+    const cacheEnv = cachedWA ? {
+      QL_PS_WA_X: String(cachedWA.X),
+      QL_PS_WA_Y: String(cachedWA.Y),
+      QL_PS_WA_W: String(cachedWA.W),
+      QL_PS_WA_H: String(cachedWA.H),
+      QL_SKIP_MONITOR_DIAG: '1',
+    } : {};
+    if (cachedWA) {
+      log.debug(`[tile-cache] using cached PS-WA for monitor=${monitor}: (${cachedWA.X},${cachedWA.Y},${cachedWA.W}x${cachedWA.H})`);
+    } else {
+      log.debug(`[tile-cache] miss for monitor=${monitor} — PS will enumerate, capturing for next call`);
+    }
+
     const psPromise  = runPsAsync('run-tile-ps.ps1', {
       ...monitorEnvFor(monitor),
+      ...cacheEnv,
       QL_ITEMS: JSON.stringify(flagged),
     }, {
       timeout: 60000,  // PS's internal deadline is 45s + settle passes; breathing room
@@ -3041,7 +3327,22 @@ function registerIpcHandlers() {
       // — e.g. waiting for Office splash window — this lets us distinguish
       // "still searching" from "hung" in real time instead of staring at a
       // silent log for 45 s and assuming tiling failed.
-      onLine: (line) => log.debug(`[tile/ps] ${line}`),
+      // While we're at it, sniff for the "[diag] picked PS-enum mon#K"
+      // line so we can populate `psWorkAreaCache` from the first run's
+      // enumeration result. The regex is the only piece of this that's
+      // tightly coupled to PS output format — _Position.ps1's
+      // Get-NativeWorkArea owns that line, so changes to its format
+      // need to update both sides.
+      onLine: (line) => {
+        log.debug(`[tile/ps] ${line}`);
+        if (cachedWA) return;  // already cached this run
+        const m = /\[diag\] picked PS-enum mon#(\d+).*work=\((-?\d+),(-?\d+),(\d+)x(\d+)\)/.exec(line);
+        if (m && Number(m[1]) === Number(monitor)) {
+          const wa = { X: Number(m[2]), Y: Number(m[3]), W: Number(m[4]), H: Number(m[5]) };
+          psWorkAreaCache.set(monitor, wa);
+          log.debug(`[tile-cache] captured PS-WA for monitor=${monitor}: (${wa.X},${wa.Y},${wa.W}x${wa.H})`);
+        }
+      },
     })
       .then(() => ({ success: true, error: '' }))
       .catch(err => ({ success: false, error: err.message }));
@@ -3743,6 +4044,10 @@ app.whenReady().then(() => {
   // Show splash immediately to provide visual feedback during cold start
   createLoadingWindow();
   startExtServer();
+  // Listen for monitor add/remove/metrics changes so the PS work-area
+  // cache invalidates whenever the display layout changes. Without
+  // this, a tile after unplugging a monitor would land on a phantom.
+  bindMonitorChangeInvalidator();
 
   // Apply Content Security Policy to all renderer page loads.
   // In dev mode (Vite dev server), allow inline scripts + ws:// connections so
@@ -3770,9 +4075,30 @@ app.whenReady().then(() => {
 
   createWindow();
 
-  // Spawn the floating orb if the user has it enabled. Delayed a tick so
-  // the main window initializes first — avoids a perceived double-flash.
-  setTimeout(() => syncFloatingWindow(), 200);
+  // Floating orb + pinned-badge BrowserWindow spawn is DEFERRED to
+  // after the renderer signals boot complete (`renderer-ready`).
+  // Reason: each BrowserWindow allocation hits Chromium's GPU disk
+  // cache + GL context init, and cold-start collisions between the
+  // main window, the orb, and N pinned badges all racing each
+  // other was the cause of the desktop-wide mouse stutter the user
+  // reported. The IPC handler below stages them with 150 ms gaps so
+  // the GPU compositor can settle between allocations.
+  let deferredWindowsSpawned = false;
+  const spawnDeferredWindows = () => {
+    if (deferredWindowsSpawned) return;
+    deferredWindowsSpawned = true;
+    log.debug('[boot] spawning deferred windows (orb + badges) with stagger');
+    // Orb first — solo, lightweight.
+    setTimeout(() => { try { syncFloatingWindow(); } catch (e) { log.warn('[boot] syncFloatingWindow failed', e?.message); } }, 0);
+    // Badges next — may be many, but they batch internally; one extra
+    // tick of breathing room is plenty.
+    setTimeout(() => { try { syncBadgeOverlay(); } catch (e) { log.warn('[boot] syncBadgeOverlay failed', e?.message); } }, 150);
+  };
+  ipcMain.once('renderer-ready', spawnDeferredWindows);
+  // Safety net: if renderer-ready never lands (boot-stuck path), still
+  // spawn deferred windows after 6 s so the user doesn't lose their
+  // pinned badges/orb forever.
+  setTimeout(spawnDeferredWindows, 6000);
 
   // ── Extension warmup: nudge the Chrome extension at startup ──
   // The MV3 service worker may be asleep when nost finishes loading,
@@ -3787,25 +4113,66 @@ app.whenReady().then(() => {
   //   (2) If SSE is not yet connected, the call no-ops. We just keep
   //       polling — once the extension's SW reconnects it'll send
   //       its initial sendTabs() and our `lastTabsUpdateAt` updates.
-  let extWarmupAttempts = 0;
-  const extWarmupTimer = setInterval(() => {
-    extWarmupAttempts += 1;
-    const haveTabs = lastTabsUpdateAt > 0 && global.chromeTabs?.length > 0;
-    if (haveTabs || extWarmupAttempts >= 8) {
-      clearInterval(extWarmupTimer);
-      log.debug(`[ext-warmup] done after ${extWarmupAttempts} attempt(s) · tabs=${global.chromeTabs?.length ?? 0}`);
-      return;
-    }
-    if (sseConnection) {
-      const sent = sendSse({ action: 'refreshTabs' });
-      log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: refreshTabs sent=${sent}`);
-    } else {
-      log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: no SSE conn yet`);
-    }
-  }, 1500);
+  // Helper: push a status string into the renderer's #ql-loading
+  // overlay. No-op once the overlay is gone (the renderer's
+  // __bootStatus guards that). Wrapped for safety; if mainWindow's
+  // webContents is mid-teardown we just swallow.
+  const sendBootStatus = (text) => {
+    try { mainWindow?.webContents?.send('boot:status', text); }
+    catch { /* webContents gone — boot finished or destroyed */ }
+  };
 
-  // Restore floating badges if any were pinned in a previous session.
-  setTimeout(() => syncBadgeOverlay(), 300);
+  // Granular cold-start breadcrumbs. Each timer is short enough that
+  // even on a fast machine (overlay dismissed in ~1 s) the user sees
+  // at least the first 2-3 messages cycle. On a slow first-launch
+  // (Defender scan + GPU cache create) the sequence stretches and
+  // every phase becomes visible — Adobe's loading dialog plays the
+  // same trick. Order roughly mirrors the real cold-start work
+  // happening in main + renderer.
+  setTimeout(() => sendBootStatus('Electron 런타임 준비 중...'),       150);
+  setTimeout(() => sendBootStatus('네이티브 바인딩 로드 중...'),       500);
+  setTimeout(() => sendBootStatus('데이터 폴더 확인 중...'),           900);
+  setTimeout(() => sendBootStatus('브라우저 확장 연결 확인 중...'),   1400);
+  setTimeout(() => sendBootStatus('글꼴 캐시 워밍업 중...'),          1900);
+  setTimeout(() => sendBootStatus('UI 그리는 중...'),                  2500);
+  setTimeout(() => sendBootStatus('단축키 등록 중...'),                3100);
+  setTimeout(() => sendBootStatus('마지막 점검 중...'),                3700);
+  setTimeout(() => sendBootStatus('곧 시작합니다...'),                 4300);
+
+  // ext-warmup is DEFERRED until after the renderer signals it's
+  // mounted. Reasons:
+  //   - The setInterval ticks themselves are cheap, but they overlap
+  //     with the heaviest cold-start window (GPU cache build +
+  //     Defender scan + font parse). Pushing them past renderer-ready
+  //     keeps the first 1-2 s of system resources entirely on the
+  //     critical path.
+  //   - The "extension not detected" toast that fires on warmup
+  //     failure is what the user perceives as "lag end" — but warmup
+  //     polling running early means that toast can't fire until 12 s
+  //     in. Starting later lets the toast appear sooner relative to
+  //     the user's interaction time.
+  ipcMain.once('renderer-ready', () => {
+    let extWarmupAttempts = 0;
+    const extWarmupTimer = setInterval(() => {
+      extWarmupAttempts += 1;
+      const haveTabs = lastTabsUpdateAt > 0 && global.chromeTabs?.length > 0;
+      if (haveTabs || extWarmupAttempts >= 8) {
+        clearInterval(extWarmupTimer);
+        log.debug(`[ext-warmup] done after ${extWarmupAttempts} attempt(s) · tabs=${global.chromeTabs?.length ?? 0}`);
+        return;
+      }
+      if (sseConnection) {
+        const sent = sendSse({ action: 'refreshTabs' });
+        log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: refreshTabs sent=${sent}`);
+      } else {
+        log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: no SSE conn yet`);
+      }
+    }, 1500);
+  });
+
+  // (deferred — see spawnDeferredWindows above. Pinned badges restore
+  // after renderer signals boot complete to avoid cold-start GPU
+  // contention.)
 
   // Notify renderer whenever monitor configuration changes
   const screen = getScreen();

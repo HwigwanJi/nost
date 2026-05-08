@@ -363,29 +363,12 @@ export function NodePanel({
             )}
           </div>
 
-          {/* ── Bottom add buttons ────────────────── */}
-          {!nodeEditMode && !deckBuilding && (
-            <div style={{ padding: '6px 8px 8px', flexShrink: 0, borderTop: '1px solid var(--border-rgba)', display: 'flex', gap: 5 }}>
-              {(filter === 'all' || filter === 'node') && (
-                <button onClick={onStartEdit}
-                  style={{ flex: 1, padding: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'transparent', border: '1.5px dashed var(--border-rgba)', borderRadius: 8, cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10, fontFamily: 'inherit', transition: 'all 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; e.currentTarget.style.color = 'var(--text-dim)'; }}>
-                  <Icon name="hub" size={13} />
-                  {filter === 'node' || filter === 'all' ? '노드' : ''}
-                </button>
-              )}
-              {(filter === 'all' || filter === 'deck') && (
-                <button onClick={onStartDeckBuild}
-                  style={{ flex: 1, padding: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'transparent', border: '1.5px dashed var(--border-rgba)', borderRadius: 8, cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10, fontFamily: 'inherit', transition: 'all 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = DECK_COLOR; e.currentTarget.style.color = DECK_COLOR; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; e.currentTarget.style.color = 'var(--text-dim)'; }}>
-                  <Icon name="stacks" size={13} />
-                  {filter === 'deck' || filter === 'all' ? '덱' : ''}
-                </button>
-              )}
-            </div>
-          )}
+          {/* Bottom 노드/덱 add buttons removed — the sidebar
+              already exposes both modes (lightbulb/hub/stacks icons),
+              and a duplicate row at the panel's bottom collided
+              visually with the new full-width StatusBar (different
+              border-top alignment, dashed vs solid). Single entry
+              point per mode keeps the affordance unambiguous. */}
         </>
       )}
     </div>
