@@ -37,6 +37,7 @@ export interface ElectronAPI {
   }>;
   setSuppressAutoHide: (suppress: boolean, source?: string) => void;
   setAutoHide: (autoHide: boolean) => void;
+  setWindowOpenAt: (mode: 'cursor' | 'last') => void;
   readTextFile: (filePath: string, maxBytes?: number) => Promise<
     | { ok: true; text: string; encoding: string }
     | { ok: false; reason: 'too-large' | 'read-error'; size?: number; error?: string }
@@ -191,6 +192,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   getResourceStats: async () => ({ cpuPct: 0, memMB: 0, procs: 0, cores: 1, perProc: [] }),
   setSuppressAutoHide: noop,
   setAutoHide: noop,
+  setWindowOpenAt: noop,
   readTextFile: async () => ({ ok: false, reason: 'read-error', error: 'dev-mode' }),
   authGetSession: async () => null,
   authSetSession: async () => true,

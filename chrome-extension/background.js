@@ -1,4 +1,13 @@
 const SERVER_URL = 'http://127.0.0.1:14502';
+const RECONNECT_ALARM = 'nost-reconnect';
+// Exponential-backoff schedule for reconnect attempts, in minutes.
+// Chrome enforces a 0.5 min minimum on `chrome.alarms.create`, so the
+// first slot is exactly that. We grow up to ~5 min so a user who
+// hasn't run nost for hours doesn't keep their service worker
+// flickering on/off every 30 s — a real concern on laptops where
+// every SW wake delays deep sleep.
+const RECONNECT_BACKOFF_MIN = [0.5, 1, 2, 5];
+let reconnectAttempt = 0;
 
 // --- State shared with popup ---
 let tabCount = 0;
@@ -8,6 +17,10 @@ let isConnected = false;
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_STATUS') {
     sendResponse({ tabCount, isConnected });
+  } else if (message.type === 'FORCE_RECONNECT') {
+    // Popup → "재연결" button. Treat as user-initiated reset.
+    connectSSE();
+    sendResponse({ ok: true });
   }
   return true; // keep channel open for async
 });
@@ -91,6 +104,11 @@ async function connectSSE() {
     }
 
     isConnected = true;
+    // Success — drop the reconnect alarm and reset the backoff so
+    // the next failure starts fresh at 30 s instead of remembering
+    // we were at the 5 min step.
+    reconnectAttempt = 0;
+    try { chrome.alarms.clear(RECONNECT_ALARM); } catch (e) { /* ignore */ }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -160,15 +178,84 @@ async function connectSSE() {
       // Intentional disconnect — do not reconnect
       return;
     }
-    // Network error or server closed — reconnect after 3s
+    // Network error or server closed — fall through to scheduled reconnect.
   } finally {
     isConnected = false;
   }
 
-  // Reconnect after a short delay
-  setTimeout(() => connectSSE(), 3000);
+  // Reconnect strategy — two paths, both lightweight.
+  //
+  //   1. Fast in-process retry (2 s) while the service worker is
+  //      still alive. Covers the typical nost auto-update gap.
+  //   2. chrome.alarms backup with exponential backoff. Survives
+  //      service-worker termination — historically the bug was that
+  //      setTimeout vanished with the SW, leaving the extension
+  //      permanently dead until a user action woke it.
+  //
+  // We deliberately do NOT run a periodic keepalive alarm. The
+  // server-side SSE heartbeat (15 s comment lines) already keeps
+  // the SW alive while connected; running an extra alarm when not
+  // connected would only waste laptop battery (Chrome refuses
+  // periods shorter than 30 s anyway). The exponential backoff
+  // means that if the user has nost closed for hours, the alarm
+  // settles to once-per-5-min instead of hammering forever.
+  setTimeout(() => connectSSE(), 2000);
+  scheduleReconnectAlarm();
 }
 
-// --- Startup ---
+// ── Service-worker resilience ─────────────────────────────────────────
+//
+// MV3 service workers are terminated after ~30 s of no activity, taking
+// every pending setTimeout / setInterval with them. `chrome.alarms` is
+// the one timer mechanism that wakes the SW even after termination.
+//
+// Steady-state cost:
+//   - Connected: SSE heartbeat keeps SW alive; zero alarms.
+//   - Disconnected: ONE pending alarm at any time; backoff 30 s → 5 min.
+//
+// `chrome.runtime.onStartup` and `chrome.runtime.onInstalled` cover
+// the cold-Chrome-launch case (no event fires at startup unless we
+// register a listener for those specific lifecycle events).
+//
+// Browser compatibility: identical Chromium APIs in both Chrome and
+// Naver Whale, so this code is shipped as-is to both stores. The
+// `chrome.*` namespace is the Chromium MV3 standard; Whale aliases
+// it natively.
+
+function scheduleReconnectAlarm() {
+  // Pick the next backoff slot. Chrome enforces 0.5 min minimum on
+  // delayInMinutes; values smaller than that get silently clamped.
+  // We also cap at the longest slot so a chronically-down nost
+  // doesn't endlessly grow the delay.
+  const slot = Math.min(reconnectAttempt, RECONNECT_BACKOFF_MIN.length - 1);
+  const delay = RECONNECT_BACKOFF_MIN[slot];
+  reconnectAttempt++;
+  try { chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: delay }); } catch (e) { /* ignore */ }
+}
+
+function ensureConnected() {
+  if (isConnected) return;
+  connectSSE();
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === RECONNECT_ALARM) {
+    ensureConnected();
+  }
+});
+
+// Cold-launch + new-install hooks. The SW wouldn't otherwise wake on
+// browser startup unless a tab event fires; without this hook we'd
+// leak nost-update disconnects across browser restarts.
+chrome.runtime.onStartup.addListener(() => {
+  reconnectAttempt = 0; // user reopened browser — try eagerly
+  ensureConnected();
+});
+chrome.runtime.onInstalled.addListener(() => {
+  reconnectAttempt = 0;
+  ensureConnected();
+});
+
+// --- Startup (module evaluation — runs every SW respawn) ---
 sendTabs();
 connectSSE();

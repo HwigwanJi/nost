@@ -204,6 +204,19 @@ export interface AppSettings {
    * subsequent invocation.
    */
   windowSizePct?: number;
+  /**
+   * Where to place the launcher window when it opens.
+   *   'cursor' → centre on the monitor that currently has the mouse
+   *              cursor (default; matches "go to the screen the user
+   *              is looking at" intuition for global-shortcut triggers)
+   *   'last'   → restore the last on-screen position the user had it
+   *              at; persists across hide/show. Useful for users who
+   *              keep the launcher pinned in a corner and don't want
+   *              it teleporting between monitors.
+   * Setting is read in `toggleMainWindow` (main.js). Defaults to
+   * 'cursor' to preserve historic behaviour when absent.
+   */
+  windowOpenAt?: 'cursor' | 'last';
   license?: License;             // Phase 5: paid-tier entitlement cache
   memo?: MemoSettings;           // Memo feature (v1.3.16+)
 }

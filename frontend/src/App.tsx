@@ -28,6 +28,7 @@ import { memoIsExpiringSoon, memoBodyToPlain, htmlToMarkdown, htmlHasStructure }
 import { NotificationBell } from './components/NotificationBell';
 import type { AppNotification } from './types';
 import { runTopEscape } from './lib/escapeStack';
+import { canPerform } from './lib/conflictPolicy';
 import { ScanDialog } from './components/ScanDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { StatusBar } from './components/StatusBar';
@@ -1451,6 +1452,13 @@ export default function App() {
     const newItem = store.addMemo(targetSpaceId, body);
     if (newItem) tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId: targetSpaceId, fromClipboard: true });
     if (newItem) {
+      // Clipboard → memo also belongs in the undo stack. Ctrl+Z
+      // should rewind every kind of card creation symmetrically.
+      pushUndo({
+        description: '메모 추가 (클립보드)',
+        undo: () => store.deleteItem(targetSpaceId, newItem.id),
+        redo: () => store.restoreItem(targetSpaceId, newItem),
+      });
       // Use the in-house toast queue (same chrome as every other
       // app toast) — sonner had a different look + position which
       // the user flagged as off-brand.
@@ -1674,21 +1682,33 @@ export default function App() {
   // ── Global key capture → open CommandBar ─────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Skip if already in CommandBar, a dialog is open, or inside an input
-      if (cmdOpen) return;
-      if (dialog !== 'none') return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       // Only capture printable characters (single char, no modifier key combos)
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key.length !== 1) return;
+      // Conflict-avoidance: don't auto-open the command bar during
+      // ANY blocking state (tool mode, memo editor, dialog, overlay,
+      // etc.). Earlier code only checked `cmdOpen` + `dialog !==
+      // 'none'`, which let printable keystrokes hijack focus mid-
+      // pin/node/deck/clean. The policy gate covers every state in
+      // one go.
+      const verdict = canPerform('cmd.open', {
+        activeMode, nodeEditMode, deckBuilding,
+        editingMemoId: editingMemoId ? editingMemoId.itemId : null,
+        dialog,
+        tileOverlayGroup,
+        cmdOpen,
+      });
+      if (verdict !== true) return;
       // Open CommandBar with first character pre-filled
       setCmdInput(e.key);
       setCmdOpen(true);
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [cmdOpen, dialog]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmdOpen, dialog, activeMode, nodeEditMode, deckBuilding, editingMemoId, tileOverlayGroup]);
 
   // ── Global Esc key ────────────────────────────────────────
   useEffect(() => {
@@ -1775,11 +1795,19 @@ export default function App() {
       const tag = t?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (t?.isContentEditable) return;
-      // Skip while any modal / drag / tour is busy — preserves form-Tab
-      // behaviour inside ItemDialog, SettingsDialog, etc.
-      if (isUserBusy()) return;
-      // Skip while CommandBar is open (its own focus management).
-      if (cmdOpen) return;
+      // Funnel through the central conflict-avoidance policy. Earlier
+      // code did `if (isUserBusy()) return; if (cmdOpen) return;` —
+      // fine for those two states but missed tool mode (Tab while in
+      // node-build would silently cycle the preset and nuke the
+      // in-progress group). canPerform covers every gating state.
+      const verdict = canPerform('preset.cycle', {
+        activeMode, nodeEditMode, deckBuilding,
+        editingMemoId: editingMemoId ? editingMemoId.itemId : null,
+        dialog,
+        tileOverlayGroup,
+        cmdOpen,
+      });
+      if (verdict !== true) return;
 
       // Build the cycle from accessible presets only. Free tier ⇒ ['1'],
       // so cycling is a no-op for that user and we don't even
@@ -1795,7 +1823,8 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [cmdOpen, entitlement, store]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cmdOpen, entitlement, store, activeMode, nodeEditMode, deckBuilding, dialog, tileOverlayGroup, editingMemoId]);
 
   // ── Dialog helpers ────────────────────────────────────────
   const openEditItem = useCallback((item: LauncherItem, spaceId: string) => {
@@ -1838,7 +1867,7 @@ export default function App() {
   const handleAddWidget = useCallback((spaceId: string) => {
     if (!quotaChecks.widget()) return;
     if (!quotaChecks.card()) return;
-    store.addItem(spaceId, {
+    const newItem = store.addItem(spaceId, {
       type: 'widget',
       title: '미디어',
       value: '',                          // not used for widgets
@@ -1851,6 +1880,13 @@ export default function App() {
       pinned: false,
       widget: { kind: 'media-control' },
     });
+    if (newItem) {
+      pushUndo({
+        description: '미디어 위젯 추가',
+        undo: () => store.deleteItem(spaceId, newItem.id),
+        redo: () => store.restoreItem(spaceId, newItem),
+      });
+    }
     showToast('미디어 위젯을 추가했어요');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quotaChecks, store]);
@@ -1884,6 +1920,13 @@ export default function App() {
       pinned: false,
       widget: { kind: 'color-swatch', options: name ? { hex, name } : { hex } },
     });
+    if (newItem) {
+      pushUndo({
+        description: `팔레트에 ${hex} 추가`,
+        undo: () => store.deleteItem(spaceId, newItem.id),
+        redo: () => store.restoreItem(spaceId, newItem),
+      });
+    }
     showToast(`팔레트에 ${hex} 추가됨`);
     return newItem;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1912,6 +1955,11 @@ export default function App() {
       markItemsAsNew([newItem.id]);
       // Tutorial trigger — widgets.memo / cards.memo advance on memo creation.
       tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId, fromClipboard: false });
+      pushUndo({
+        description: '메모 추가',
+        undo: () => store.deleteItem(spaceId, newItem.id),
+        redo: () => store.restoreItem(spaceId, newItem),
+      });
       // Open the editor on the next tick — let the card mount first
       // so its position is the spring-pop anchor.
       setTimeout(() => setEditingMemoId({ spaceId, itemId: newItem.id }), 0);
@@ -2619,6 +2667,13 @@ export default function App() {
     const spaceName = space?.name ?? '';
     setBatchDrop(null);
     markItemsAsNew(added.map(i => i.id));
+    // Single stack entry for the whole batch — Ctrl+Z rewinds them
+    // together. Mirrors what the inline toast button already did.
+    pushUndo({
+      description: `${added.length}개 항목 추가`,
+      undo: () => store.deleteItems(spaceId, added.map(i => i.id)),
+      redo: () => { for (const it of added) store.restoreItem(spaceId, it); },
+    });
     showToast(`${added.length}개 항목 추가됨 → ${spaceName}`, {
       actions: [{
         label: '실행 취소',
@@ -2689,6 +2744,30 @@ export default function App() {
 
   // ── CommandBar execute ─────────────────────────────────────
   const handleCommandExecute = useCallback(async (cmd: ParsedCommand) => {
+    // Conflict gate — a slash command that runs during a tool /
+    // dialog / overlay state can clobber the user's in-progress
+    // work (e.g. /clip-text → addItem while in node-edit mode mid-
+    // group). The command bar itself is already closed by the time
+    // we reach here (its host modal blocks open), so cmdOpen reads
+    // false; we still consult the policy for every OTHER state.
+    // Search-only commands (kind === 'search') are exempt because
+    // they only mutate the search query, which is safe everywhere.
+    if (cmd.kind !== 'search') {
+      const verdict = canPerform('slash.execute', {
+        activeMode, nodeEditMode, deckBuilding,
+        editingMemoId: editingMemoId ? editingMemoId.itemId : null,
+        dialog,
+        tileOverlayGroup,
+        cmdOpen: false,
+      });
+      if (verdict !== true) {
+        showToast(verdict.message, { duration: 1500 });
+        setCmdOpen(false);
+        setCmdInput('');
+        return;
+      }
+    }
+
     setCmdOpen(false);
     setCmdInput('');
 
@@ -2739,11 +2818,19 @@ export default function App() {
           targetSpace = data.spaces[cmd.spaceIdx];
           if (!targetSpace) { showToast(`스페이스 ${cmd.spaceIdx + 1} 없음`); return; }
         }
-        store.addItem(targetSpace.id, {
+        const newItem = store.addItem(targetSpace.id, {
           title: displayTitle,
           type: itemType as LauncherItem['type'],
           value: text.trim(),
         });
+        if (newItem) {
+          const ts = targetSpace;
+          pushUndo({
+            description: `"${displayTitle}" 추가`,
+            undo: () => store.deleteItem(ts.id, newItem.id),
+            redo: () => store.restoreItem(ts.id, newItem),
+          });
+        }
         showToast(`"${displayTitle}" 저장됨 → ${targetSpace.name}`);
       } catch {
         showToast('클립보드 읽기 실패');
@@ -2836,7 +2923,8 @@ export default function App() {
     if (cmd.kind === 'invalid') {
       showToast(`${cmd.reason}`);
     }
-  }, [data.spaces, data.nodeGroups, data.settings, store, showToast, launchItem, handleNodeGroupLaunch, handleTogglePin]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.spaces, data.nodeGroups, data.settings, store, showToast, launchItem, handleNodeGroupLaunch, handleTogglePin, activeMode, nodeEditMode, deckBuilding, editingMemoId, dialog, tileOverlayGroup]);
 
   // ── DnD sensors ───────────────────────────────────────────
   // Single UnifiedPointerSensor handles BOTH left-click (space reorder) and
@@ -4111,8 +4199,15 @@ export default function App() {
                             ghostItems={ghostCards.ghostsForSpace(space.id)}
                             onGhostAccept={(ghost) => {
                               if (!quotaChecks.card()) return;
-                              store.addItem(ghost.spaceId, { title: ghost.title, value: ghost.value, type: ghost.type });
+                              const newItem = store.addItem(ghost.spaceId, { title: ghost.title, value: ghost.value, type: ghost.type });
                               ghostCards.accept(ghost);
+                              if (newItem) {
+                                pushUndo({
+                                  description: `"${ghost.title}" 추가 (감지)`,
+                                  undo: () => store.deleteItem(ghost.spaceId, newItem.id),
+                                  redo: () => store.restoreItem(ghost.spaceId, newItem),
+                                });
+                              }
                               showToast(`"${ghost.title}" 추가됨`);
                             }}
                             onGhostDismiss={(value) => ghostCards.dismiss(value)}

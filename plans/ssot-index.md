@@ -47,6 +47,13 @@
 - **SSOT**: `frontend/src/lib/escapeStack.ts` — ESC 눌렀을 때 무엇이 닫히는지의 단일 스택
 - **금지**: 컴포넌트마다 `keydown` 리스너 직접 달기
 
+### A.6b Conflict avoidance policy (v1.3.31+)
+- **정책 SSOT**: `plans/conflict-avoidance-policy.md` — 모드/모달 충돌 매트릭스 + 규칙
+- **코드 SSOT**: `frontend/src/lib/conflictPolicy.ts` `canPerform(actionId, ctx)` — 모든 trigger 가 실행 전 통과
+- **피드백 SSOT**: `frontend/src/lib/conflictFeedback.ts` — `shakeElement(el)` (220ms micro-shake) + `BLOCK_TOAST_DEFAULTS`. 차단 시 visible/audible 반응 일관성.
+- **현재 마이그레이션 위치**: `ItemCard.handlePointerDown` (hold-press), `App.tsx` Tab key (preset cycle)
+- **금지**: 컴포넌트마다 `if (activeMode !== 'normal') return;` 같은 ad-hoc 모드 체크. 새 trigger 는 반드시 `canPerform` 통과 후 실행. 새 mode/modal 추가 시 정책 문서의 매트릭스 한 줄 + `conflictPolicy.ts:MODE_ALLOWLIST` 한 줄 추가가 유일한 의무.
+
 ### A.7 "현재 열린 창" 스캔
 - **SSOT**: `frontend/src/lib/scanEngine.ts` — foreground/열린 창 enumeration
 - **읽는 곳**: `useGhostCards.ts:130` (ghost 카드 동기화), ScanDialog, 그 외 "지금 뭐 열려있냐" 묻는 모든 곳
@@ -57,8 +64,9 @@
 - **노드 그룹 SSOT**: `frontend/src/hooks/useNodeDeckMode.ts:241` `handleNodeGroupLaunch` — 메인 노드 헤더 클릭, 배지 노드 클릭, 미니윈도우 "묶음 실행" 모두 이리로 funnel
 - **덱 SSOT**: `frontend/src/hooks/useNodeDeckMode.ts:277` `handleDeckLaunch` — 메인 덱 헤더, 배지 덱 클릭, 미니윈도우 "순차 실행" funnel
 - **배지 → 메인 라우팅**: `main.js` `'badges-launch-item'` / `'badges-launch-ref'` IPC → 메인 렌더러 listener (`App.tsx:1272-1306`) → 위 SSOT 호출
+- **OS-level launch SSOT (v1.3.31+)**: app/folder/window 타입의 실제 OS 실행은 **반드시 `ps-scripts/launch-or-focus-app.ps1` / `open-path.ps1` / `focus-window.ps1`** 통과. 단일 카드 path (`launch-or-focus-app` IPC) 와 노드/덱 tile path (`launchItemsForTile` → `fireLaunchItem` in main.js) 모두 같은 스크립트 사용. 이 스크립트들은 versioned-browser rebase (Chrome/Edge/Whale auto-update), AUMID `shell:AppsFolder` fallback (Store/MSIX), .lnk Arguments+WorkingDirectory 캐리오버 (Adobe/JetBrains) 등 통합 처리.
 - **UX 일관성 (v1.3.28+)**: 메인 카드 1-click = 즉시 실행 ↔ 배지 1-click = 즉시 실행 (node/deck), space 배지만 미니윈도우 토글
-- **금지**: 컴포넌트에서 직접 `launchOrFocus` IPC 호출, 배지에서 자체 launch 로직 (반드시 IPC 통해 메인 렌더러의 SSOT 사용)
+- **금지**: 컴포넌트에서 직접 `launchOrFocus` IPC 호출, 배지에서 자체 launch 로직 (반드시 IPC 통해 메인 렌더러의 SSOT 사용), main.js 안에서 인라인 PS 스크립트로 launch 흉내내기 (반드시 dedicated `.ps1` 파일 사용 — 안 그러면 fallback 로직이 두 군데로 갈라져 일부 카드만 작동하는 버그 재발)
 
 ### A.9 카드 종류별 디자인 토큰
 - **SSOT**: `frontend/src/widgets/widgetTokens.ts` — 카드/위젯 종류별 색·여백·border-radius

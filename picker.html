@@ -85,6 +85,13 @@
   <div id="magnifier"><canvas width="120" height="120"></canvas></div>
   <div id="chip"><i></i><span>#000000</span></div>
   <div id="hint">클릭: 선택 · Esc: 취소</div>
+  <!-- Per-monitor identification badge: populated from picker-init IPC.
+       Sits in the top-left of whichever display the picker is on so the
+       user can tell at a glance which monitor they're sampling from. -->
+  <div id="mon-label" style="position:fixed;top:16px;left:16px;display:none;align-items:center;gap:8px;padding:8px 14px;border-radius:12px;background:rgba(20,20,30,0.78);backdrop-filter:blur(20px) saturate(160%);border:1px solid rgba(99,102,241,0.45);box-shadow:0 6px 22px rgba(0,0,0,0.45);color:#fff;font-family:system-ui,-apple-system,sans-serif;font-size:12px;font-weight:600;letter-spacing:0.02em;z-index:20;">
+    <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:rgba(99,102,241,0.85);font-size:13px;font-weight:800;line-height:1" id="mon-num">?</span>
+    <span id="mon-text">모니터</span>
+  </div>
 
 <script>
 (function () {
@@ -182,6 +189,18 @@
       resize();
     };
     img.src = payload.dataUrl;
+
+    // Show the monitor label when there's >1 display — on a single-
+    // monitor setup it's noise, but with two or more it answers the
+    // user's "which monitor am I sampling?" question instantly.
+    const monLabel = document.getElementById('mon-label');
+    const monNum   = document.getElementById('mon-num');
+    const monText  = document.getElementById('mon-text');
+    if (monLabel && monNum && monText && payload && payload.monitorCount > 1) {
+      monNum.textContent  = String(payload.monitorIndex || '?');
+      monText.textContent = payload.isPrimary ? '주 모니터' : '모니터';
+      monLabel.style.display = 'inline-flex';
+    }
   });
 
   window.addEventListener('resize', resize);

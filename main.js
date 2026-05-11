@@ -78,6 +78,19 @@ const suppressAutoHideSources = new Set();
 // on every settings save → blur handler reads from cache, no disk
 // roundtrip per event. Initialised from disk in createMainWindow.
 let cachedAutoHide = false;
+// Hot cache of "where should the launcher reappear?" setting. Same
+// pattern as cachedAutoHide — initialised from disk on createWindow,
+// pushed by renderer via 'set-window-open-at' IPC whenever the user
+// changes the dropdown in Settings. Two valid values:
+//   'cursor' (default) → moveToCursorMonitor + centre on that screen
+//   'last'             → setBounds back to lastUserPosition (if known)
+let cachedWindowOpenAt = 'cursor';
+// Last user-visible bounds (x/y/width/height) — captured on hide so
+// the 'last' open-at mode can restore them. width/height already live
+// in `windowBounds` storage; we keep position in-memory only by default
+// (cold start still centres) and persist on hide so a graceful quit
+// retains position for the next launch.
+let lastUserPosition = null;
 
 /**
  * Single dismissal policy. EVERY automatic hide path funnels here.
@@ -545,15 +558,50 @@ const extServer = http.createServer((req, res) => {
       res.end('ok');
     });
   } else if (req.url === '/events') {
-    // Extension opens a long-lived SSE channel to receive commands
+    // Extension opens a long-lived SSE channel to receive commands.
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection':   'keep-alive',
+      // Disable Node's default response timeout — SSE is meant to be
+      // long-lived. Without this, some proxies / antivirus shims will
+      // tear the stream down after the default ~2 min idle window.
+      'X-Accel-Buffering': 'no',
     });
+    // Make sure the socket itself doesn't get garbage-collected by a
+    // keep-alive idle timeout on the Node http server. Same intent
+    // as the header above; belt + suspenders.
+    res.socket?.setKeepAlive?.(true, 15000);
+    res.socket?.setTimeout?.(0);
     sseConnection = res;
     lastExtensionConnectedAt = Date.now();
-    req.on('close', () => { if (sseConnection === res) sseConnection = null; });
+
+    // Periodic heartbeat. SSE comment lines (start with `:`) are
+    // ignored by every spec-compliant parser, so the extension's
+    // ReadableStream reader sees a `read()` resolution every 15 s
+    // but no `data:` event fires. That's enough to keep Chrome's
+    // MV3 service worker classified as "active" — without it the
+    // SW idles out after ~30 s of no traffic and Chrome terminates
+    // it, taking any pending setTimeout reconnect with it. After
+    // nost auto-update the user would then see the extension
+    // permanently disconnected until they triggered some unrelated
+    // tab event that woke the SW.
+    const heartbeat = setInterval(() => {
+      // Write only while the response is still writable. If the
+      // socket closed between intervals we'd otherwise crash with
+      // "write after end".
+      if (res.writableEnded || res.destroyed) {
+        clearInterval(heartbeat);
+        return;
+      }
+      try { res.write(`: heartbeat ${Date.now()}\n\n`); }
+      catch { clearInterval(heartbeat); }
+    }, 15000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      if (sseConnection === res) sseConnection = null;
+    });
   } else {
     res.writeHead(404); res.end();
   }
@@ -914,9 +962,43 @@ function toggleMainWindow() {
 
   try {
     if (mainWindow.isVisible()) {
+      // Capture position right before hide so the 'last' open-at mode
+      // has a coordinate to restore. Even if the user has 'cursor'
+      // mode selected we still record it — flipping the mode later
+      // shouldn't require a hide/show cycle to seed the value.
+      try {
+        const b = mainWindow.getBounds();
+        lastUserPosition = { x: b.x, y: b.y, width: b.width, height: b.height };
+      } catch (_) { /* getBounds shouldn't throw, but be safe */ }
       mainWindow.hide();
     } else {
-      moveToCursorMonitor();
+      if (cachedWindowOpenAt === 'last' && lastUserPosition) {
+        // Restore the prior position. We still re-apply the saved
+        // size after, because the user may have resized via /N
+        // slider while hidden and we want the new size honored.
+        // Clamp x/y so a stored position from a monitor that's
+        // since been unplugged falls back to a visible spot.
+        try {
+          const sc = getScreen();
+          const disp = sc.getDisplayMatching({
+            x: lastUserPosition.x, y: lastUserPosition.y,
+            width: lastUserPosition.width, height: lastUserPosition.height,
+          });
+          const wa = disp.workArea;
+          let x = lastUserPosition.x;
+          let y = lastUserPosition.y;
+          if (x + lastUserPosition.width  > wa.x + wa.width)  x = wa.x + wa.width  - lastUserPosition.width;
+          if (y + lastUserPosition.height > wa.y + wa.height) y = wa.y + wa.height - lastUserPosition.height;
+          if (x < wa.x) x = wa.x;
+          if (y < wa.y) y = wa.y;
+          mainWindow.setBounds({ x, y, width: lastUserPosition.width, height: lastUserPosition.height });
+        } catch (e) {
+          log.debug('[restore-last-position]', e?.message);
+          moveToCursorMonitor();   // fall back to the cursor strategy
+        }
+      } else {
+        moveToCursorMonitor();
+      }
       // Re-apply the saved size every time we pop in. moveToCursorMonitor
       // may have parked the window on a different display (different
       // work area), and the user may have changed `windowSizePct`
@@ -1298,29 +1380,30 @@ const DIALOG_POPUP_TITLEBAR_PX = 32;
 function positionDialogPopup(rect) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
   dialogLastRect = rect;
-  // Popup width is INDEPENDENT of the dialog width — small Save-As
-  // dialogs (typical default ~520 px) used to hand us a 520 px popup
-  // and the chip strip clipped silently behind a hidden horizontal
-  // scrollbar. Bumping the floor to 720 px keeps the brand + ~4 chips
-  // + preset dropdown + close button visible at the default size; we
-  // still cap at 1100 to avoid an absurd-wide strip on a wide dialog.
+  // Popup width — independent of dialog width.
+  //   - floor 720 px: a typical 520 px Save-As used to give us a 520 px
+  //     popup and chips clipped silently behind a hidden scrollbar
+  //   - ceiling 1100 px: anything wider feels disproportionate to the
+  //     dialog and visually competes with it for attention
+  //   - dialog.width + 240 in between gives a slight buffer so the
+  //     chip strip extends a little past the dialog right edge
+  //     (mirrors most macOS-style toolbar overhang patterns)
   const width  = Math.max(720, Math.min(rect.width + 240, 1100));
-  // Centre relative to the dialog, but clamp horizontally to the host
-  // display so a narrow dialog parked near the screen edge doesn't
-  // push the popup off-screen. Without this we used to chop ~200 px
-  // of chips on small / corner-docked dialogs.
-  let x = Math.round(rect.x + (rect.width - width) / 2);
-  try {
-    const screen = getScreen();
-    const disp = screen.getDisplayMatching({
-      x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-    });
-    const wa = disp.workArea;
-    const minX = wa.x + 4;
-    const maxX = wa.x + wa.width - width - 4;
-    if (x < minX) x = minX;
-    if (x > maxX) x = maxX;
-  } catch (_) { /* fall back to the centred x */ }
+  // LEFT-ALIGN with the dialog — and ONLY that. Earlier design
+  // centred the popup inside the dialog, which created a visible
+  // gap on the popup's left when the dialog was wider than the
+  // popup. Left-aligning makes the chip strip share a hard edge
+  // with the dialog's left side, regardless of either's width.
+  //
+  // Deliberately NO horizontal work-area clamp: an earlier clamp
+  // tried to slide the popup left when it would overflow the right
+  // edge of the screen, but doing so reintroduces the exact
+  // misalignment we're trying to kill (popup moves; dialog
+  // doesn't → mis-anchored toolbar). If the popup truly extends
+  // past the screen edge, the inner chip row's own
+  // `overflowX: auto` handles horizontal scroll for the chips
+  // themselves. Robust left-anchor > clever clamp.
+  const x = Math.round(rect.x);
   // Anchor the chip strip's bottom edge to just inside the dialog —
   // overlapping the title bar (which is fixed chrome) by ~32 px so the
   // strip sits directly above the navigation / address bar that lives
@@ -2090,6 +2173,10 @@ function createWindow() {
   // Initialise the autoHide cache from disk so the very first blur
   // (before the renderer has had a chance to push) reads a sane value.
   cachedAutoHide = !!store.get('appData')?.settings?.autoHide;
+  // Same for the window-open-at strategy. 'cursor' is the historic
+  // default so any pre-1.3.31 store reads as cursor mode.
+  const savedOpenAt = store.get('appData')?.settings?.windowOpenAt;
+  cachedWindowOpenAt = (savedOpenAt === 'last' ? 'last' : 'cursor');
 
   // Same for the saved launcher size %. Apply BEFORE the window's
   // first show so the user never sees a 100% → snap-to-saved flash.
@@ -2146,73 +2233,75 @@ function createWindow() {
 
 // ── 10. Tile Launch Helpers ───────────────────────────────────────────
 //
-// These PS snippets run as inline encoded commands (non-blocking / fire-and-forget)
-// so tiling can begin immediately without waiting for a process to fully launch.
-// Each runs in a separate PS process, so the class names (QL1/QL2/QL3) don't clash.
-
-const _PS_FOCUS_APP = `
-$t = $env:QL_PATH
-if ($t -match '\\.lnk$') {
-  try {
-    $wsh = New-Object -ComObject WScript.Shell; $lnk = $wsh.CreateShortcut($t)
-    if ($lnk.TargetPath -match 'explorer\\.exe$' -and $lnk.Arguments -match 'shell:AppsFolder\\\\(.+)') {
-      Start-Process explorer.exe "shell:AppsFolder\\$($Matches[1])"; exit
-    } elseif ($lnk.TargetPath) { $t = $lnk.TargetPath }
-  } catch {}
-}
-$exeName = [System.IO.Path]::GetFileNameWithoutExtension($t)
-$p = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $t } catch { $false } } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-if (-not $p) { $p = Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
-if ($p) {
-  $h = $p.MainWindowHandle
-  Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class QL1 { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
-"@
-  [QL1]::ShowWindow($h,9); [QL1]::SetForegroundWindow($h)
-} else { Start-Process $t }`.trim();
-
-const _PS_FOCUS_FOLDER = `
-$shell=$null; try{$shell=New-Object -ComObject Shell.Application}catch{}
-$found=$false; $tp=$env:QL_PATH.TrimEnd('\\')
-if($shell){foreach($w in $shell.Windows()){try{if($w.Document-ne$null-and$w.Document.Folder.Self.Path.TrimEnd('\\')-eq$tp){Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class QL2 { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
-"@
-$hw=[IntPtr][long]$w.HWND;[QL2]::ShowWindow($hw,9);[QL2]::SetForegroundWindow($hw);$found=$true;break}}catch{}}}
-if(-not $found){Start-Process explorer.exe $env:QL_PATH}`.trim();
-
-const _PS_FOCUS_WINDOW = `
-$p = Get-Process | Where-Object { $_.MainWindowTitle -eq $env:QL_TITLE } | Select-Object -First 1
-if (-not $p) {
-  $s = $env:QL_TITLE
-  $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$s*" } | Select-Object -First 1
-}
-if ($p) {
-  Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class QL3 { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
-"@
-  [QL3]::ShowWindow($p.MainWindowHandle,9); [QL3]::SetForegroundWindow($p.MainWindowHandle)
-}`.trim();
+// fireLaunchItem (below) is the single fire-and-forget entry point for
+// the tile-launch path (node groups + deck sequence start). It routes
+// through the SAME dedicated PS scripts as the single-card click path
+// — see the comment above fireLaunchItem for the full rationale. The
+// minimal inline _PS_FOCUS_* templates that used to live here were
+// removed because they were silently divergent from the dedicated
+// scripts (missing versioned-browser rebase, AUMID Get-AppxPackage
+// fallback, .lnk Arguments/WorkingDirectory carry-through) and that
+// divergence caused the "card works but node doesn't" bug for Store /
+// PWA apps after browser auto-updates.
 
 /**
  * Fire-and-forget: focus or launch an app/folder/window before tiling.
  * URL/browser types are handled separately by the caller.
+ *
+ * SSOT — uses the SAME PowerShell scripts as the single-card launch
+ * path (`launch-or-focus-app.ps1`, `open-path.ps1`, `focus-window.ps1`).
+ * Earlier versions inlined a minimal `_PS_FOCUS_APP` script here for
+ * speed, but the inline version was missing the robust fallbacks the
+ * dedicated `.ps1` carries:
+ *
+ *   - Chromium versioned-path rebase (Chrome / Edge / Whale auto-update
+ *     deletes the old `\Application\<version>\` dir; .lnk targets go
+ *     stale). The dedicated script falls back to the highest-numbered
+ *     sibling under the same Application root.
+ *   - WindowsApps / MSIX Store apps launched via Get-AppxPackage
+ *     + shell:AppsFolder\<AUMID> when the saved exe path is gone.
+ *   - Classic .lnk Arguments + WorkingDirectory carry-through
+ *     (Adobe / Creative Cloud / JetBrains launchers fail silently
+ *     without the cwd).
+ *
+ * Symptom of the old divergence: users reported "GPT/Claude cards
+ * work from the main grid but the same cards inside a node group
+ * don't launch after a Whale/Chrome auto-update." Routing through
+ * the same script removes that divergence — node-launched apps now
+ * benefit from the same fallback ladder as a direct card click.
+ *
+ * runPsAsync returns a Promise; we deliberately do NOT await — the
+ * caller (launchItemsForTile) needs to return quickly so the tile
+ * polling phase can start while the app is still spinning up.
+ * Failures are surfaced via the log channel below for diagnosis.
  */
 function fireLaunchItem(item) {
-  let script;
-  const env = { ...process.env };
+  let scriptName;
+  const env = {};
 
   switch (item.type) {
-    case 'app':    script = _PS_FOCUS_APP;    env.QL_PATH  = item.value; break;
-    case 'folder': script = _PS_FOCUS_FOLDER; env.QL_PATH  = item.value; break;
-    case 'window': script = _PS_FOCUS_WINDOW; env.QL_TITLE = item.value || item.title; break;
+    case 'app':    scriptName = 'launch-or-focus-app.ps1'; env.QL_PATH  = item.value; break;
+    case 'folder': scriptName = 'open-path.ps1';           env.QL_PATH  = item.value; break;
+    case 'window': scriptName = 'focus-window.ps1';        env.QL_TITLE = item.value || item.title; break;
     default: return;
   }
 
-  const b64 = Buffer.from(script, 'utf16le').toString('base64');
-  exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, { env });
+  // Fire-and-forget. The 10s timeout matches the single-card path's
+  // launch-or-focus-app IPC handler — long enough for Defender scan
+  // on a freshly-installed Store app, short enough to avoid wedging
+  // tile polling if the script genuinely hangs.
+  runPsAsync(scriptName, env, { timeout: 10000 })
+    .then(({ stdout }) => {
+      const out = String(stdout ?? '').trim();
+      if (out.toUpperCase().startsWith('ERROR')) {
+        log.warn(`[fire-launch] ${item.type} ${item.value} → ${out}`);
+      } else if (out) {
+        log.debug(`[fire-launch] ${item.type} ${item.value} → ${out}`);
+      }
+    })
+    .catch(err => {
+      log.warn(`[fire-launch] ${item.type} ${item.value} PS threw: ${err?.message}`);
+    });
 }
 
 // ── 11. Update Helper ─────────────────────────────────────────────────
@@ -2506,6 +2595,9 @@ function registerIpcHandlers() {
   });
   ipcMain.on('set-auto-hide', (_, autoHide) => {
     cachedAutoHide = !!autoHide;
+  });
+  ipcMain.on('set-window-open-at', (_, mode) => {
+    cachedWindowOpenAt = (mode === 'last' ? 'last' : 'cursor');
   });
 
   // ── Auth: safeStorage-backed token persistence ─────────────────
@@ -3572,18 +3664,104 @@ function registerIpcHandlers() {
     const displays = screen.getAllDisplays();
     const primary  = screen.getPrimaryDisplay();
 
-    // Briefly show a numbered overlay on each display
+    // Per-monitor overlay window sized as a fraction of each monitor's
+    // OWN work area — not a hardcoded 200×200. Earlier versions used
+    // a fixed size that:
+    //   - looked tiny on a 4K screen (the "1" was barely readable)
+    //   - drifted off-centre on portrait or oddly-sized monitors
+    //   - landed under the taskbar on the primary (display.bounds
+    //     includes the taskbar; workArea excludes it)
+    // We now scale to the shorter edge of workArea and re-centre on
+    // workArea (not bounds), which fixes the clamping/positioning
+    // complaints. Sizing math respects display.scaleFactor implicitly
+    // because workArea is in DIP — Electron's BrowserWindow setBounds
+    // takes the same coord space.
+    const accentHex = (() => {
+      try {
+        const a = store.get('appData')?.settings?.accentColor;
+        return typeof a === 'string' && /^#[0-9a-f]{6}$/i.test(a) ? a : '#6366f1';
+      } catch { return '#6366f1'; }
+    })();
+    // RGB triple for use in rgba() — keeps the glow tinted by the
+    // user's chosen accent without baking a constant.
+    const accentRgb = (() => {
+      const n = parseInt(accentHex.slice(1), 16);
+      return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+    })();
+    const theme = store.get('appData')?.settings?.theme;
+    const isLight = theme === 'light';
+    const surface = isLight ? 'rgba(255, 255, 255, 0.92)' : 'rgba(12, 12, 22, 0.78)';
+    const textColor = isLight ? '#0f172a' : '#f8fafc';
+    const subText = isLight ? 'rgba(15, 23, 42, 0.6)' : 'rgba(248, 250, 252, 0.55)';
+
     const wins = displays.map((display, i) => {
-      const { x, y, width, height } = display.bounds;
+      const wa = display.workArea;
+      const minEdge = Math.min(wa.width, wa.height);
+      // Card is 30% of the shorter work-area edge, clamped to a
+      // readable range so it doesn't disappear on a tiny secondary
+      // monitor and doesn't dominate an ultrawide.
+      const cardSize = Math.max(160, Math.min(320, Math.round(minEdge * 0.3)));
+      const winSize  = cardSize + 40; // outer window has glow room beyond the card
+      const winX = wa.x + Math.round((wa.width  - winSize) / 2);
+      const winY = wa.y + Math.round((wa.height - winSize) / 2);
+
       const win = new BrowserWindow({
-        x: x + Math.floor(width / 2) - 100, y: y + Math.floor(height / 2) - 100,
-        width: 200, height: 200,
+        x: winX, y: winY,
+        width: winSize, height: winSize,
         frame: false, transparent: true, alwaysOnTop: true,
         skipTaskbar: true, focusable: false,
         webPreferences: { nodeIntegration: false, contextIsolation: true },
       });
-      const label = display.id === primary.id ? '주 모니터' : '보조 모니터';
-      const html  = `<!DOCTYPE html><html style="margin:0;background:transparent"><body style="margin:0;display:flex;align-items:center;justify-content:center;width:200px;height:200px"><div style="background:rgba(12,12,22,0.72);backdrop-filter:blur(32px) saturate(160%);-webkit-backdrop-filter:blur(32px) saturate(160%);border-radius:22px;width:172px;height:172px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;border:2px solid rgba(99,102,241,0.65);box-shadow:0 0 0 1px rgba(99,102,241,0.15),0 0 48px rgba(99,102,241,0.45),0 16px 48px rgba(0,0,0,0.65)"><div style="color:#fff;font-size:78px;font-weight:900;font-family:system-ui;line-height:1;text-shadow:0 0 24px rgba(99,102,241,0.7)">${i + 1}</div><div style="color:rgba(255,255,255,0.5);font-size:11px;font-family:system-ui;letter-spacing:0.04em">${label}</div></div></body></html>`;
+      try { win.setAlwaysOnTop(true, 'screen-saver'); } catch {}
+
+      // Sub-label: index + (주) when primary + dimensions for context.
+      // Earlier the label was just "주 모니터" / "보조 모니터" which
+      // (a) didn't show the number on non-primary displays and (b)
+      // labelled every secondary identically when there were 3+.
+      const sub = `${display.bounds.width}×${display.bounds.height}` +
+                  `${display.id === primary.id ? ' · 주' : ''}`;
+
+      // Sizes scale with the card so a 320 card has a larger digit
+      // than a 160 card. Card numerals dominate (50% of card edge).
+      const numSize  = Math.round(cardSize * 0.5);
+      const subSize  = Math.max(11, Math.round(cardSize * 0.07));
+      const radius   = Math.round(cardSize * 0.13);
+
+      const html = `<!DOCTYPE html><html style="margin:0;background:transparent;-webkit-font-smoothing:antialiased"><body style="margin:0;display:flex;align-items:center;justify-content:center;width:${winSize}px;height:${winSize}px;overflow:hidden">
+        <div style="
+          background:${surface};
+          backdrop-filter:blur(32px) saturate(160%);
+          -webkit-backdrop-filter:blur(32px) saturate(160%);
+          border-radius:${radius}px;
+          width:${cardSize}px;height:${cardSize}px;
+          display:flex;align-items:center;justify-content:center;flex-direction:column;
+          gap:${Math.round(cardSize * 0.04)}px;
+          border:2px solid rgba(${accentRgb}, 0.55);
+          box-shadow:
+            0 0 0 1px rgba(${accentRgb}, 0.12),
+            0 0 ${Math.round(cardSize * 0.3)}px rgba(${accentRgb}, 0.42),
+            0 ${Math.round(cardSize * 0.06)}px ${Math.round(cardSize * 0.18)}px rgba(0,0,0,0.55);
+          animation:nostMonIn 220ms cubic-bezier(0.22, 1, 0.36, 1);
+        ">
+          <div style="
+            color:${textColor};
+            font-size:${numSize}px;
+            font-weight:900;
+            font-family:system-ui,-apple-system,'Pretendard Variable',sans-serif;
+            line-height:1;
+            letter-spacing:-0.04em;
+            text-shadow:0 0 ${Math.round(cardSize * 0.14)}px rgba(${accentRgb}, 0.6);
+          ">${i + 1}</div>
+          <div style="
+            color:${subText};
+            font-size:${subSize}px;
+            font-family:system-ui,-apple-system,'Pretendard Variable',sans-serif;
+            letter-spacing:0.04em;
+            font-weight:500;
+          ">${sub}</div>
+        </div>
+        <style>@keyframes nostMonIn{from{opacity:0;transform:scale(0.86)}to{opacity:1;transform:scale(1)}}</style>
+      </body></html>`;
       win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
       return win;
     });
@@ -3841,13 +4019,22 @@ function registerIpcHandlers() {
       // Wait one frame for the OS compositor to actually drop the window.
       await new Promise(r => setTimeout(r, 180));
 
-      // 2. Capture the primary display.
+      // 2. Capture the monitor under the cursor — not the primary.
+      //    Earlier versions always captured the primary which surfaced
+      //    "왜 다른 모니터 화면이 떠?" when the user opened the picker
+      //    from the launcher running on a secondary display. Cursor-
+      //    nearest matches user intent for global-shortcut and click-
+      //    triggered invocations alike.
       const screen   = getScreen();
-      const primary  = screen.getPrimaryDisplay();
-      const bounds   = primary.bounds; // DIP
-      const sf       = primary.scaleFactor || 1;
+      const cursorPt = screen.getCursorScreenPoint();
+      const target   = screen.getDisplayNearestPoint(cursorPt);
+      const allDisplays = screen.getAllDisplays();
+      const targetIndex = allDisplays.findIndex(d => d.id === target.id);
+      const bounds   = target.bounds; // DIP
+      const sf       = target.scaleFactor || 1;
       const physW    = Math.round(bounds.width  * sf);
       const physH    = Math.round(bounds.height * sf);
+      log.info(`[picker] target display id=${target.id} index=${targetIndex + 1} bounds=(${bounds.x},${bounds.y},${bounds.width}x${bounds.height}) scale=${sf} physical=${physW}x${physH}`);
 
       let sources;
       try {
@@ -3861,25 +4048,37 @@ function registerIpcHandlers() {
         pickerInFlight = false;
         return { success: false, reason: 'capture-failed' };
       }
+      log.info(`[picker] desktopCapturer returned ${sources.length} source(s): ${sources.map(s => `id=${s.id} name="${s.name}" display_id=${s.display_id}`).join(' | ')}`);
 
-      // Pick the source that best matches the primary display. Electron
-      // doesn't guarantee ordering; try display_id first then fall back
-      // to the first entry.
+      // Match the source by display_id; fall back to source-index = monitor-index.
       let src = null;
-      const wantId = String(primary.id);
+      const wantId = String(target.id);
       for (const s of sources) {
         if (s.display_id && String(s.display_id) === wantId) { src = s; break; }
       }
+      // Fallback: Electron occasionally returns display_id="" on Windows.
+      // The sources are ordered to match getAllDisplays() in that case,
+      // so try the same index as our target display.
+      if (!src && targetIndex >= 0 && sources[targetIndex]) src = sources[targetIndex];
       if (!src) src = sources[0];
       if (!src) {
         restoreLauncher();
         pickerInFlight = false;
         return { success: false, reason: 'no-source' };
       }
+      const thumbSize = src.thumbnail.getSize();
+      const isEmpty   = src.thumbnail.isEmpty();
+      log.info(`[picker] selected source id=${src.id} name="${src.name}" thumbSize=${thumbSize.width}x${thumbSize.height} isEmpty=${isEmpty}`);
+      if (isEmpty || thumbSize.width === 0 || thumbSize.height === 0) {
+        log.warn('[picker] thumbnail is empty — capture returned blank (HDR / DRM / GPU acceleration off?)');
+        restoreLauncher();
+        pickerInFlight = false;
+        return { success: false, reason: 'capture-blank' };
+      }
 
       const dataUrl = src.thumbnail.toDataURL();
 
-      // 3. Open the picker window over the primary display.
+      // 3. Open the picker window over the TARGET display (cursor monitor).
       const win = new BrowserWindow({
         x: bounds.x, y: bounds.y,
         width:  bounds.width, height: bounds.height,
@@ -3937,7 +4136,16 @@ function registerIpcHandlers() {
 
       win.webContents.on('did-finish-load', () => {
         try {
-          win.webContents.send('picker-init', { dataUrl });
+          // Forward the monitor identity to the renderer so the picker
+          // can show "모니터 N" in its hint chrome. That makes it
+          // immediately obvious which screen the user is sampling
+          // from — same diagnostic the user complained was missing.
+          win.webContents.send('picker-init', {
+            dataUrl,
+            monitorIndex: targetIndex + 1,
+            isPrimary: target.id === screen.getPrimaryDisplay().id,
+            monitorCount: allDisplays.length,
+          });
           win.show();
           win.focus();
         } catch (e) { log.warn('[picker] init send failed', e); }

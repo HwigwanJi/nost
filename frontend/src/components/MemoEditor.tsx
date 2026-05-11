@@ -491,22 +491,93 @@ export function MemoEditor({
         return;
       }
       const before = body;
-      setBody(cleaned);
+
+      // Apply the cleanup THROUGH the textarea's native input
+      // pipeline whenever we can, not via setBody alone. React's
+      // controlled-input value swaps are invisible to the browser's
+      // native undo stack — so a user typing in the textarea after
+      // cleanup hits Ctrl+Z, the textarea has focus, our global
+      // handler yields to native (correct policy for typing
+      // history), and native says "nothing to undo" because it
+      // never recorded the programmatic body swap. Result: the
+      // cleanup looked irreversible from the textarea.
+      //
+      // `document.execCommand('insertText', ...)` IS recorded by
+      // native input handlers, so Ctrl+Z inside the textarea now
+      // restores the pre-cleanup body the way the user expects.
+      // We still push to the app's global undo stack so that
+      // Ctrl+Z outside the textarea (or after the editor closes)
+      // also works. The two paths converge on the same `before`
+      // string, so a double-fire is idempotent (setBody → same
+      // value → no-op render).
+      let nativeRecorded = false;
+      const ta = textareaRef.current;
+      if (ta && document.contains(ta)) {
+        const prevFocus = document.activeElement;
+        try {
+          ta.focus();
+          ta.setSelectionRange(0, ta.value.length);
+          // execCommand returns true on success. It's "deprecated"
+          // in MDN but still the only API that integrates with
+          // native undo in every Chromium/Electron version we
+          // ship, so we use it intentionally.
+          nativeRecorded = document.execCommand('insertText', false, cleaned);
+        } catch { /* fall through to setBody */ }
+        if (prevFocus instanceof HTMLElement && prevFocus !== ta && document.contains(prevFocus)) {
+          try { prevFocus.focus(); } catch { /* element gone */ }
+        }
+      }
+      // Fallback for the (rare) case where execCommand refused —
+      // e.g. textarea unmounted between palette click and run,
+      // or a future Chromium drops execCommand entirely.
+      if (!nativeRecorded) {
+        setBody(cleaned);
+      }
+
       pushUndo({
         description: `정리 — ${tool.label}`,
-        // Both paths: setBody updates the editor textarea immediately
-        // when it's still open; onChangeBodyRef.current pushes the
-        // change up to the parent so the store persists it even if
-        // the editor has since closed (autosave debounce wouldn't
-        // fire from an unmounted component).
-        undo: () => { setBody(before); onChangeBodyRef.current(before); },
-        redo: () => { setBody(cleaned); onChangeBodyRef.current(cleaned); },
+        // setBody handles the in-window editor; onChangeBodyRef
+        // propagates to the parent store so the change survives an
+        // editor close+reopen. We additionally update the textarea
+        // value directly when present — this keeps native undo and
+        // the React state aligned after a global Ctrl+Z restores
+        // from outside the textarea.
+        undo: () => {
+          setBody(before);
+          onChangeBodyRef.current(before);
+          const t = textareaRef.current;
+          if (t && t.value !== before) {
+            try { t.value = before; } catch { /* read-only edge case */ }
+          }
+        },
+        redo: () => {
+          setBody(cleaned);
+          onChangeBodyRef.current(cleaned);
+          const t = textareaRef.current;
+          if (t && t.value !== cleaned) {
+            try { t.value = cleaned; } catch { /* idem */ }
+          }
+        },
       });
       showToast?.(`본문에 적용됨 — ${tool.label}`, {
         actions: [{
           label: '되돌리기',
           icon: 'undo',
-          onClick: () => setBody(before),
+          // Toast button is the ESCAPE HATCH for users who haven't
+          // discovered Ctrl+Z. Mirror the same restoration path the
+          // global undo entry takes so behaviour is identical
+          // regardless of which surface they used. Earlier this
+          // only called setBody — onChangeBodyRef was missing,
+          // which left the parent store with the cleaned value
+          // after autosave debounce.
+          onClick: () => {
+            setBody(before);
+            onChangeBodyRef.current(before);
+            const t = textareaRef.current;
+            if (t && t.value !== before) {
+              try { t.value = before; } catch { /* read-only edge case */ }
+            }
+          },
         }],
         duration: 6000,
       });

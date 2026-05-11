@@ -20,6 +20,8 @@ import { MemoCard } from './MemoCard';
 import { MonitorPicker } from './MonitorPicker';
 import { ContainerSlotGhosts } from './ContainerSlotGhosts';
 import { isUserBusy } from '../lib/userBusy';
+import { canPerform } from '../lib/conflictPolicy';
+import { shakeElement } from '../lib/conflictFeedback';
 
 interface ItemCardProps {
   item: LauncherItem;
@@ -536,6 +538,32 @@ export function ItemCard({
       return;
     }
     if (e.button !== 0) return;
+    // Conflict-avoidance policy — see plans/conflict-avoidance-policy.md.
+    // Hold-press would otherwise let the user pop the slot-popup
+    // mid-pin/node/deck/clean mode, which silently ignores their
+    // tool intent and launches the card on release. The policy
+    // gate also covers memo-editor / dialog / overlay / cmd states
+    // for free, so this single check supersedes the older ad-hoc
+    // `if (activeMode !== 'normal')` line.
+    // ItemCard doesn't see every state directly (memo editor / dialog /
+    // tile overlay all eat pointer events at higher layers anyway).
+    // The only field that matters at this surface is `activeMode` —
+    // pass the rest as their "not active" values so the policy gate
+    // can still telemeter correctly and so a later refactor that
+    // surfaces those flags here Just Works.
+    const verdict = canPerform('card.hold-press', {
+      activeMode,
+      nodeEditMode: nodeBuilding.length > 0,
+      deckBuilding: false,
+      editingMemoId: null,
+      dialog: 'none',
+      tileOverlayGroup: null,
+      cmdOpen: false,
+    });
+    if (verdict !== true) {
+      shakeElement(cardRef.current);
+      return;
+    }
 
     holdStartRef.current = { x: e.clientX, y: e.clientY };
     holdTimerRef.current = setTimeout(() => {
@@ -668,6 +696,25 @@ export function ItemCard({
           // schedule (avoids missing a duplicate fire on weird DPIs).
           e.preventDefault();
           e.stopPropagation();
+          return;
+        }
+        // Conflict-avoidance: opening the card's right-click menu
+        // mid-tool-mode lets the user "수정 / 삭제" the very card
+        // they should be slotting / linking / cleaning — silently
+        // breaks the tool flow. Block + shake instead.
+        const verdict = canPerform('card.edit', {
+          activeMode,
+          nodeEditMode: nodeBuilding.length > 0,
+          deckBuilding: false,
+          editingMemoId: null,
+          dialog: 'none',
+          tileOverlayGroup: null,
+          cmdOpen: false,
+        });
+        if (verdict !== true) {
+          e.preventDefault();
+          e.stopPropagation();
+          shakeElement(cardRef.current);
           return;
         }
         // Suppress only the BROWSER default menu — Radix ContextMenu's

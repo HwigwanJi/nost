@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getResourceStats: () => ipcRenderer.invoke('get-resource-stats'),
   setSuppressAutoHide: (suppress, source) => ipcRenderer.send('set-suppress-autohide', !!suppress, source ?? 'default'),
   setAutoHide: (autoHide) => ipcRenderer.send('set-auto-hide', !!autoHide),
+  setWindowOpenAt: (mode) => ipcRenderer.send('set-window-open-at', mode === 'last' ? 'last' : 'cursor'),
   readTextFile: (filePath, maxBytes) => ipcRenderer.invoke('read-text-file', filePath, maxBytes),
 
   // ── Auth ────────────────────────────────────────────────────────

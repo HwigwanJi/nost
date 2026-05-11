@@ -345,12 +345,9 @@ export function Badge({ data, originX, originY, api, onClick, skipLanding = fals
           0%   { transform: scale(0.84); opacity: 0; }
           100% { transform: scale(1);    opacity: 1; }
         }
-        /* Orbiting ring shown while a node/deck launch is in flight.
-           Two thin arcs spinning in opposite directions read as
-           "working" without being noisy. Composited transforms keep
-           it cheap. */
-        @keyframes nost-badge-spin-cw  { to { transform: rotate(360deg); } }
-        @keyframes nost-badge-spin-ccw { to { transform: rotate(-360deg); } }
+        /* Single orbiting ring shown while a node/deck launch is in
+           flight. Composited transform keeps it cheap. */
+        @keyframes nost-badge-spin-cw { to { transform: rotate(360deg); } }
       `}</style>
       <div
         data-badge={data.id}
@@ -374,35 +371,23 @@ export function Badge({ data, originX, originY, api, onClick, skipLanding = fals
               : <span>{iconContent}</span>}
         </div>
         {launching && (
-          <>
-            {/* Two thin arcs orbiting the bubble in opposite directions.
-                Sized just outside the bubble so the icon stays readable. */}
-            <span
-              aria-hidden
-              style={{
-                position: 'absolute',
-                inset: -4,
-                borderRadius: '50%',
-                border: '2px solid transparent',
-                borderTopColor: hexToRgba(color, 0.95),
-                borderRightColor: hexToRgba(color, 0.55),
-                animation: 'nost-badge-spin-cw 900ms linear infinite',
-                pointerEvents: 'none',
-              }}
-            />
-            <span
-              aria-hidden
-              style={{
-                position: 'absolute',
-                inset: -8,
-                borderRadius: '50%',
-                border: '1.5px solid transparent',
-                borderBottomColor: hexToRgba(color, 0.7),
-                animation: 'nost-badge-spin-ccw 1400ms linear infinite',
-                pointerEvents: 'none',
-              }}
-            />
-          </>
+          /* Single orbiting arc just outside the bubble. Two-ring
+             earlier design read as visually busy (the bubble felt
+             surrounded by gears); one arc is enough to signal "in
+             flight" while keeping the icon the focal point. */
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: -4,
+              borderRadius: '50%',
+              border: '2px solid transparent',
+              borderTopColor: hexToRgba(color, 0.95),
+              borderRightColor: hexToRgba(color, 0.55),
+              animation: 'nost-badge-spin-cw 900ms linear infinite',
+              pointerEvents: 'none',
+            }}
+          />
         )}
       </div>
     </>

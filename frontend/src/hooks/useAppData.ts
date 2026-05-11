@@ -121,6 +121,7 @@ function migrateData(parsed: AppData): AppData {
     theme: parsed.settings.theme ?? 'dark',
     autoLaunch: parsed.settings.autoLaunch ?? false,
     autoHide: parsed.settings.autoHide ?? false,
+    windowOpenAt: parsed.settings.windowOpenAt === 'last' ? 'last' : 'cursor',
     accentColor: parsed.settings.accentColor ?? '#6366f1',
     documentExtensions: parsed.settings.documentExtensions ?? [],
     floatingButton: parsed.settings.floatingButton ?? {
@@ -1231,6 +1232,10 @@ export function useAppData() {
     // Push autoHide to main's hot cache so the blur handler doesn't
     // have to re-read electron-store (which had a staleness bug).
     electronAPI.setAutoHide(!!settings.autoHide);
+    // Same pattern for the window-open-at strategy — main's
+    // toggleMainWindow reads from a hot cache to avoid a disk
+    // roundtrip on every show.
+    electronAPI.setWindowOpenAt(settings.windowOpenAt === 'last' ? 'last' : 'cursor');
     // Live-apply launcher window size %. Main owns the persistence
     // path (it writes into electron-store's appData.settings directly)
     // so we only fire when the value actually changed — sending it on

@@ -640,6 +640,68 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                 </Section>
 
                 <Section>
+                  <SectionLabel icon="open_with" text="창이 뜨는 위치" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: -2, marginBottom: 8, lineHeight: 1.45 }}>
+                    단축키 / 트레이 / 플로팅 버튼으로 창을 띄울 때 어디에 나타날지 결정합니다.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {([
+                      { value: 'cursor', icon: 'my_location', title: '마우스 위치',  desc: '커서가 있는 모니터의 가운데에 나타납니다.' },
+                      { value: 'last',   icon: 'restart_alt',  title: '최근 위치',  desc: '마지막에 닫은 위치 그대로 다시 나타납니다.' },
+                    ] as const).map(opt => {
+                      const active = (form.windowOpenAt ?? 'cursor') === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => f('windowOpenAt', opt.value)}
+                          style={{
+                            display: 'flex', alignItems: 'flex-start', gap: 10,
+                            padding: '10px 12px',
+                            background: active ? 'var(--accent-dim)' : 'var(--surface)',
+                            border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                            borderRadius: 8,
+                            cursor: 'pointer',
+                            fontFamily: 'inherit',
+                            textAlign: 'left',
+                            color: 'var(--text-color)',
+                            transition: 'background 0.12s, border-color 0.12s',
+                          }}
+                        >
+                          <span
+                            aria-hidden
+                            style={{
+                              width: 14, height: 14, borderRadius: '50%',
+                              border: `2px solid ${active ? 'var(--accent)' : 'var(--border-focus)'}`,
+                              background: 'transparent',
+                              flexShrink: 0,
+                              marginTop: 2,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            {active && (
+                              <span style={{
+                                width: 6, height: 6, borderRadius: '50%',
+                                background: 'var(--accent)',
+                              }} />
+                            )}
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <Icon name={opt.icon} size={14} color={active ? 'var(--accent)' : 'var(--text-muted)'} />
+                              <span style={{ fontSize: 12, fontWeight: 600 }}>{opt.title}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3, lineHeight: 1.45 }}>{opt.desc}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Section>
+
+                <Section>
                   <SectionLabel icon="keyboard" text="전역 단축키" />
                   <Input value={form.shortcut} onChange={e => f('shortcut', e.target.value)}
                     placeholder="예: Alt+Space" className="font-mono text-sm" />
