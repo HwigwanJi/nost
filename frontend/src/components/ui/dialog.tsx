@@ -6,9 +6,36 @@ import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
+import { pushEscape } from "@/lib/escapeStack"
 
-function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+/**
+ * Wrapper around base-ui's Dialog.Root that also registers the
+ * dialog with our app-wide escape stack while it's open. base-ui's
+ * built-in ESC handling closes the popup, but it doesn't reliably
+ * stop native propagation — so without this registration the global
+ * ESC handler in App.tsx would fire on the same keystroke and could
+ * escalate to hideApp(). LIFO stack semantics also make nested
+ * dialogs (e.g. a confirm popup over the settings dialog) close in
+ * the right order without each component knowing about the others.
+ *
+ * See `plans/escape-stack-audit.md`.
+ */
+function Dialog({ open, onOpenChange, ...props }: DialogPrimitive.Root.Props) {
+  React.useEffect(() => {
+    if (!open) return
+    // base-ui's onOpenChange has overloads with optional event/reason
+    // params; passing just `false` is allowed and matches the runtime
+    // call shape base-ui itself uses for ESC dismissals.
+    return pushEscape(() => (onOpenChange as ((open: boolean) => void) | undefined)?.(false))
+  }, [open, onOpenChange])
+  return (
+    <DialogPrimitive.Root
+      data-slot="dialog"
+      open={open}
+      onOpenChange={onOpenChange}
+      {...props}
+    />
+  )
 }
 
 function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {

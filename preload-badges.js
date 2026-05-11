@@ -26,6 +26,16 @@ contextBridge.exposeInMainWorld('badges', {
     ipcRenderer.on('badges-state', handler);
     return () => ipcRenderer.removeListener('badges-state', handler);
   },
+  /** Subscribe to "the group launch you fired completed" pushes. The
+   *  main renderer (App.tsx) sends this back to main when its
+   *  handleNodeGroupLaunch / handleDeckLaunch await finishes, and main
+   *  forwards to every overlay so the spinner ring can clear without
+   *  waiting for the safety-timeout. */
+  onLaunchDone: (cb) => {
+    const handler = (_, payload) => cb(payload);
+    ipcRenderer.on('badges-launch-done', handler);
+    return () => ipcRenderer.removeListener('badges-launch-done', handler);
+  },
   /**
    * Renderer announces "I'm mounted and listening — push me the
    * current state." Exists because main's one-shot push on

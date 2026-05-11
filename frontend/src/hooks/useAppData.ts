@@ -988,7 +988,7 @@ export function useAppData() {
     save({ ...data, nodeGroups: [...(data.nodeGroups ?? []), group] });
   }, [data, save]);
 
-  const updateNodeGroup = useCallback((id: string, updates: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor'>>) => {
+  const updateNodeGroup = useCallback((id: string, updates: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor' | 'icon'>>) => {
     save({
       ...data,
       nodeGroups: (data.nodeGroups ?? []).map(g => g.id === id ? { ...g, ...updates } : g),

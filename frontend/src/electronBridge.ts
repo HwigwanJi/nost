@@ -9,6 +9,7 @@ declare global {
 
 export interface ElectronAPI {
   hideApp: () => void;
+  requestCloseAfter: () => void;
   openUrl: (url: string, closeAfter: boolean) => void;
   openPath: (folder: string, closeAfter: boolean) => void;
   openFolder: (folder: string, closeAfter: boolean) => void;
@@ -138,6 +139,7 @@ export interface ElectronAPI {
   // badge click to launch N times after N effect re-runs.
   onBadgesLaunchItem: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string; itemId: string }) => void) => () => void;
   onBadgesLaunchRef:  (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => () => void;
+  notifyBadgesLaunchDone: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void;
   // Both return unsubscribe fns — call from useEffect cleanup. The
   // pre-fix void return triggered a listener pile-up bug under unstable
   // deps, surfaced by Node's MaxListenersExceededWarning at ~10. See
@@ -175,6 +177,7 @@ function noop(..._args: unknown[]) { /* dev-mode no-op */ }
 
 export const electronAPI: ElectronAPI = window.electronAPI ?? {
   hideApp: noop,
+  requestCloseAfter: noop,
   openUrl: noop,
   openPath: noop,
   openFolder: noop,
@@ -250,6 +253,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   // Dev-mode stubs — return a no-op unsubscribe to satisfy the new signature.
   onBadgesLaunchItem: () => () => {},
   onBadgesLaunchRef:  () => () => {},
+  notifyBadgesLaunchDone: noop,
   // Dev-mode stubs — return no-op unsubscribes (signature parity).
   onBadgesRevealSpace: () => () => {},
   onBadgesUpdated: () => () => {},

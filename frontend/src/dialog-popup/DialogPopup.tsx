@@ -85,10 +85,16 @@ export function DialogPopup() {
   // Which preset's spaces are currently shown. Defaults to whatever main says
   // is "active"; user can flip to another preset via the 1·2·3 buttons.
   const [viewPresetId, setViewPresetId] = useState<'1' | '2' | '3' | null>(null);
-  // null → Level 1 (space chips); otherwise Level 2 for the picked space.id
-  // (or '__system__' for the pseudo-space).
+  // null → Level 1 (space chips); otherwise Level 2 for the picked space.id.
   const [drillSpaceId, setDrillSpaceId] = useState<string | null>(null);
   const [light, setLight] = useState(isLight());
+  // Folder-id whose jumpTo IPC is in flight. The PS clipboard-paste
+  // routine takes a beat (~300-800ms on first invocation per session
+  // because it warms up SendInput), and without any visual cue the
+  // user assumed the click didn't register and clicked again. The
+  // chip shows a spinner while this is set; cleared by a short timer
+  // since jumpTo is fire-and-forget and we don't get a real done IPC.
+  const [pendingFolderId, setPendingFolderId] = useState<string | null>(null);
 
   useEffect(() => {
     const off = api.onState(s => {
@@ -142,8 +148,14 @@ export function DialogPopup() {
     return () => window.removeEventListener('keydown', fn);
   }, [drillSpaceId]);
 
-  const onClickFolder = useCallback((path: string) => {
+  const onClickFolder = useCallback((folderId: string, path: string) => {
+    setPendingFolderId(folderId);
     api.jumpTo(path);
+    // Hold the spinner long enough that the user sees feedback even on
+    // the fastest path (SendInput warmed up). 700 ms is roughly the
+    // 95th-percentile end-to-end latency we measured, after which the
+    // dialog's address bar has visibly changed anyway.
+    setTimeout(() => setPendingFolderId(null), 700);
     // Return to Level 1 instead of closing — the user said dismissing
     // after one click was wasteful when they want to save multiple files
     // to different folders in succession. The popup will close on its own
@@ -158,11 +170,7 @@ export function DialogPopup() {
     ?? state.presets[0];
   const visibleSpaces = viewPreset?.spaces ?? [];
 
-  const drillSpace = drillSpaceId
-    ? (drillSpaceId === '__system__'
-        ? { id: '__system__', name: '시스템', icon: 'desktop_windows', color: undefined as string | undefined, folders: state.systemFolders }
-        : visibleSpaces.find(s => s.id === drillSpaceId))
-    : null;
+  const drillSpace = drillSpaceId ? visibleSpaces.find(s => s.id === drillSpaceId) : null;
 
   // Theme.
   const bg     = light ? C.bgLight : C.bg;
@@ -182,6 +190,10 @@ export function DialogPopup() {
     : border;
 
   return (
+    <>
+      <style>{`
+        @keyframes nost-dpopup-spin { to { transform: rotate(360deg); } }
+      `}</style>
     <div
       data-popup-interactive
       style={{
@@ -241,53 +253,45 @@ export function DialogPopup() {
         }}
       >
         {drillSpace
-          ? drillSpace.folders.map(f => (
-              <Chip key={f.id} label={f.title} icon="folder" tint={drillSpace.color} muted={muted} text={text} border={border} onClick={() => onClickFolder(f.path)} />
-            ))
+          ? (
+              drillSpace.folders.length > 0
+                ? drillSpace.folders.map(f => (
+                    <Chip
+                      key={f.id}
+                      label={f.title}
+                      icon="folder"
+                      tint={drillSpace.color}
+                      muted={muted} text={text} border={border}
+                      loading={pendingFolderId === f.id}
+                      onClick={() => onClickFolder(f.id, f.path)}
+                    />
+                  ))
+                : (
+                  <span style={emptyHintStyle(muted, border)}>이 스페이스엔 폴더 카드가 없습니다.</span>
+                )
+            )
           : <>
-              {state.systemFolders.length > 0 && (
-                <Chip
-                  label={`시스템 ${state.systemFolders.length}`}
-                  icon="desktop_windows"
-                  muted={muted} text={text} border={border}
-                  onClick={() => setDrillSpaceId('__system__')}
-                />
-              )}
-              {visibleSpaces.filter(s => s.folders.length > 0).map(s => (
-                <Chip
-                  key={s.id}
-                  label={`${s.name} ${s.folders.length}`}
-                  icon={s.icon || 'folder'}
-                  tint={s.color}
-                  muted={muted} text={text} border={border}
-                  onClick={() => setDrillSpaceId(s.id)}
-                />
-              ))}
-              {/* Per-preset empty hint — surfaces clearly when a preset has
-                  no folder cards. Without this the only chip the user sees
-                  after switching to an empty preset is "시스템 3", which
-                  reads as "nothing happened" because preset 1 also showed
-                  it. The dashed border + faded styling differentiates this
-                  from a real chip so it doesn't read as a clickable target. */}
-              {visibleSpaces.filter(s => s.folders.length > 0).length === 0 && (
-                <span
-                  style={{
-                    fontSize: 11,
-                    color: muted,
-                    padding: '0 12px',
-                    whiteSpace: 'nowrap',
-                    border: `1px dashed ${border}`,
-                    borderRadius: 7,
-                    height: 26,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    fontStyle: 'italic',
-                    flexShrink: 0,
-                  }}
-                >
-                  이 프리셋엔 등록된 폴더 카드가 없습니다.
-                </span>
-              )}
+              {/* Show ALL spaces in the preset — empty ones included, so
+                  the user's count matches what they see in the main app
+                  and they can drill in to learn "ah, this one has no
+                  folder cards yet". Filtering by `folders.length > 0`
+                  used to silently drop spaces and the chip count never
+                  matched the sidebar's. */}
+              {visibleSpaces.length > 0
+                ? visibleSpaces.map(s => (
+                    <Chip
+                      key={s.id}
+                      label={s.name}
+                      icon={s.icon || 'folder'}
+                      tint={s.color}
+                      muted={muted} text={text} border={border}
+                      count={s.folders.length}
+                      onClick={() => setDrillSpaceId(s.id)}
+                    />
+                  ))
+                : (
+                  <span style={emptyHintStyle(muted, border)}>이 프리셋엔 등록된 스페이스가 없습니다.</span>
+                )}
             </>
         }
       </div>
@@ -333,6 +337,7 @@ export function DialogPopup() {
         <span className="ms-rounded" style={{ fontSize: 14 }}>close</span>
       </button>
     </div>
+    </>
   );
 }
 
@@ -359,7 +364,7 @@ function chipStyle(border: string, text: string, muted: string, ghost: boolean):
   };
 }
 
-function Chip({ label, icon, onClick, tint, muted, text, border }: {
+function Chip({ label, icon, onClick, tint, muted, text, border, count, loading }: {
   label: string;
   icon: string;
   onClick: () => void;
@@ -367,6 +372,16 @@ function Chip({ label, icon, onClick, tint, muted, text, border }: {
   muted: string;
   text: string;
   border: string;
+  /** When set, appended as a small circular badge after the label.
+   *  Replaces the earlier ugly inline "이스포츠 2" syntax with a clean
+   *  count pill that mirrors the badge-count UI used elsewhere in the
+   *  app. Renders even when 0 so the user can tell at a glance "this
+   *  space is empty" without drilling in. */
+  count?: number;
+  /** Folder chip only: render a spinner in place of the icon to signal
+   *  that jumpTo is in flight. The PS clipboard-paste latency on a
+   *  cold session is enough to make users double-click otherwise. */
+  loading?: boolean;
 }) {
   return (
     <button
@@ -381,10 +396,62 @@ function Chip({ label, icon, onClick, tint, muted, text, border }: {
       }}
       style={chipStyle(border, text, muted, false)}
     >
-      <span className="ms-rounded" style={{ fontSize: 13, color: tint || C.accent, opacity: 0.9 }}>{icon}</span>
+      {loading ? (
+        <span
+          aria-hidden
+          style={{
+            width: 12, height: 12, borderRadius: '50%',
+            border: '1.5px solid currentColor',
+            borderTopColor: 'transparent',
+            opacity: 0.7,
+            animation: 'nost-dpopup-spin 700ms linear infinite',
+            display: 'inline-block',
+          }}
+        />
+      ) : (
+        <span className="ms-rounded" style={{ fontSize: 13, color: tint || C.accent, opacity: 0.9 }}>{icon}</span>
+      )}
       <span>{label}</span>
+      {count !== undefined && (
+        <span
+          aria-label={`${count}개`}
+          style={{
+            minWidth: 16,
+            height: 16,
+            padding: '0 5px',
+            borderRadius: 8,
+            background: tint ? hexToRgba(tint, 0.22) : 'rgba(255,255,255,0.08)',
+            color: tint || muted,
+            fontSize: 10,
+            fontWeight: 700,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            lineHeight: 1,
+            // Disabled-look when zero so the user can spot empty spaces
+            // without reading the digit.
+            opacity: count === 0 ? 0.45 : 1,
+          }}
+        >{count}</span>
+      )}
     </button>
   );
+}
+
+function emptyHintStyle(muted: string, border: string): React.CSSProperties {
+  return {
+    fontSize: 11,
+    color: muted,
+    padding: '0 12px',
+    whiteSpace: 'nowrap',
+    border: `1px dashed ${border}`,
+    borderRadius: 7,
+    height: 26,
+    display: 'inline-flex',
+    alignItems: 'center',
+    fontStyle: 'italic',
+    flexShrink: 0,
+  };
 }
 
 /**

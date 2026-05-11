@@ -135,7 +135,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
           duration: posResult.success ? 3000 : 2500,
         });
 
-        if (closeAfter) electronAPI.hideApp();
+        if (closeAfter) electronAPI.requestCloseAfter();
         return;
       }
 
@@ -176,7 +176,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
             duration: posResult.success ? 3000 : 2500,
           });
 
-          if (closeAfter) electronAPI.hideApp();
+          if (closeAfter) electronAPI.requestCloseAfter();
           return;
         }
 
@@ -245,7 +245,7 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         duration: posResult.success ? 3000 : 2500,
       });
 
-      if (closeAfter) electronAPI.hideApp();
+      if (closeAfter) electronAPI.requestCloseAfter();
     } finally {
       runningRef.current = false;
     }

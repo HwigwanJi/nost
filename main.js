@@ -135,6 +135,23 @@ function reassertTopAfterLaunch(closeAfter) {
     } catch (e) { log.debug('[reassert-top]', e?.message); }
   }, 250);
 }
+
+/**
+ * Brief grace window after a user-initiated launch where we ignore
+ * blur events. Rationale: when the user clicks a card with autoHide
+ * ON and closeAfter OFF, the just-launched external window briefly
+ * grabs foreground focus, fires blur on mainWindow, and the launcher
+ * dismisses itself before the user even sees the result. The user's
+ * mental model is "I clicked, but I didn't ask to close" — so we
+ * suppress the next blur for a short window. closeAfter is still
+ * honored separately via maybeCloseAfter, so opt-in dismissal still
+ * works. See `plans/focus-state-audit.md` Issue 4.
+ */
+function armLaunchGrace(closeAfter, ms = 600) {
+  if (closeAfter) return; // closeAfter path actively wants to hide — don't fight it
+  suppressAutoHideSources.add('launch-grace');
+  setTimeout(() => suppressAutoHideSources.delete('launch-grace'), ms);
+}
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
 // One BrowserWindow per display — keyed by display.id. The previous
 // single-overlay-spans-all-displays design was broken on cross-DPI
@@ -1224,9 +1241,15 @@ function buildDialogPopupState() {
   // We send ALL presets so the popup can offer in-popup preset switching
   // ("프리셋 1·2·3") without mutating the global active preset. Each preset
   // is reduced to just the spaces+folder-cards the popup needs to render.
+  //
+  // Note: the legacy "시스템" pseudo-space (Downloads/Desktop/Documents)
+  // was removed. It confused users — the popup is meant to surface their
+  // OWN spaces, and Windows itself already pins those folders in the
+  // dialog's left nav. `systemFolders: []` is preserved in the payload
+  // shape for backwards compat with any cached renderer build that still
+  // reads it.
   const data = store.get('appData') || {};
   const presets = Array.isArray(data.presets) ? data.presets : [];
-  const home = process.env.USERPROFILE || '';
 
   const slimSpace = (s) => ({
     id: s.id,
@@ -1239,11 +1262,7 @@ function buildDialogPopupState() {
   });
 
   return {
-    systemFolders: home ? [
-      { id: '__sys-downloads', title: '다운로드',  path: `${home}\\Downloads` },
-      { id: '__sys-desktop',   title: '바탕화면',  path: `${home}\\Desktop` },
-      { id: '__sys-documents', title: '문서',      path: `${home}\\Documents` },
-    ] : [],
+    systemFolders: [],
     activePresetId: data.activePresetId,
     presets: presets.map(p => ({
       id: p.id,
@@ -1266,16 +1285,50 @@ function destroyDialogPopupWindow() {
   dialogPopupWin = null;
 }
 
+// Approximate Windows Save-As dialog title-bar height in DIP. The popup
+// strip is parked at the bottom of the title bar so it visually sits
+// "right above the address bar" — the title bar still drag-handles work
+// (we don't capture pointer events on the strip's transparent area), but
+// the chips no longer require the user to look up and away from where
+// they're typing the filename. Empirically 30 px is a tight fit at the
+// usual 100% scale; bumped slightly so high-contrast themes that
+// thicken the title bar still don't clip the navigation strip below.
+const DIALOG_POPUP_TITLEBAR_PX = 32;
+
 function positionDialogPopup(rect) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
   dialogLastRect = rect;
-  const width  = Math.max(420, Math.min(rect.width, 900));
-  const x      = Math.round(rect.x + (rect.width - width) / 2);
-  // Anchor the chip-strip's bottom edge to (dialog.y - 6). The window
-  // extends below that by (DIALOG_POPUP_HEIGHT - DIALOG_POPUP_STRIP_HEIGHT)
-  // pixels of transparent click-through space — that's where the dropdown
-  // menu opens.
-  const y = Math.round(rect.y - DIALOG_POPUP_STRIP_HEIGHT - DIALOG_POPUP_OFFSET);
+  // Popup width is INDEPENDENT of the dialog width — small Save-As
+  // dialogs (typical default ~520 px) used to hand us a 520 px popup
+  // and the chip strip clipped silently behind a hidden horizontal
+  // scrollbar. Bumping the floor to 720 px keeps the brand + ~4 chips
+  // + preset dropdown + close button visible at the default size; we
+  // still cap at 1100 to avoid an absurd-wide strip on a wide dialog.
+  const width  = Math.max(720, Math.min(rect.width + 240, 1100));
+  // Centre relative to the dialog, but clamp horizontally to the host
+  // display so a narrow dialog parked near the screen edge doesn't
+  // push the popup off-screen. Without this we used to chop ~200 px
+  // of chips on small / corner-docked dialogs.
+  let x = Math.round(rect.x + (rect.width - width) / 2);
+  try {
+    const screen = getScreen();
+    const disp = screen.getDisplayMatching({
+      x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+    });
+    const wa = disp.workArea;
+    const minX = wa.x + 4;
+    const maxX = wa.x + wa.width - width - 4;
+    if (x < minX) x = minX;
+    if (x > maxX) x = maxX;
+  } catch (_) { /* fall back to the centred x */ }
+  // Anchor the chip strip's bottom edge to just inside the dialog —
+  // overlapping the title bar (which is fixed chrome) by ~32 px so the
+  // strip sits directly above the navigation / address bar that lives
+  // immediately below the title. Earlier design placed the strip
+  // entirely above the dialog (rect.y - STRIP - 6) which left a large
+  // visual gap and made the user's eye dart up-and-back-down between
+  // chips and the address input.
+  const y = Math.round(rect.y + DIALOG_POPUP_TITLEBAR_PX - DIALOG_POPUP_STRIP_HEIGHT);
   try {
     dialogPopupWin.setBounds({ x, y, width, height: DIALOG_POPUP_HEIGHT });
   } catch (_) { /* dialog moved off-screen mid-set; ignore */ }
@@ -1454,7 +1507,17 @@ function buildBadgePayload(data) {
   for (const b of badges) {
     if (b.refType === 'space') {
       const s = spaces.find(x => x.id === b.refId);
-      if (!s) continue;
+      if (!s) {
+        // Silently filtering a badge here is the difference between
+        // "user pinned 4 badges, sees 3" and "user pinned 4 badges,
+        // sees 3 with no idea why one's gone." Log so future badge-
+        // disappear reports can be triaged from main.log instead of
+        // guesswork. The badge entry stays in store (lazy hide), so
+        // restoring the referenced space (e.g. via undo) automatically
+        // brings it back on the next sync.
+        log.warn(`[badges] dangling space ref — badgeId=${b.id} refId=${b.refId} (badge hidden, store entry kept)`);
+        continue;
+      }
       // Hide container-absorbed cards (hiddenInSpace) and sort pinned first
       // so the mini-window matches what the user sees in the main grid.
       const visible = (s.items ?? []).filter(i => !i.hiddenInSpace);
@@ -1475,7 +1538,10 @@ function buildBadgePayload(data) {
       });
     } else if (b.refType === 'node') {
       const n = nodes.find(x => x.id === b.refId);
-      if (!n) continue;
+      if (!n) {
+        log.warn(`[badges] dangling node ref — badgeId=${b.id} refId=${b.refId}`);
+        continue;
+      }
       const items = (n.itemIds ?? [])
         .map(id => allItems.get(id))
         .filter(Boolean)
@@ -1485,14 +1551,20 @@ function buildBadgePayload(data) {
         x: b.x, y: b.y,
         label: n.name,
         color: '#a78bfa',
-        icon: 'hub',
+        // User-picked Material Symbol (NodePanel header picker) wins;
+        // fall back to the historic 'hub' default when absent so badges
+        // for nodes created before the picker shipped still render.
+        icon: n.icon || 'hub',
         iconIsEmoji: false,
         count: items.length,
         items,
       });
     } else if (b.refType === 'deck') {
       const d = decks.find(x => x.id === b.refId);
-      if (!d) continue;
+      if (!d) {
+        log.warn(`[badges] dangling deck ref — badgeId=${b.id} refId=${b.refId}`);
+        continue;
+      }
       const items = (d.itemIds ?? [])
         .map(id => allItems.get(id))
         .filter(Boolean)
@@ -1715,6 +1787,63 @@ function syncBadgeOverlay() {
   }
 }
 
+/**
+ * Refresh per-display overlay windows that DWM may have de-prioritised.
+ *
+ * User-reported pattern (2026-05): "all badges disappear over time, and
+ * also after preset switch, but creating a new badge brings them back."
+ * That symptom matches Windows DWM treating idle transparent always-on-
+ * top windows as inactive and dropping them out of the active z-order
+ * — once we send a fresh paint event (state push) or call show() again
+ * on each window, DWM re-registers them.
+ *
+ * Three triggers call this:
+ *   - powerMonitor 'resume' / 'unlock-screen' (return from sleep)
+ *   - mainWindow 'show' / 'focus' (user came back to nost)
+ *   - 60 s periodic tick (catches the slow-creep "(d) just disappears
+ *     over time" case the user reported)
+ *
+ * Cheap: walks the existing overlay map. If the underlying window is
+ * gone or hidden, defers to the full syncBadgeOverlay path (which
+ * recreates as needed). Otherwise just re-asserts always-on-top + a
+ * fresh state push, which is enough to wake DWM.
+ */
+function reviveBadgeOverlays(reason) {
+  if (badgeOverlays.size === 0) return;
+  const data = store.get('appData') || {};
+  if (!Array.isArray(data.floatingBadges) || data.floatingBadges.length === 0) return;
+
+  let revived = 0, recreated = 0;
+  const displays = getScreen().getAllDisplays();
+  const displayById = new Map(displays.map(d => [d.id, d]));
+
+  for (const [id, win] of [...badgeOverlays]) {
+    if (!win || win.isDestroyed()) {
+      badgeOverlays.delete(id);
+      const d = displayById.get(id);
+      if (d) { createBadgeOverlayForDisplay(d); recreated++; }
+      continue;
+    }
+    try {
+      // Re-assert top-most level (DWM may have demoted it after long
+      // idle). showInactive is a no-op when already visible but emits
+      // the WM events DWM uses to refresh its z-order tracking.
+      win.setAlwaysOnTop(true, 'screen-saver');
+      if (!win.isVisible()) {
+        win.showInactive();
+        revived++;
+      }
+      const d = displayById.get(id);
+      if (d) pushBadgeStateForDisplay(d, win);
+    } catch (e) {
+      log.warn(`[badges] revive failed for display=${id}:`, e?.message);
+    }
+  }
+  if (revived || recreated) {
+    log.debug(`[badges] reviveBadgeOverlays(${reason}) revived=${revived} recreated=${recreated}`);
+  }
+}
+
 /** Walk the badges list, reanchor any whose coord is on no visible display.
  *  Persists if anything changed so the next reload keeps the corrected
  *  positions instead of stranding them again. */
@@ -1833,7 +1962,24 @@ function createWindow() {
   wc.on('dom-ready', () => rdbg('webContents: dom-ready'));
   wc.on('did-finish-load', () => rdbg('webContents: did-finish-load'));
   wc.on('did-fail-load', (_e, code, desc, url) => rdbg(`webContents: did-fail-load code=${code} desc=${desc} url=${url}`));
-  wc.on('render-process-gone', (_e, details) => rdbg('webContents: render-process-gone', details));
+  wc.on('render-process-gone', (_e, details) => {
+    rdbg('webContents: render-process-gone', details);
+    // Renderer is dead — any suppress-autohide registrations it owned
+    // (clean-mode, tutorial, busy:* from useBusyMark) will never get
+    // a cleanup IPC. Without this clear, the Set would leak forever
+    // and autoHide would silently stay disabled across the next
+    // renderer life. See `plans/focus-state-audit.md` Issue 3.
+    if (suppressAutoHideSources.size > 0) {
+      log.warn(`[suppress-autohide] clearing ${suppressAutoHideSources.size} stale source(s) after render-process-gone: [${Array.from(suppressAutoHideSources).join(',')}]`);
+      suppressAutoHideSources.clear();
+    }
+  });
+  wc.on('destroyed', () => {
+    if (suppressAutoHideSources.size > 0) {
+      log.warn(`[suppress-autohide] clearing ${suppressAutoHideSources.size} stale source(s) after webContents destroyed`);
+      suppressAutoHideSources.clear();
+    }
+  });
   wc.on('unresponsive', () => rdbg('webContents: unresponsive'));
   wc.on('responsive', () => rdbg('webContents: responsive'));
   wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -2249,6 +2395,15 @@ function registerIpcHandlers() {
 
   /** Hide the launcher window (e.g. after a card action). */
   ipcMain.on('hide-app', () => mainWindow.hide());
+
+  // Renderer-side close-after request — runs through the SSOT funnel
+  // so suppression (clean mode, tutorial, busy modals) is honored.
+  // Distinct from `hide-app`, which is the explicit user-intent path
+  // (Esc / X button / global toggle) that intentionally bypasses
+  // policy. See `plans/focus-state-audit.md` Issue 2.
+  ipcMain.on('request-close-after', () => {
+    tryDismissWindow('close-after', { closeAfter: true });
+  });
 
   /**
    * Move the window to an absolute screen position (right-click drag).
@@ -2991,6 +3146,7 @@ function registerIpcHandlers() {
     if (tab) sendSse({ action: 'focus', tabId: tab.id, windowId: tab.windowId });
     else     shell.openExternal(url);
     maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
     reassertTopAfterLaunch(closeAfter);
   });
 
@@ -3000,6 +3156,7 @@ function registerIpcHandlers() {
       env: { ...process.env, QL_PATH: folderPath },
     });
     maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
     reassertTopAfterLaunch(closeAfter);
   });
 
@@ -3009,6 +3166,7 @@ function registerIpcHandlers() {
       if (err) console.error('[run-cmd]', err.message);
     });
     maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
     reassertTopAfterLaunch(closeAfter);
   });
 
@@ -3031,6 +3189,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('launch-or-focus-app', async (_, exePath, closeAfter, _monitor) => {
     maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
     reassertTopAfterLaunch(closeAfter);
     try {
       const { stdout } = await runPsAsync('launch-or-focus-app.ps1', { QL_PATH: exePath }, { timeout: 10000 });
@@ -3058,6 +3217,7 @@ function registerIpcHandlers() {
 
   ipcMain.handle('focus-window', async (_, title, closeAfter) => {
     maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
     reassertTopAfterLaunch(closeAfter);
     try {
       const { stdout } = await runPsAsync('focus-window.ps1', { QL_TITLE: title }, { timeout: 5000 });
@@ -3817,6 +3977,20 @@ function registerIpcHandlers() {
     sendSafe('badges-launch-ref', payload);
   });
 
+  /** Main renderer says the badge-fired group launch finished — relay
+   *  to every overlay so the spinner ring on the originating badge
+   *  can clear immediately (rather than waiting for the safety
+   *  timeout). The overlay matches by refType+refId, not badge.id,
+   *  since the badge may live in multiple presets/overlays. */
+  ipcMain.on('badges-launch-done', (_e, payload) => {
+    if (!payload || !payload.refType || !payload.refId) return;
+    for (const win of badgeOverlays.values()) {
+      if (win && !win.isDestroyed()) {
+        try { win.webContents.send('badges-launch-done', payload); } catch {}
+      }
+    }
+  });
+
   /** Overlay sends this when the user drops a badge back inside the main
    *  window OR right-clicks → unpin. */
   ipcMain.on('badges-unpin', (_e, badgeId) => {
@@ -4074,6 +4248,35 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+
+  // ── Badge revival triggers ────────────────────────────────────────
+  //
+  // Watch for the events that empirically correlate with badge
+  // overlays "disappearing": power state changes, main window getting
+  // focus back, and slow-creep idle. Each fires reviveBadgeOverlays()
+  // which re-asserts always-on-top + sends a fresh paint event,
+  // enough to nudge DWM to re-register the windows in its z-order.
+  try {
+    const { powerMonitor } = require('electron');
+    powerMonitor.on('resume',         () => reviveBadgeOverlays('power-resume'));
+    powerMonitor.on('unlock-screen',  () => reviveBadgeOverlays('screen-unlock'));
+    // 'on-ac' / 'on-battery' are noisy and don't correlate with the
+    // bug — skipped intentionally.
+  } catch (e) {
+    log.warn('[badges] powerMonitor hook failed:', e?.message);
+  }
+  // mainWindow events: when user comes back to the launcher (or even
+  // just opens it via shortcut), refresh overlays. show + focus both
+  // because focus alone can miss the case where the launcher is
+  // already focused but badges have rotted in the meantime.
+  if (mainWindow) {
+    mainWindow.on('show',  () => reviveBadgeOverlays('main-show'));
+    mainWindow.on('focus', () => reviveBadgeOverlays('main-focus'));
+  }
+  // Periodic safety net for the "(d) just disappears over time" case.
+  // 60 s is long enough not to cost anything, short enough that the
+  // user notices recovery within a minute.
+  setInterval(() => reviveBadgeOverlays('periodic'), 60_000);
 
   // Floating orb + pinned-badge BrowserWindow spawn is DEFERRED to
   // after the renderer signals boot complete (`renderer-ready`).

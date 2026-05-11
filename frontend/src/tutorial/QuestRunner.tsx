@@ -174,7 +174,16 @@ export function QuestRunner({ quest, stepIdx, data, onAdvance, onSkip, onPause }
   // ── ESC = pause ─────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.preventDefault(); onPause(); }
+      if (e.key === 'Escape') {
+        // Stop propagation so the global ESC handler in App.tsx
+        // doesn't *also* fire on the same keystroke (it used to
+        // escalate to hideApp() when nothing else was on top).
+        // preventDefault alone is not enough — capture-phase
+        // listeners still bubble through to window.
+        e.preventDefault();
+        e.stopPropagation();
+        onPause();
+      }
     };
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);

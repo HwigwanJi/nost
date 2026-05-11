@@ -393,6 +393,11 @@ export interface NodeGroup {
   name: string;       // user-defined workflow name
   itemIds: string[];  // 2~3 item IDs linked together
   monitor?: number;   // preferred monitor for launch
+  /** Material Symbol name to show in the node header + on the
+   *  floating badge. Falls back to 'hub' when absent (the historic
+   *  hardcoded value) so existing stores render unchanged after
+   *  upgrade. Same picker pattern as space.icon. */
+  icon?: string;
 }
 
 /**

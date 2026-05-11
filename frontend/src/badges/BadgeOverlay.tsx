@@ -26,6 +26,8 @@ interface BadgeApi {
   /** Returns an unsubscribe fn — call from useEffect cleanup so
    *  StrictMode's mount→unmount→remount doesn't pile up listeners. */
   onState:        (cb: (s: OverlayState) => void) => () => void;
+  /** Subscribe to "your fired group launch completed" pushes from main. */
+  onLaunchDone:   (cb: (p: { refType: BadgeData['refType']; refId: string }) => void) => () => void;
   /** Ask main to (re-)push the current overlay state. Used at mount
    *  to defeat a race where main's one-shot ready-to-show push fired
    *  before this component's useEffect registered its listener — see
@@ -71,6 +73,44 @@ export function BadgeOverlay() {
   const seenRefsRef = useRef<Set<string>>(new Set());
   /** ID of the badge whose mini-window is currently expanded, or null. */
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  /** Badge IDs currently showing the "launching" spinner. Set when the
+   *  user fires a node/deck group launch from the badge, cleared after
+   *  a fallback timeout (no completion IPC back from the renderer yet,
+   *  so we time it generously). Keyed by badge.id because the user can
+   *  fire two different node badges concurrently and we want each one's
+   *  spinner to be independent. */
+  const [launchingIds, setLaunchingIds] = useState<Set<string>>(() => new Set());
+  const launchClearTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const beginLaunchSpinner = useCallback((badgeId: string, ms = 5000) => {
+    // Replace any pending clear for this badge so a re-click extends
+    // the spinner instead of stomping it mid-flight.
+    const timers = launchClearTimersRef.current;
+    const existing = timers.get(badgeId);
+    if (existing) clearTimeout(existing);
+    setLaunchingIds(prev => {
+      if (prev.has(badgeId)) return prev;
+      const next = new Set(prev);
+      next.add(badgeId);
+      return next;
+    });
+    const t = setTimeout(() => {
+      timers.delete(badgeId);
+      setLaunchingIds(prev => {
+        if (!prev.has(badgeId)) return prev;
+        const next = new Set(prev);
+        next.delete(badgeId);
+        return next;
+      });
+    }, ms);
+    timers.set(badgeId, t);
+  }, []);
+  useEffect(() => {
+    // Cleanup on unmount — strict mode or hot-reload otherwise leaks timers.
+    return () => {
+      for (const t of launchClearTimersRef.current.values()) clearTimeout(t);
+      launchClearTimersRef.current.clear();
+    };
+  }, []);
   // Tracks the current capture flag so we only send IPC on transitions.
   const captureRef = useRef(false);
 
@@ -93,6 +133,30 @@ export function BadgeOverlay() {
     api.requestState();
     return off;
   }, []);
+
+  // Clear the spinner ring as soon as the main renderer reports that
+  // the launch finished — much snappier than waiting on the safety
+  // timeout. Look up which badge IDs match the (refType, refId) tuple
+  // since the IPC carries the semantic ref, not the per-pin badge id.
+  useEffect(() => {
+    return api.onLaunchDone(({ refType, refId }) => {
+      const matchIds = state.badges
+        .filter(b => b.refType === refType && b.refId === refId)
+        .map(b => b.id);
+      if (matchIds.length === 0) return;
+      // Cancel pending timeouts and drop spinner state in one pass.
+      setLaunchingIds(prev => {
+        if (matchIds.every(id => !prev.has(id))) return prev;
+        const next = new Set(prev);
+        for (const id of matchIds) {
+          next.delete(id);
+          const t = launchClearTimersRef.current.get(id);
+          if (t) { clearTimeout(t); launchClearTimersRef.current.delete(id); }
+        }
+        return next;
+      });
+    });
+  }, [state.badges]);
 
   // Click-through management.
   //
@@ -123,10 +187,39 @@ export function BadgeOverlay() {
     }
   }, []);
 
-  // Badge click handler — toggles mini-window open/closed.
+  // Badge click handler.
+  //
+  // Semantics aligned with main-app cards:
+  //   - node badge  → launch the whole group immediately (mirrors clicking
+  //                   a node card in the main grid: one click = action).
+  //   - deck badge  → launch the deck sequentially (same reasoning).
+  //   - space badge → toggle the mini-window popover so the user can pick
+  //                   which item inside the space to launch (space has no
+  //                   single "launch" semantic — it's a folder).
+  //
+  // Before this change, every badge type opened the mini-window first,
+  // which forced a two-click action for node/deck and felt inconsistent
+  // with the main grid. The mini-window's "묶음 실행" button on
+  // node/deck was effectively dead UI once this was wired. Right-click
+  // still opens the context menu (Badge.tsx handleContextMenu →
+  // api.contextMenu) for inspection / unpin / customisation.
   const handleBadgeClick = useCallback((badgeId: string) => {
+    const b = state.badges.find(x => x.id === badgeId);
+    if (!b) return;
+    if (b.refType === 'node' || b.refType === 'deck') {
+      api.launchRef(b.refType, b.refId);
+      // Visual feedback — mainWindow is usually hidden when the user
+      // clicks a badge, so its in-window toast never reaches the eye.
+      // The spinner ring on the badge itself fills that gap.
+      beginLaunchSpinner(b.id);
+      // Close any open mini-window so a previously-expanded space badge
+      // doesn't linger after the user moves to a node/deck.
+      setExpandedId(null);
+      return;
+    }
+    // space → toggle mini-window (existing behavior)
     setExpandedId(prev => prev === badgeId ? null : badgeId);
-  }, []);
+  }, [state.badges]);
 
   const expandedBadge = expandedId
     ? state.badges.find(b => b.id === expandedId) ?? null
@@ -165,6 +258,7 @@ export function BadgeOverlay() {
             onClick={() => handleBadgeClick(b.id)}
             skipLanding={!isFreshMount}
             size={state.badgeSize ?? 46}
+            launching={launchingIds.has(b.id)}
           />
         );
       })}

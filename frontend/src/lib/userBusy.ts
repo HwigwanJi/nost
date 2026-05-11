@@ -117,6 +117,15 @@ import { useEffect } from 'react';
  * `active` is true. The cleanup always clears the mark, so unmounts and
  * crashes can't strand the registry in a stuck-busy state.
  *
+ * Side effect — autoHide suppression:
+ *   While `active` is true we also tell main to suppress the
+ *   autoHide-on-blur policy for this key. Without this, opening a modal
+ *   and alt-tabbing to verify something in another window would trigger
+ *   the launcher's blur handler and yank the modal off-screen mid-task.
+ *   The suppression source is namespaced (`busy:<key>`) so it can't
+ *   collide with the explicit registrations from clean-mode and the
+ *   tutorial. See `plans/focus-state-audit.md` Issue 1.
+ *
  * Usage:
  *   useBusyMark('modal:welcome', open);
  */
@@ -124,6 +133,11 @@ export function useBusyMark(key: string, active: boolean): void {
   useEffect(() => {
     if (!active) return;
     setBusy(key, true);
-    return () => setBusy(key, false);
+    const source = `busy:${key}`;
+    try { window.electronAPI?.setSuppressAutoHide?.(true, source); } catch { /* preload missing in tests */ }
+    return () => {
+      setBusy(key, false);
+      try { window.electronAPI?.setSuppressAutoHide?.(false, source); } catch { /* idem */ }
+    };
   }, [key, active]);
 }

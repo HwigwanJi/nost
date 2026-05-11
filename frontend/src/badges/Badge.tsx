@@ -60,6 +60,13 @@ interface Props {
    *  works; absent value falls back to the historical 46 px so the
    *  visual matches every install pre-v1.3.17. */
   size?: number;
+  /** True while a node/deck group launch fired from this badge is in
+   *  flight. Renders an orbiting ring around the bubble so the user
+   *  gets feedback when mainWindow is hidden (the usual case — the
+   *  launcher's own toast lives inside it). BadgeOverlay sets this
+   *  on click and clears on a fallback timeout (no done-signal IPC
+   *  yet; the timeout is comfortably longer than a normal tile). */
+  launching?: boolean;
 }
 
 // Circular bubble — icon-only, no dangling text label. The click expands a
@@ -90,7 +97,7 @@ const TYPE_GLYPH: Record<BadgeData['refType'], string> = {
   deck:  '■',
 };
 
-export function Badge({ data, originX, originY, api, onClick, skipLanding = false, size }: Props) {
+export function Badge({ data, originX, originY, api, onClick, skipLanding = false, size, launching = false }: Props) {
   // Resolve the effective bubble diameter once per render. Pulled out of
   // the style object so the inner icon/dot sizes (which scale relative
   // to the bubble) can read the same number without re-doing the
@@ -338,6 +345,12 @@ export function Badge({ data, originX, originY, api, onClick, skipLanding = fals
           0%   { transform: scale(0.84); opacity: 0; }
           100% { transform: scale(1);    opacity: 1; }
         }
+        /* Orbiting ring shown while a node/deck launch is in flight.
+           Two thin arcs spinning in opposite directions read as
+           "working" without being noisy. Composited transforms keep
+           it cheap. */
+        @keyframes nost-badge-spin-cw  { to { transform: rotate(360deg); } }
+        @keyframes nost-badge-spin-ccw { to { transform: rotate(-360deg); } }
       `}</style>
       <div
         data-badge={data.id}
@@ -360,6 +373,37 @@ export function Badge({ data, originX, originY, api, onClick, skipLanding = fals
               ? <span style={colorDot} />
               : <span>{iconContent}</span>}
         </div>
+        {launching && (
+          <>
+            {/* Two thin arcs orbiting the bubble in opposite directions.
+                Sized just outside the bubble so the icon stays readable. */}
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                inset: -4,
+                borderRadius: '50%',
+                border: '2px solid transparent',
+                borderTopColor: hexToRgba(color, 0.95),
+                borderRightColor: hexToRgba(color, 0.55),
+                animation: 'nost-badge-spin-cw 900ms linear infinite',
+                pointerEvents: 'none',
+              }}
+            />
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                inset: -8,
+                borderRadius: '50%',
+                border: '1.5px solid transparent',
+                borderBottomColor: hexToRgba(color, 0.7),
+                animation: 'nost-badge-spin-ccw 1400ms linear infinite',
+                pointerEvents: 'none',
+              }}
+            />
+          </>
+        )}
       </div>
     </>
   );

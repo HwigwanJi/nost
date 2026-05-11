@@ -263,8 +263,8 @@ export function SpaceAccordion({
               onChange={e => setDraft(e.target.value)}
               onBlur={() => { onRename(draft); setIsRenaming(false); }}
               onKeyDown={e => {
-                if (e.key === 'Enter') { onRename(draft); setIsRenaming(false); }
-                if (e.key === 'Escape') { setDraft(space.name); setIsRenaming(false); }
+                if (e.key === 'Enter') { e.stopPropagation(); onRename(draft); setIsRenaming(false); }
+                if (e.key === 'Escape') { e.stopPropagation(); setDraft(space.name); setIsRenaming(false); }
               }}
               className="flex-1 bg-transparent font-semibold text-[13px] outline-none border-b"
               style={{ color: 'var(--text-color)', borderColor: 'var(--border-focus)' }}

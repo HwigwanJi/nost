@@ -1299,10 +1299,19 @@ export default function App() {
         r.store.incrementClickCount(ownerSpaceId, itemId);
       }
     });
-    const offRef = electronAPI.onBadgesLaunchRef(({ refType, refId }) => {
+    const offRef = electronAPI.onBadgesLaunchRef(async ({ refType, refId }) => {
       const r = badgeLaunchRef.current;
-      if (refType === 'node') r.handleNodeGroupLaunch(refId);
-      else if (refType === 'deck') r.handleDeckLaunch(refId);
+      try {
+        if (refType === 'node') await r.handleNodeGroupLaunch(refId);
+        else if (refType === 'deck') await r.handleDeckLaunch(refId);
+      } finally {
+        // Tell the badge overlay the launch resolved (success or fail)
+        // so the spinner ring stops without waiting on its safety
+        // timeout. We await above so this fires AFTER launchItemsForTile
+        // and runTilePs/deckLaunch settle, which is the right semantic
+        // for "we're done working on this group".
+        try { electronAPI.notifyBadgesLaunchDone({ refType, refId }); } catch { /* preload may be absent in tests */ }
+      }
     });
     return () => { offItem(); offRef(); };
   }, []);
@@ -1730,7 +1739,15 @@ export default function App() {
       if (tileOverlayGroup) { dismissTileOverlay(); return; }
       // Priority 4: close dialog
       if (dialog !== 'none') { setDialog('none'); setEditItem(null); setPrefilledItem(null); return; }
-      // Priority 5: hide app
+      // Priority 5: hide app — but ONLY when nothing is busy. Any
+      // open modal/wizard/picker marks itself via `useBusyMark`, and
+      // we must not let ESC escalate past those layers and yank the
+      // launcher away while the user is mid-task. Also covers cases
+      // where a base-ui dialog handled ESC itself but didn't stop
+      // native propagation; without this guard the global handler
+      // would still reach hideApp() on the same keystroke. See
+      // `plans/escape-stack-audit.md` §3 / §4.
+      if (isUserBusy()) return;
       electronAPI.hideApp();
     };
     window.addEventListener('keydown', handler);
@@ -2287,15 +2304,23 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenPicker]);
 
+  // Latest-data ref so post-save toasts can resolve the freshly-added
+  // item even though their `onRequestAdvanced` closure was captured
+  // BEFORE setRawData committed (the toast button clicks fire 1-5 s
+  // later through a stale closure that wouldn't otherwise see the
+  // new id). Updated on every render — cheap.
+  const dataSpacesRef = useRef(data.spaces);
+  dataSpacesRef.current = data.spaces;
+
+  // Stable identity (no deps) so the toast's captured `onRequestAdvanced`
+  // remains valid no matter how many re-renders happen between the
+  // showToast call and the user clicking 꾸미기. Reads `data.spaces`
+  // through dataSpacesRef so each invocation sees the latest store.
   const handleRequestAdvanced = useCallback((spaceId: string) => {
     const ref = lastAddedItemRef.current;
     if (!ref) return;
-    // Find the freshly-saved item in either the dialog's chosen space
-    // or the recorded one (they should match, but the dialog's value
-    // wins). This covers the post-save state where the store has just
-    // been updated and the new id is in `data.spaces`.
     const finalSpaceId = spaceId || ref.spaceId;
-    const space = data.spaces.find(s => s.id === finalSpaceId);
+    const space = dataSpacesRef.current.find(s => s.id === finalSpaceId);
     const item = space?.items.find(i => i.id === ref.id);
     if (!item) return;
     setEditItem(item);
@@ -2303,7 +2328,7 @@ export default function App() {
     setPrefilledItem(null);
     setItemDialogStartAdvanced(true);
     setDialog('item');
-  }, [data.spaces]);
+  }, []);
 
   // ── Item launcher (shared between card clicks & commands) ─
   const launchItem = useCallback((item: LauncherItem, spaceId: string) => {

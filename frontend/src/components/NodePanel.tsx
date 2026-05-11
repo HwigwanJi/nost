@@ -2,6 +2,25 @@ import { useState, useEffect, useRef } from 'react';
 import type { NodeGroup, Deck, LauncherItem } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+
+// Monotone Material Symbols — node icon picker. Mirrors SPACE_ICONS in
+// SpaceAccordion both visually (same set + "hub" added as the default
+// representative) and semantically (single-tap on the icon opens the
+// picker, picking again clears back to default). Kept inline rather
+// than in a shared module because the set is small and the two pickers
+// are intentionally allowed to diverge (different domain hints — node
+// favors "workflow / hub / lightbulb" shapes, space favors "container
+// / shelf / book").
+const NODE_ICONS = [
+  'hub', 'workspaces', 'lightbulb', 'rocket_launch', 'sports_esports',
+  'work', 'menu_book', 'build', 'terminal', 'edit_note',
+  'flag', 'star', 'bolt', 'auto_awesome', 'category',
+];
+import {
   DndContext,
   closestCenter,
   PointerSensor,
@@ -35,7 +54,7 @@ interface NodePanelProps {
   onDeleteGroup: (groupId: string) => void;
   onRenameGroup: (groupId: string, name: string) => void;
   onReorderGroupItems: (groupId: string, itemIds: string[]) => void;
-  onUpdateGroup: (groupId: string, patch: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor'>>) => void;
+  onUpdateGroup: (groupId: string, patch: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor' | 'icon'>>) => void;
   /** Promote this group into the global edit-existing mode (B mode).
    *  When called, the main grid becomes click-to-toggle for membership;
    *  see useNodeDeckMode.handleStartEditExistingGroup. */
@@ -255,6 +274,7 @@ export function NodePanel({
                   onRenameCancel={() => setRenamingId(null)}
                   onReorderItems={itemIds => onReorderGroupItems(group.id, itemIds)}
                   onSetMonitor={monitor => onUpdateGroup(group.id, { monitor })}
+                  onSetIcon={icon => onUpdateGroup(group.id, { icon })}
                   onFloatOut={onFloatOutNode ? () => onFloatOutNode(group.id) : undefined}
                   isFloating={floatingNodeIds?.has(group.id)}
                   isGlobalEditing={editingNodeGroupId === group.id}
@@ -287,7 +307,10 @@ export function NodePanel({
                 {nodeBuilding.length >= 2 && (
                   <div style={{ marginTop: 10 }}>
                     <input ref={nodeNameRef} value={nodeEditName} onChange={e => setNodeEditName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleSaveNode(); if (e.key === 'Escape') onCancelEdit(); }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.stopPropagation(); handleSaveNode(); }
+                        if (e.key === 'Escape') { e.stopPropagation(); onCancelEdit(); }
+                      }}
                       placeholder={`노드 ${nodeGroups.length + 1}`}
                       style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border-focus)', borderRadius: 6, padding: '5px 8px', fontSize: 11, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
                     <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
@@ -348,7 +371,10 @@ export function NodePanel({
                       ref={deckNameRef}
                       value={deckEditName}
                       onChange={e => setDeckEditName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleSaveDeck(); if (e.key === 'Escape') onCancelDeckBuild(); }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.stopPropagation(); handleSaveDeck(); }
+                        if (e.key === 'Escape') { e.stopPropagation(); onCancelDeckBuild(); }
+                      }}
                       placeholder={`덱 ${decks.length + 1}`}
                       style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border-focus)', borderRadius: 6, padding: '5px 8px', fontSize: 11, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
                     />
@@ -431,6 +457,7 @@ function NodeGroupCard({
   draggingItemId,
   onLaunch, onDelete, onStartRename, onRenameDraftChange,
   onRenameConfirm, onRenameCancel, onReorderItems, onSetMonitor,
+  onSetIcon,
   onFloatOut, isFloating,
   isGlobalEditing, onStartGlobalEdit, onEndGlobalEdit,
 }: {
@@ -441,6 +468,9 @@ function NodeGroupCard({
   onRenameDraftChange: (v: string) => void; onRenameConfirm: () => void;
   onRenameCancel: () => void; onReorderItems: (itemIds: string[]) => void;
   onSetMonitor: (monitor: number | undefined) => void;
+  /** Persist a Material Symbol name (or empty string to revert to the
+   *  'hub' fallback). Wired through onUpdateGroup → store.updateNodeGroup. */
+  onSetIcon: (icon: string) => void;
   onFloatOut?: () => void; isFloating?: boolean;
   /** True when this card is the target of the global B-mode edit. The
    *  card visually pulses + the main grid becomes click-to-toggle. */
@@ -553,10 +583,61 @@ function NodeGroupCard({
       )}
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '9px 10px 6px', gap: 6 }}>
-        <Icon name="hub" size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
+        {/* Icon picker — clicking the leading symbol opens a small
+            grid identical in pattern to SpaceAccordion's "더 보기"
+            icon section. We attach it directly to the existing icon
+            (rather than adding a new "more" button) so the node card
+            header layout doesn't grow a new chrome row. Click on
+            the trigger itself: stopPropagation so the card's
+            launch-on-click handler doesn't fire. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            onClick={e => e.stopPropagation()}
+            title="아이콘 변경"
+            style={{
+              background: 'none', border: 'none', padding: 0,
+              cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+              color: 'var(--accent)', flexShrink: 0, lineHeight: 0,
+            }}
+          >
+            <Icon name={group.icon || 'hub'} size={13} color="var(--accent)" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" sideOffset={4} onClick={e => e.stopPropagation()}>
+            <div style={{ padding: '6px 8px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>아이콘</div>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 180 }}>
+                {NODE_ICONS.map(iconName => {
+                  const selected = (group.icon || 'hub') === iconName;
+                  return (
+                    <button
+                      key={iconName}
+                      title={iconName}
+                      // Picking the currently-active icon clears back to
+                      // the default ('hub'). Mirrors SpaceAccordion's
+                      // toggle-off behaviour so the picker doubles as a
+                      // reset.
+                      onClick={() => onSetIcon(selected ? '' : iconName)}
+                      style={{
+                        width: 26, height: 26, borderRadius: 4, border: 'none', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: selected ? 'var(--surface-hover)' : 'transparent',
+                        outline: selected ? '2px solid var(--border-focus)' : 'none',
+                      }}
+                    >
+                      <Icon name={iconName} size={16} color={selected ? 'var(--text-color)' : 'var(--text-muted)'} />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {isRenaming ? (
           <input autoFocus value={renameDraft} onChange={e => onRenameDraftChange(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') onRenameConfirm(); if (e.key === 'Escape') onRenameCancel(); }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.stopPropagation(); onRenameConfirm(); }
+              if (e.key === 'Escape') { e.stopPropagation(); onRenameCancel(); }
+            }}
             // `relatedTarget` carries the element the focus moved to. When the
             // user clicks the 완료 button, blur fires FIRST with that button as
             // relatedTarget — ignoring the blur in that case lets the button's
@@ -708,7 +789,10 @@ function NodeGroupCard({
                   ref={pickerInputRef}
                   value={pickerQuery}
                   onChange={e => setPickerQuery(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Escape') { setShowPicker(false); setPickerQuery(''); } if (e.key === 'Enter' && pickerItems.length > 0) handleAddItem(pickerItems[0].id); }}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') { e.stopPropagation(); setShowPicker(false); setPickerQuery(''); }
+                    if (e.key === 'Enter' && pickerItems.length > 0) { e.stopPropagation(); handleAddItem(pickerItems[0].id); }
+                  }}
                   placeholder="카드 검색..."
                   style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontSize: 10, color: 'var(--text-color)', fontFamily: 'inherit' }}
                 />
@@ -813,7 +897,10 @@ function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelet
         <Icon name="stacks" size={13} color={DECK_COLOR} style={{ flexShrink: 0 }} />
         {renaming ? (
           <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); } if (e.key === 'Escape') setRenaming(false); }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.stopPropagation(); onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); }
+              if (e.key === 'Escape') { e.stopPropagation(); setRenaming(false); }
+            }}
             onBlur={e => {
               const next = e.relatedTarget as HTMLElement | null;
               if (next?.closest('[data-rename-done]')) return;

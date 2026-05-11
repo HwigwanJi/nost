@@ -808,8 +808,13 @@ export function ItemDialog({
           </div>
           <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)' }}>
             <Button variant="ghost" onClick={onClose}>닫기</Button>
+            {/* Inline shortcut chip removed (was producing the awkward
+                left-only margin on the dark Save button). Modern apps
+                surface keyboard hints in the hover tooltip — see
+                `title` below — and document them in the help / shortcut
+                cheat sheet, not on the button face. */}
             <Button onClick={() => handleSave()} title="저장 (Ctrl + Enter)">
-              저장 <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.7, fontWeight: 400 }}>Ctrl+Enter</span>
+              저장
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -989,10 +994,9 @@ export function ItemDialog({
               <Button
                 onClick={() => handleSave()}
                 disabled={!phaseComplete(2) || !(form.title.trim() || derivedTitle) || (!isWidgetMode && !form.value.trim())}
-                title="저장 (Ctrl + Enter)"
+                title={`${isEdit ? '저장' : '추가'} (Ctrl + Enter)`}
               >
                 {isEdit ? '저장' : '추가'}
-                <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.7, fontWeight: 400 }}>Ctrl+Enter</span>
               </Button>
             )}
           </div>

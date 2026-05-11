@@ -40,6 +40,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPath: (folder, closeAfter) => ipcRenderer.send('open-path', folder, closeAfter),
   copyText: (text, closeAfter) => ipcRenderer.send('copy-text', text, closeAfter),
   hideApp: () => ipcRenderer.send('hide-app'),
+  // Renderer-driven close-after: same effect as the closeAfter flag
+  // on a launch IPC, but used when the renderer can't decide ahead of
+  // time (e.g. positioning step finished). Funnels through
+  // tryDismissWindow so suppression sources are honored — unlike
+  // hideApp() which is an explicit user-intent override.
+  requestCloseAfter: () => ipcRenderer.send('request-close-after'),
   setOpacity: (opacity) => ipcRenderer.send('set-opacity', opacity),
   setWindowSizePct: (pct) => ipcRenderer.send('set-window-size-pct', pct),
   getResourceStats: () => ipcRenderer.invoke('get-resource-stats'),
@@ -157,6 +163,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('badges-launch-ref', handler);
     return () => ipcRenderer.removeListener('badges-launch-ref', handler);
   },
+  /** Renderer notifies main that a badge-fired group launch has
+   *  finished (or errored). Main forwards to every overlay so the
+   *  spinning ring on the originating badge can clear immediately
+   *  instead of waiting for the overlay's safety-timeout. */
+  notifyBadgesLaunchDone: (payload) =>
+    ipcRenderer.send('badges-launch-done', payload),
   /** Badge context-menu "실행" on a space ref → scroll that space into view.
    *  Returns an unsubscribe fn — same lesson as onBadgesLaunchItem: without
    *  it, every effect re-run piles a listener and the warning at ~10 fires
