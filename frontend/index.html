@@ -67,15 +67,15 @@
       }
       #ql-loading-bar {
         height: 100%;
-        width: 0%;
+        width: 8%;
         background: rgba(99, 102, 241, 0.7);
         border-radius: 99px;
-        transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-        animation: ql-bar-init 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-      }
-      @keyframes ql-bar-init {
-        from { width: 0% }
-        to   { width: 35% }
+        /* JS now drives `width` directly on every boot:status message
+           (see boot-recovery.js). The transition keeps each step
+           visually smooth without us having to interpolate manually,
+           and the 8% initial fill provides immediate "we started"
+           feedback before the first status arrives (~150 ms in). */
+        transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
       }
 
       /* Spinner */
