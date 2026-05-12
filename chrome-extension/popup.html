@@ -11,12 +11,47 @@
       padding: 0;
     }
 
+    /* CSS variables — single source for both color schemes. The
+       light-mode block below overrides via prefers-color-scheme so
+       the popup follows the user's OS / browser preference instead
+       of being permanently dark like v1.0.2. */
+    :root {
+      --bg:           #1e1e2e;
+      --surface:      #292c3c;
+      --surface-2:    #313244;
+      --text:         #cdd6f4;
+      --text-muted:   #a6adc8;
+      --text-dim:     #6c7086;
+      --accent:       #cba6f7;
+      --info:         #89b4fa;
+      --ok:           #a6e3a1;
+      --err:          #f38ba8;
+      --warn:         #f9e2af;
+      --border:       #45475a;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg:           #eff1f5;
+        --surface:      #e6e9ef;
+        --surface-2:    #dce0e8;
+        --text:         #4c4f69;
+        --text-muted:   #6c6f85;
+        --text-dim:     #9ca0b0;
+        --accent:       #8839ef;
+        --info:         #1e66f5;
+        --ok:           #40a02b;
+        --err:          #d20f39;
+        --warn:         #df8e1d;
+        --border:       #ccd0da;
+      }
+    }
+
     body {
-      width: 220px;
+      width: 240px;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #1e1e2e;
-      color: #cdd6f4;
-      padding: 16px;
+      background: var(--bg);
+      color: var(--text);
+      padding: 14px;
       user-select: none;
     }
 
@@ -24,41 +59,44 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
 
-    .header .icon {
-      font-size: 22px;
-      line-height: 1;
+    .header img {
+      width: 22px;
+      height: 22px;
+      flex-shrink: 0;
+      border-radius: 4px;
     }
 
     .header h1 {
       font-size: 14px;
       font-weight: 600;
-      color: #cba6f7;
+      color: var(--accent);
       white-space: nowrap;
     }
 
     .divider {
       height: 1px;
-      background: #313244;
-      margin-bottom: 14px;
+      background: var(--border);
+      margin-bottom: 12px;
     }
 
     .row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 10px;
+      margin-bottom: 8px;
+      min-height: 18px;
     }
 
-    .row:last-child {
+    .row:last-of-type {
       margin-bottom: 0;
     }
 
     .label {
       font-size: 12px;
-      color: #a6adc8;
+      color: var(--text-muted);
     }
 
     .status-badge {
@@ -75,35 +113,88 @@
       border-radius: 50%;
       flex-shrink: 0;
     }
+    .dot.connected    { background: var(--ok);  box-shadow: 0 0 6px var(--ok); }
+    .dot.disconnected { background: var(--err); box-shadow: 0 0 6px var(--err); }
 
-    .dot.connected {
-      background: #a6e3a1;
-      box-shadow: 0 0 6px #a6e3a1;
-    }
-
-    .dot.disconnected {
-      background: #f38ba8;
-      box-shadow: 0 0 6px #f38ba8;
-    }
-
-    .status-text.connected {
-      color: #a6e3a1;
-    }
-
-    .status-text.disconnected {
-      color: #f38ba8;
-    }
+    .status-text.connected    { color: var(--ok); }
+    .status-text.disconnected { color: var(--err); }
 
     .tab-count {
       font-size: 13px;
       font-weight: 600;
-      color: #89b4fa;
+      color: var(--info);
     }
+
+    .meta {
+      font-size: 10.5px;
+      color: var(--text-dim);
+      margin-top: 8px;
+      line-height: 1.5;
+      min-height: 14px;
+    }
+
+    .meta.error {
+      color: var(--err);
+    }
+
+    /* "재연결" button — primary affordance when the user opens the
+       popup and sees a disconnected state. Disabled while a connect
+       attempt is in flight so back-to-back clicks don't pile up. */
+    .actions {
+      margin-top: 10px;
+      display: flex;
+      gap: 6px;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 6px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .btn:hover:not(:disabled) {
+      background: var(--surface-2);
+      border-color: var(--accent);
+    }
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
+    .btn.primary {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+    }
+    .btn.primary:hover:not(:disabled) {
+      filter: brightness(1.08);
+    }
+
+    .guide {
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 11px;
+      line-height: 1.55;
+      color: var(--text-muted);
+    }
+    .guide strong { color: var(--text); }
   </style>
 </head>
 <body>
   <div class="header">
-    <span class="icon">🚀</span>
+    <!-- Use the actual extension icon instead of an emoji so the popup
+         feels visually anchored to the same brand as the toolbar
+         icon. The PNG is the same file Chrome shows in the toolbar. -->
+    <img src="icons/icon48.png" alt="nost" />
     <h1>nost Bridge</h1>
   </div>
 
@@ -120,6 +211,25 @@
   <div class="row">
     <span class="label">전송 중인 탭</span>
     <span class="tab-count" id="tab-count">0개 탭</span>
+  </div>
+
+  <!-- Recency / error hint. Populated by popup.js:
+       connected → "마지막 연결: N초 전"
+       disconnected + lastConnectedAt > 0 → "마지막 연결: N분 전"
+       disconnected + 0  → "이 세션에서 연결된 적 없음"
+       lastErrorReason  → 빨강으로 표시 -->
+  <div class="meta" id="meta-line"></div>
+
+  <div class="actions">
+    <button class="btn primary" id="btn-reconnect">재연결</button>
+  </div>
+
+  <!-- Guide block — only visible when disconnected. Tells the user
+       what to do before they assume the extension is broken. -->
+  <div class="guide" id="guide" hidden>
+    <strong>연결되지 않았습니다.</strong><br />
+    nost 데스크톱 앱이 실행 중인지 확인하고 <em>재연결</em>을 눌러주세요.
+    앱이 켜져 있는데도 연결이 안 되면 앱을 완전 종료 후 다시 실행해 보세요.
   </div>
 
   <script src="popup.js"></script>

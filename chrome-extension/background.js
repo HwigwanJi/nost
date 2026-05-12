@@ -12,13 +12,29 @@ let reconnectAttempt = 0;
 // --- State shared with popup ---
 let tabCount = 0;
 let isConnected = false;
+// Epoch ms of the last SUCCESSFUL SSE connect. The popup turns this
+// into a "마지막 연결 N초 전" hint so the user can tell at a glance
+// whether the disconnection is fresh (probably nost just updated)
+// or stale (probably nost not running). 0 = never connected this
+// service-worker lifetime.
+let lastConnectedAt = 0;
+// Last failure reason — populated when connectSSE catches a non-
+// AbortError. The popup uses this to disambiguate "nost is off" from
+// "nost is up but rejecting" (e.g. CORS, 503). One-liner; cleared on
+// successful connect.
+let lastErrorReason = '';
 
 // Respond to popup status queries
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_STATUS') {
-    sendResponse({ tabCount, isConnected });
+    sendResponse({ tabCount, isConnected, lastConnectedAt, lastErrorReason });
   } else if (message.type === 'FORCE_RECONNECT') {
-    // Popup → "재연결" button. Treat as user-initiated reset.
+    // Popup → "재연결" button. Treat as user-initiated reset:
+    // reset the backoff so we attempt immediately, then kick off
+    // a connect. Tab snapshot too, in case nost just started.
+    reconnectAttempt = 0;
+    try { chrome.alarms.clear(RECONNECT_ALARM); } catch { /* ignore */ }
+    sendTabs();
     connectSSE();
     sendResponse({ ok: true });
   }
@@ -26,11 +42,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // --- Send tabs ---
+// Tab-URL filter. Schemes we deliberately drop:
+//   chrome://, chrome-extension://, chrome-untrusted://  — browser internals
+//   devtools://                                           — devtools panels
+//   view-source:                                          — view-source overlay
+//   data:, blob:, javascript:                             — synthetic / inert
+//   about:                                                — Firefox-style internal (rare in Chromium but harmless)
+// Anything else (http/https/file/ftp) goes through.
+const SKIPPED_URL_SCHEMES = [
+  'chrome://', 'chrome-extension://', 'chrome-untrusted://',
+  'devtools://', 'view-source:',
+  'data:', 'blob:', 'javascript:', 'about:',
+];
+function isSyntheticUrl(url) {
+  if (!url) return true;
+  for (const p of SKIPPED_URL_SCHEMES) {
+    if (url.startsWith(p)) return true;
+  }
+  return false;
+}
+
 async function sendTabs() {
   try {
     const allTabs = await chrome.tabs.query({});
     const tabs = allTabs
-      .filter(t => t.url && !t.url.startsWith('chrome://') && !t.url.startsWith('chrome-extension://'))
+      .filter(t => !isSyntheticUrl(t.url))
       .map(t => ({
         id: t.id,
         windowId: t.windowId,
@@ -50,20 +86,42 @@ async function sendTabs() {
 
     tabCount = tabs.length;
 
+    // Localhost loopback rarely hangs, but a wedged nost process
+    // (mid-update, debugger paused, etc.) used to leave the fetch
+    // pending indefinitely. 3 s cap is generous for the LAN-zero
+    // hop and short enough that the next tab event can retry.
     await fetch(`${SERVER_URL}/tabs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(tabs)
+      body: JSON.stringify(tabs),
+      signal: AbortSignal.timeout(3000),
     });
   } catch (e) {
     // Server might not be running — ignore silently
   }
 }
 
+// Debounced tab pusher. Tab events arrive in bursts (opening a folder
+// of bookmarks → 30× onCreated within milliseconds; preset switch in
+// some users' setups → onActivated × N) and the original code POSTed
+// for every single one. Localhost is cheap but the rapid spam ate
+// service-worker CPU budget and pushed redundant snapshots over the
+// wire. 150 ms is shorter than perceptible UI latency (the media
+// widget's "audible tab" indicator still feels live) but long enough
+// to coalesce realistic bursts.
+let _sendTabsTimer = null;
+function scheduleSendTabs() {
+  if (_sendTabsTimer) return;
+  _sendTabsTimer = setTimeout(() => {
+    _sendTabsTimer = null;
+    sendTabs();
+  }, 150);
+}
+
 // --- Tab event listeners ---
-chrome.tabs.onCreated.addListener(() => sendTabs());
-chrome.tabs.onRemoved.addListener(() => sendTabs());
-chrome.tabs.onActivated.addListener(() => sendTabs());
+chrome.tabs.onCreated.addListener(scheduleSendTabs);
+chrome.tabs.onRemoved.addListener(scheduleSendTabs);
+chrome.tabs.onActivated.addListener(scheduleSendTabs);
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   // `complete` is the original trigger (page-load done → fresh title /
   // URL / favicon). We additionally fire on `audible` and `mutedInfo`
@@ -72,12 +130,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'complete'
       || changeInfo.audible !== undefined
       || changeInfo.mutedInfo !== undefined) {
-    sendTabs();
+    scheduleSendTabs();
   }
 });
 chrome.windows.onFocusChanged.addListener((windowId) => {
   if (windowId !== chrome.windows.WINDOW_ID_NONE) {
-    sendTabs();
+    scheduleSendTabs();
   }
 });
 
@@ -104,6 +162,8 @@ async function connectSSE() {
     }
 
     isConnected = true;
+    lastConnectedAt = Date.now();
+    lastErrorReason = '';
     // Success — drop the reconnect alarm and reset the backoff so
     // the next failure starts fresh at 30 s instead of remembering
     // we were at the 5 min step.
@@ -178,7 +238,16 @@ async function connectSSE() {
       // Intentional disconnect — do not reconnect
       return;
     }
-    // Network error or server closed — fall through to scheduled reconnect.
+    // Network error or server closed — fall through to scheduled
+    // reconnect. Record the short reason so the popup can show it
+    // ("nost 실행 안 됨" vs "타임아웃" vs "거부됨"). Stripped to a
+    // handful of common patterns; the full Error is in the SW
+    // devtools console anyway.
+    const raw = String(err?.message ?? err ?? '').slice(0, 80);
+    if (/Failed to fetch/i.test(raw))           lastErrorReason = '서버 연결 안 됨';
+    else if (/aborted|timeout/i.test(raw))      lastErrorReason = '타임아웃';
+    else if (raw)                               lastErrorReason = raw;
+    else                                        lastErrorReason = '알 수 없는 오류';
   } finally {
     isConnected = false;
   }
