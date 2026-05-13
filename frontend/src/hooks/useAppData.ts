@@ -105,6 +105,30 @@ const DEFAULT_DOC_EXTS_FOR_MIGRATION = [
   'pdf', 'txt', 'md', 'csv',
   'odt', 'ods', 'odp',
 ];
+/**
+ * v1.3.36 — reset cohort bindings written by older builds that baked the
+ * literal per-revision suffix (e.g. `_F`, `_콘진`) into the mask. Those
+ * masks only ever matched the original file, defeating the entire point.
+ * The new rebuildMask emits `{*}` placeholder for the suffix; any binding
+ * whose pattern lacks `{*}` AND has non-extension text after `{token}` is
+ * pre-v1.3.36 and gets cleared so the next "최신 버전 확인" re-detects.
+ */
+function maybeResetStaleCohortBinding(item: LauncherItem): LauncherItem {
+  if (!item.docCohort) return item;
+  const p = item.docCohort.pattern;
+  if (!p || p.includes('{*}')) return item;
+  // Inspect what comes after {token}: just the extension (`.xxx`) is fine;
+  // anything else means a literal suffix that should have been wildcarded.
+  const tokenAt = p.indexOf('{token}');
+  if (tokenAt < 0) return item;
+  const afterToken = p.slice(tokenAt + '{token}'.length);
+  // Allow only `.<ext>` (single extension segment, no further separators).
+  if (/^\.[^./\\]+$/.test(afterToken)) return item;
+  const { docCohort: _drop, ...rest } = item;
+  void _drop;
+  return rest;
+}
+
 function maybeReclassifyAsDoc(item: LauncherItem, docExts: string[]): LauncherItem {
   if (item.type !== 'app') return item;
   const v = item.value ?? '';
@@ -128,10 +152,10 @@ function normaliseSpace(s: Space, docExts: string[]): Space {
     pinnedIds: s.pinnedIds ?? [],
     pairedWithNext: s.pairedWithNext ?? false,
     splitRatio: s.pairedWithNext ? (s.splitRatio ?? 0.5) : undefined,
-    items: s.items.map(i => maybeReclassifyAsDoc(
+    items: s.items.map(i => maybeResetStaleCohortBinding(maybeReclassifyAsDoc(
       { ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false },
       docExts,
-    )),
+    ))),
   };
 }
 

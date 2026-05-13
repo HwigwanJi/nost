@@ -238,19 +238,27 @@ export function matchPreset(
  * compose the token.
  */
 function rebuildMask(groups: Record<string, string>, tokenGroupNames: string[]): string {
-  // We reconstruct from the named groups deterministically rather than
-  // re-running the regex with replace because composite tokens have
-  // multiple capture positions in arbitrary order in the source pattern,
-  // and we want a single `{token}` placeholder anyway.
-  // For visual purposes, just splice base + {token} + suffix + ext.
+  // base + {token} + (suffix wildcard) + ext
+  //
+  // The trailing suffix between the version token and the extension is
+  // intentionally collapsed to a `{*}` wildcard rather than baked in
+  // literally. Why: a user who registers `..._260511_F.pptx` as the
+  // cohort root almost always means "any file in this family, with
+  // whatever per-revision suffix" — `_260513.pptx` (no suffix),
+  // `_260512_콘진.pptx` (org annotation), `_260511_F.pptx` (final flag)
+  // should all be siblings. Baking `_F` literal made the cohort exactly
+  // one file in the v1.3.34/v1.3.35 behavior.
+  //
+  // The `base` prefix stays literal so we don't go too wide — a
+  // typo'd filename or unrelated `.pptx` in the same folder is still
+  // excluded. main.js's mask→regex converter expands both `{token}`
+  // and `{*}` to `.*?` (non-greedy).
+  void tokenGroupNames;
   const base   = groups.base   ?? '';
   const suffix = groups.suffix ?? '';
   const ext    = groups.ext    ?? '';
-  // tokenGroupNames is unused for splicing but kept on the signature so
-  // future presets that want a more elaborate mask (showing the literal
-  // separator between primary/secondary) can read groups directly.
-  void tokenGroupNames;
-  return `${base}{token}${suffix}${ext}`;
+  const suffixPart = suffix.length > 0 ? '{*}' : '';
+  return `${base}{token}${suffixPart}${ext}`;
 }
 
 /**

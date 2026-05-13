@@ -31,7 +31,7 @@
 | v1.3.33 | **calm-by-default 알림** (`extensionEverConnected` latch, stale-update sweep), 튜토리얼 daily nudge 알림센터 미러, Whale 분기 제거 |
 | v1.3.34 | 환경설정 Option C 재구조화 (4 groups × 2-3 sub-tabs), **doc 코호트 first-class type 승격**, ItemWizard segmented tab (카드/메모), **공식 Google/GitHub 브랜드 마크**, **Auth CSP allowlist + PKCE verifier safeStorage 영속화**, Phase 2 sync 범위 합의 + cohort SSOT 골격 |
 | v1.3.35 | **Single-instance lock 강화** (second instance `process.exit(0)`) + **DocCohortDialog 깨짐 fix** + **Dialog 너비 SSOT 도입** (`dialog.tsx` 의 `DIALOG_SIZE` 토큰 + `<DialogContent size="sm\|md\|lg\|xl">` 패턴, ssot-index §A.17) |
-| v1.3.36 | **Auth loopback HTTP callback** — `nost://` protocol 대신 `http://127.0.0.1:14502/auth/callback` 사용. 새 electron 인스턴스 spawn 없음 (single-instance race 우회). 사용자에게 "로그인 완료" HTML 페이지 직접 응답. **로그인 토스트** 추가 (sessionStorage flag 패턴). **Dialog minWidth** 도입 (좁은 pair-split 윈도우에서도 contents 안 깨짐) |
+| v1.3.36 | **Auth loopback HTTP callback** — `nost://` protocol 대신 `http://127.0.0.1:14502/auth/callback` 사용. 새 electron 인스턴스 spawn 없음 (single-instance race 우회). 사용자에게 "로그인 완료" HTML 페이지 직접 응답. **로그인 토스트** 추가 (sessionStorage flag 패턴). **Dialog minWidth** 도입 (좁은 pair-split 윈도우에서도 contents 안 깨짐). **DocCohort suffix wildcard** — mask 의 per-revision suffix 가 `{*}` placeholder 가 되어 `_260513.pptx` / `_260512_콘진.pptx` / `_260511_F.pptx` 같은 변형이 모두 같은 cohort 로 인식 + 옛 binding 자동 reset |
 
 ---
 
@@ -714,6 +714,7 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 - ✅ OAuth 콜백 흐름 — 새 nost 인스턴스 spawn + "supabase.co로 이동" 빈 페이지 (v1.3.36 — loopback HTTP callback `127.0.0.1:14502/auth/callback` + main.js ext-server 가 "로그인 완료" HTML 응답)
 - ✅ 로그인 성공 시 토스트 누락 (v1.3.36 — `auth.ts` 가 signed-out → signed-in 전환 시 sessionStorage flag, App.tsx 첫 mount 에서 1회 showToast)
 - ✅ pair-split 좁은 mainWindow 에서 dialog contents 깨짐 (v1.3.36 — `DIALOG_SIZE` 의 sizeStyle 에 minWidth 추가, 320px floor)
+- ✅ DocCohort 가 같은 폴더의 버전 1개만 인식 (v1.3.36 — `rebuildMask` 가 suffix 를 `{*}` 와일드카드로 처리. main.js 의 mask→regex 변환에서 `{*}` 도 `.*?` 으로. 옛 binding 은 `maybeResetStaleCohortBinding` 마이그레이션이 자동 reset)
 
 ### 진행 중
 - 🔄 **인증 Phase 1 E2E** — `plans/auth-status.md` §3·§4 (외부 console 작업)

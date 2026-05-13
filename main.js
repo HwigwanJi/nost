@@ -3323,11 +3323,18 @@ function registerIpcHandlers() {
         return { ok: false, error: 'traversal', items: [] };
       }
 
-      // Build matching regex from the mask. {token} → `.*?` (non-greedy).
-      // Escape every other regex metachar in the literal portion.
+      // Build matching regex from the mask. Two placeholders expand to
+      // `.*?` (non-greedy):
+      //   {token}  — the version token slot (date/numeric/etc.)
+      //   {*}      — the per-revision suffix slot. Introduced in v1.3.36
+      //              so a cohort root with a `_F` / `_콘진` suffix still
+      //              matches siblings that have a different / no suffix.
+      // Everything else in the mask is escaped so a literal `.` in the
+      // basename doesn't gobble across separators.
       const escaped = mask
         .replace(/[-\\/\\^$*+?.()|[\]{}]/g, '\\$&')
-        .replace(/\\\{token\\\}/g, '.*?');
+        .replace(/\\\{token\\\}/g, '.*?')
+        .replace(/\\\{\\\*\\\}/g, '.*?');
       const re = new RegExp(`^${escaped}$`, 'i');
 
       let entries;
