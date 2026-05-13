@@ -1,8 +1,8 @@
 import { useState, useCallback, useMemo } from 'react';
-import { electronAPI } from '../electronBridge';
 import { getDocumentExtensions } from '../lib/documentExtensions';
 import type { Space, LauncherItem } from '../types';
 import { DISMISS_COOLDOWN_MS } from '../types';
+import { scanCurrentEnvironment, flattenScanForGhostMatching } from '../lib/scanEngine';
 
 export const GHOST_SPACE_ID = '__ghost_recommendations__';
 
@@ -127,39 +127,24 @@ export function useGhostCards({ spaces, dismissals, documentExtensions, onDismis
   const scan = useCallback(async () => {
     setScanning(true);
     try {
-      const [openResult, recentResult] = await Promise.all([
-        electronAPI.getOpenWindows(),
-        electronAPI.getRecentItems(),
-      ]);
+      // Single source of truth: the scan engine. Whatever ScanDialog
+      // sees, ghost matching sees too — no more "this app showed up
+      // in scan but not as a ghost" inconsistencies.
+      const scanResult = await scanCurrentEnvironment();
+      const flattened = flattenScanForGhostMatching(scanResult);
 
       const candidates: { title: string; value: string; type: LauncherItem['type']; source: 'open' | 'recent' }[] = [];
       const seen = new Set<string>();
-      const add = (item: typeof candidates[0]) => {
-        const key = item.value.toLowerCase();
-        if (seen.has(key) || existingValues.has(key) || dismissedSet.has(key)) return;
+      for (const c of flattened) {
+        const key = c.value.toLowerCase();
+        if (seen.has(key) || existingValues.has(key) || dismissedSet.has(key)) continue;
         seen.add(key);
-        candidates.push(item);
-      };
-
-      for (const w of openResult.windows) {
-        if (w.FolderPath) {
-          add({ title: w.MainWindowTitle || w.FolderPath.split('\\').pop() || w.FolderPath, value: w.FolderPath, type: 'folder', source: 'open' });
-        } else if (w.ExePath) {
-          add({ title: w.MainWindowTitle || w.ProcessName || '', value: w.ExePath, type: 'app', source: 'open' });
-        }
+        candidates.push(c);
       }
 
-      for (const tab of openResult.browserTabs) {
-        if (tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('edge://') && !tab.url.startsWith('about:')) {
-          add({ title: tab.title || tab.url, value: tab.url, type: 'url', source: 'open' });
-        }
-      }
-
-      for (const r of recentResult) {
-        add({ title: r.title, value: r.value, type: r.type, source: 'recent' });
-      }
-
-      // Sort: 'open' first, then 'recent'
+      // 'open' before 'recent' is already preserved by the flattener,
+      // but keep the explicit sort as defence — the matcher relies
+      // on this for tie-break behaviour.
       candidates.sort((a, b) => (a.source === 'open' ? 0 : 1) - (b.source === 'open' ? 0 : 1));
 
       // Match to spaces. score < 2 → ghost space

@@ -34,6 +34,14 @@ interface SpaceAccordionProps {
   onDelete: () => void;
   onDuplicate: () => void;
   onSetColor: (color: string) => void;
+  /**
+   * Move this space (with its items) to another preset. Caller
+   * provides the list of accessible target presets so we can render
+   * one menu item per option. When omitted (single-preset world or
+   * no other presets accessible), the move section is hidden.
+   */
+  movePresets?: Array<{ id: '1' | '2' | '3'; label: string }>;
+  onMoveToPreset?: (targetId: '1' | '2' | '3') => void;
   onSetIcon: (icon: string) => void;
   onEditItem: (item: LauncherItem) => void;
   onDeleteItem: (itemId: string) => void;
@@ -43,6 +51,28 @@ interface SpaceAccordionProps {
   onQuickAdd: () => void;
   onAddItem: () => void;
   onScanItem: () => void;
+  /** Add a widget card (media, future kinds). Optional — caller may
+   *  omit when widgets aren't relevant for that space context. */
+  onAddWidget?: () => void;
+  /** Add a colour-swatch widget. Opens a colour picker inline (or
+   *  uses the clipboard hex if present); see App.tsx handler. */
+  onAddColorSwatch?: () => void;
+  /** Add a memo card (사라지는 메모) to this space. Optional — older
+   *  call sites that don't yet integrate memo simply omit this. */
+  onAddMemo?: () => void;
+  /** Open the inplace memo editor for the given memo card. Required for
+   *  memo cards to be interactive; if missing, ItemCard falls back to
+   *  the standard launchable card render (defensive). */
+  onOpenMemoEditor?: (itemId: string) => void;
+  /** Hover-icon copy: write the memo body to clipboard. */
+  onCopyMemoBody?: (itemId: string) => void;
+  /** Swipe-LEFT on the memo card: copy as raw markdown. */
+  onCopyMemoMarkdown?: (itemId: string) => void;
+  /** "톡 살리기" — TTL reset on a memo card. */
+  onExtendMemoTtl?: (itemId: string) => void;
+  /** Export the memo body as a .txt file (replaces the in-card pin
+   *  button — see MemoCard v3 design notes). */
+  onExportMemoTxt?: (itemId: string) => void;
   onToggleCollapse: () => void;
   onFloatOut?: () => void;
   isFloating?: boolean;
@@ -87,6 +117,8 @@ export function SpaceAccordion({
   onDelete,
   onDuplicate,
   onSetColor,
+  movePresets,
+  onMoveToPreset,
   onSetIcon,
   onEditItem,
   onDeleteItem,
@@ -96,6 +128,14 @@ export function SpaceAccordion({
   onQuickAdd,
   onAddItem,
   onScanItem,
+  onAddWidget,
+  onAddColorSwatch,
+  onAddMemo,
+  onOpenMemoEditor,
+  onCopyMemoBody,
+  onCopyMemoMarkdown,
+  onExtendMemoTtl,
+  onExportMemoTxt,
   onToggleCollapse,
   onFloatOut,
   isFloating = false,
@@ -172,6 +212,7 @@ export function SpaceAccordion({
           action buttons remain pure click targets without needing stopPropagation
           gymnastics, and the cursor affordance is obvious only where drag works. */}
       <div
+        data-tour-id="space-header"
         className="flex items-center gap-2 px-3 py-2.5 select-none group space-accordion-header"
         style={{
           background: headerBg,
@@ -222,8 +263,8 @@ export function SpaceAccordion({
               onChange={e => setDraft(e.target.value)}
               onBlur={() => { onRename(draft); setIsRenaming(false); }}
               onKeyDown={e => {
-                if (e.key === 'Enter') { onRename(draft); setIsRenaming(false); }
-                if (e.key === 'Escape') { setDraft(space.name); setIsRenaming(false); }
+                if (e.key === 'Enter') { e.stopPropagation(); onRename(draft); setIsRenaming(false); }
+                if (e.key === 'Escape') { e.stopPropagation(); setDraft(space.name); setIsRenaming(false); }
               }}
               className="flex-1 bg-transparent font-semibold text-[13px] outline-none border-b"
               style={{ color: 'var(--text-color)', borderColor: 'var(--border-focus)' }}
@@ -384,6 +425,32 @@ export function SpaceAccordion({
               <DropdownMenuItem onClick={onDuplicate}>
                 <Icon name="content_copy" className="text-sm" />스페이스 복제
               </DropdownMenuItem>
+
+              {/* "Move to preset" — one item per accessible target.
+                  Caller already filters out the current preset and any
+                  Pro-locked ones, so we just render whatever we got.
+                  Hidden entirely when there's nothing to move to (e.g.
+                  free tier where only preset 1 exists). */}
+              {movePresets && movePresets.length > 0 && onMoveToPreset && (
+                <>
+                  <DropdownMenuSeparator />
+                  {movePresets.map(p => (
+                    <DropdownMenuItem
+                      key={p.id}
+                      onClick={() => onMoveToPreset(p.id)}
+                    >
+                      <Icon name="swap_horiz" className="text-sm" />
+                      프리셋 {p.id}
+                      {p.label !== `프리셋 ${p.id}` && (
+                        <span style={{ marginLeft: 4, color: 'var(--text-muted)', fontSize: 11 }}>
+                          ({p.label})
+                        </span>
+                      )}
+                      <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-dim)' }}>이동</span>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={onDelete} className="text-destructive">
                 <Icon name="delete" className="text-sm" />스페이스 삭제
@@ -418,7 +485,12 @@ export function SpaceAccordion({
                 gap: 8,
               }}
             >
-              {space.items.filter(i => !i.hiddenInSpace).map(item => (
+              {space.items
+                // Hide hidden-in-space (container slots) AND trashed memos.
+                // Trashed memos still live in the data tree (for restore via
+                // the trash UI) but never render in the active grid.
+                .filter(i => !i.hiddenInSpace && !(i.type === 'memo' && i.memo?.trashedAt))
+                .map(item => (
                 <ItemCard
                   key={item.id}
                   item={item}
@@ -432,6 +504,11 @@ export function SpaceAccordion({
                   onConvertToContainer={onConvertToContainer ? () => onConvertToContainer(item.id) : undefined}
                   onConvertFromContainer={onConvertFromContainer ? () => onConvertFromContainer(item.id) : undefined}
                   onEditSlots={onEditSlots ? (dir) => onEditSlots(item.id, dir) : undefined}
+                  onOpenMemoEditor={onOpenMemoEditor}
+                  onCopyMemoBody={onCopyMemoBody}
+                  onCopyMemoMarkdown={onCopyMemoMarkdown}
+                  onExtendMemoTtl={onExtendMemoTtl}
+                  onExportMemoTxt={onExportMemoTxt}
                 />
               ))}
 
@@ -454,6 +531,7 @@ export function SpaceAccordion({
                 }}
               >
                 <button
+                  data-tour-id="add-card-button"
                   onClick={onQuickAdd}
                   className="flex-1 flex flex-col items-center justify-center gap-1 transition-colors text-[11px] cursor-pointer"
                   style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)' }}
@@ -480,6 +558,15 @@ export function SpaceAccordion({
                     <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
                     <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
                     <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
+                    {onAddWidget && (
+                      <DropdownMenuItem onClick={onAddWidget}>위젯</DropdownMenuItem>
+                    )}
+                    {onAddColorSwatch && (
+                      <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
+                    )}
+                    {onAddMemo && (
+                      <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>

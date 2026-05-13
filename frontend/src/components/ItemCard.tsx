@@ -14,6 +14,14 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { MediaWidget } from '../widgets/MediaWidget';
+import { ColorSwatchWidget } from '../widgets/ColorSwatchWidget';
+import { MemoCard } from './MemoCard';
+import { MonitorPicker } from './MonitorPicker';
+import { ContainerSlotGhosts } from './ContainerSlotGhosts';
+import { isUserBusy } from '../lib/userBusy';
+import { canPerform } from '../lib/conflictPolicy';
+import { shakeElement } from '../lib/conflictFeedback';
 
 interface ItemCardProps {
   item: LauncherItem;
@@ -27,6 +35,19 @@ interface ItemCardProps {
   onConvertToContainer?: () => void;
   onConvertFromContainer?: () => void;
   onEditSlots?: (dir?: SlotDir) => void;
+  // ── Memo (사라지는 메모) ────────────────────────────────────────
+  // Plumbed in for type === 'memo' items only. Optional so existing
+  // call sites that don't render memo yet stay compiling.
+  onOpenMemoEditor?: (itemId: string) => void;
+  /** Copy body as plain text (markdown stripped) — bottom 📋 button +
+   *  swipe-right gesture both fire this. */
+  onCopyMemoBody?: (itemId: string) => void;
+  /** Copy body as raw markdown — only the swipe-LEFT gesture fires
+   *  this; we don't surface a button because plain is the common
+   *  case and a 4-button row gets cluttered. */
+  onCopyMemoMarkdown?: (itemId: string) => void;
+  onExtendMemoTtl?: (itemId: string) => void;
+  onExportMemoTxt?: (itemId: string) => void;
 }
 
 type SlotDir = 'up' | 'down' | 'left' | 'right';
@@ -96,6 +117,7 @@ export function ItemCard({
   item, space, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, onSetMonitor,
   onConvertToContainer, onConvertFromContainer, onEditSlots,
+  onOpenMemoEditor, onCopyMemoBody, onCopyMemoMarkdown, onExtendMemoTtl, onExportMemoTxt,
 }: ItemCardProps) {
   const [loading, setLoading] = useState(false);
   const [imageIconFailed, setImageIconFailed] = useState(false);
@@ -118,6 +140,10 @@ export function ItemCard({
   const holdExecutedRef = useRef(false);
   const wasHoldRef = useRef(false);
   const isHoldActiveRef = useRef(false);
+  // Set true between right-button drag-start and the upcoming contextmenu
+  // event so the menu doesn't pop in the middle of a drag. See
+  // handlePointerDown below for lifecycle.
+  const suppressContextMenuRef = useRef(false);
   const monitorBadgeClickedRef = useRef(false);
   const globalMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
   const globalUpRef = useRef<((e: PointerEvent) => void) | null>(null);
@@ -129,7 +155,7 @@ export function ItemCard({
   // ── Context ──────────────────────────────────────────────────
   const {
     activeMode = 'normal', nodeGroups = [], nodeBuilding = [], decks = [],
-    deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, allItems = [],
+    deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, monitors = [], allItems = [],
     monitorDirections, closeAfter, searchQuery = '',
     justAddedItemIds,
   } = useAppState();
@@ -144,7 +170,21 @@ export function ItemCard({
 
   // ── Derived values from context ──────────────────────────────
   const isNodeLinked = nodeGroups.some(g => g.itemIds.includes(item.id));
+  // isNodeAnchor: card is in the active node staging set (build OR
+  // edit). nodeBuilding mirrors the editing group's itemIds in B mode
+  // (kept in sync by useNodeDeckMode), so a single read covers both.
   const isNodeAnchor = nodeBuilding.includes(item.id);
+  // 1-indexed order within the active node staging set. Drives the
+  // big "1 / 2 / 3" badge on member cards during node mode. Returns 0
+  // when the card isn't a member (or we're not in node mode at all).
+  const nodeOrderIndex = activeMode === 'node'
+    ? (nodeBuilding.indexOf(item.id) + 1)
+    : 0;
+  // True when node staging is full and THIS card isn't a member —
+  // surfaces the "click to slide-replace" affordance via subtle dim.
+  const isNodeFullNonMember = activeMode === 'node'
+    && nodeBuilding.length >= 3
+    && !isNodeAnchor;
   const isDeckAnchor = deckAnchorItemIds?.has(item.id) ?? false;
   const nodeBadges = (() => {
     const arr: number[] = [];
@@ -169,7 +209,47 @@ export function ItemCard({
 
   // ── dnd-kit ─────────────────────────────────────────────────
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
-  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
+
+  // Container cards stay PUT during another card's drag.
+  //
+  // Why: dnd-kit's rectSortingStrategy displaces every card in the
+  // SortableContext to make room for the dragged item. When the
+  // dragged item passes over a container, the container shifts away
+  // — visually the container "runs from" the user, and the bloom UX
+  // (which relies on the container's position to anchor the slot
+  // zones) ends up chasing a moving target. The user reported this
+  // exact behaviour as "this isn't worth paying for".
+  //
+  // Suppressing the displacement only when:
+  //   - this card IS a container (item.isContainer)
+  //   - this card is NOT itself the active drag (isDragging === false,
+  //     so the user can still pick up & move containers normally)
+  // …leaves the rest of the row free to shift, while the container
+  // stays anchored. The bloom geometry stays stable, drops land where
+  // the user expects, and reordering between non-container cards
+  // works unchanged.
+  const suppressTransform = item.isContainer && !isDragging;
+  const style = {
+    transform: suppressTransform ? undefined : CSS.Transform.toString(transform),
+    transition: suppressTransform ? undefined : transition,
+    opacity: isDragging ? 0.4 : 1,
+  };
+
+  // ── Widget mode flag ─────────────────────────────────────────
+  // Widget items render their own UI surface (one of MediaWidget /
+  // ColorSwatchWidget) instead of ItemCard's standard launchable
+  // card. Earlier versions early-returned here, which bypassed the
+  // ContextMenu / Tooltip wrapper and broke parity with regular
+  // cards (no rename, no delete from right-click). We now keep the
+  // wrapper and just swap the inner body — context menu, drag, pin,
+  // edit, delete all work the same way as for any other card.
+  const isWidget = item.type === 'widget' && !!item.widget;
+  // Memo branch — same wrapper-swap pattern as widgets. The wrapper still
+  // owns drag, context menu, pin badge, delete; MemoCard owns body markup
+  // and click intent (open editor, not launch). When a memo's onOpenMemoEditor
+  // callback is missing (older parents), we fall back to the standard card
+  // — defensive against partial integration during the v1.3.16 rollout.
+  const isMemo = item.type === 'memo' && !!item.memo;
 
   // Outside-click is handled by a transparent overlay rendered in the portal — no document listeners needed.
 
@@ -425,11 +505,65 @@ export function ItemCard({
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button === 2) {
+      // Right-click intent disambiguation:
+      //   - If the user *moves* more than 8px before releasing, treat it
+      //     as a sortable drag and suppress the upcoming contextmenu so
+      //     Radix's menu doesn't pop on top of the dragged card.
+      //   - If they release without movement, let contextmenu fire and
+      //     Radix opens the menu as before.
+      // Why a flag-based approach instead of just preventDefault on
+      // contextmenu always: we want the menu in the no-movement case.
+      // The native contextmenu event fires AFTER button-up on Windows,
+      // so we have time to flip the flag during the press.
       e.stopPropagation();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragged = false;
+      const onMove = (ev: PointerEvent) => {
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > 8) dragged = true;
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        if (dragged) {
+          suppressContextMenuRef.current = true;
+          // Clear after the contextmenu event has had a chance to consume
+          // the flag (browser fires it within a frame of pointerup).
+          setTimeout(() => { suppressContextMenuRef.current = false; }, 120);
+        }
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
       if (listeners?.onPointerDown) (listeners.onPointerDown as unknown as (e: React.PointerEvent) => void)(e);
       return;
     }
     if (e.button !== 0) return;
+    // Conflict-avoidance policy — see plans/conflict-avoidance-policy.md.
+    // Hold-press would otherwise let the user pop the slot-popup
+    // mid-pin/node/deck/clean mode, which silently ignores their
+    // tool intent and launches the card on release. The policy
+    // gate also covers memo-editor / dialog / overlay / cmd states
+    // for free, so this single check supersedes the older ad-hoc
+    // `if (activeMode !== 'normal')` line.
+    // ItemCard doesn't see every state directly (memo editor / dialog /
+    // tile overlay all eat pointer events at higher layers anyway).
+    // The only field that matters at this surface is `activeMode` —
+    // pass the rest as their "not active" values so the policy gate
+    // can still telemeter correctly and so a later refactor that
+    // surfaces those flags here Just Works.
+    const verdict = canPerform('card.hold-press', {
+      activeMode,
+      nodeEditMode: nodeBuilding.length > 0,
+      deckBuilding: false,
+      editingMemoId: null,
+      dialog: 'none',
+      tileOverlayGroup: null,
+      cmdOpen: false,
+    });
+    if (verdict !== true) {
+      shakeElement(cardRef.current);
+      return;
+    }
 
     holdStartRef.current = { x: e.clientX, y: e.clientY };
     holdTimerRef.current = setTimeout(() => {
@@ -484,10 +618,52 @@ export function ItemCard({
   } : null;
   const filledSlots = slotItems ? DIRS.filter(d => slotItems[d]) : [];
 
-  const cardEl = (
+  // For widget cards, dispatch on `widget.kind`. Each widget renders
+  // its own body (with data-card / data-card-id and dragHandle
+  // participation). Unknown kinds fall through to the standard card
+  // as a safety net — store data corruption shouldn't crash the grid.
+  let widgetBody: React.ReactNode = null;
+  if (isWidget && item.widget) {
+    const dragHandle = { setNodeRef, style, attributes, listeners, isDragging };
+    if (item.widget.kind === 'media-control') {
+      widgetBody = <MediaWidget item={item} space={space} dragHandle={dragHandle} />;
+    } else if (item.widget.kind === 'color-swatch') {
+      widgetBody = (
+        <ColorSwatchWidget
+          item={item}
+          space={space}
+          dragHandle={dragHandle}
+          onEdit={() => onEdit(item)}
+        />
+      );
+    }
+  }
+  // Memo body — uses same dragHandle convention as widgets.
+  let memoBody: React.ReactNode = null;
+  if (isMemo && item.memo && onOpenMemoEditor) {
+    const dragHandle = { setNodeRef, style, attributes, listeners, isDragging };
+    memoBody = (
+      <MemoCard
+        item={item}
+        space={space}
+        dragHandle={dragHandle}
+        pinned={pinned}
+        isJustAdded={isJustAdded}
+        onOpenEditor={() => onOpenMemoEditor(item.id)}
+        onCopyPlain={() => onCopyMemoBody?.(item.id)}
+        onCopyMarkdown={() => (onCopyMemoMarkdown ?? onCopyMemoBody)?.(item.id)}
+        onExtend={() => onExtendMemoTtl?.(item.id)}
+        onExportTxt={() => onExportMemoTxt?.(item.id)}
+      />
+    );
+  }
+  const cardEl = memoBody ?? widgetBody ?? (
     <div
       ref={(el) => { setNodeRef(el); (cardRef as React.MutableRefObject<HTMLDivElement | null>).current = el; }}
       data-card
+      data-card-id={item.id}
+      data-card-type={item.type}
+      data-tour-id="item-card"
       style={{
         ...style,
         background: isNodeAnchor ? 'var(--accent-dim)' : 'var(--surface)',
@@ -512,12 +688,46 @@ export function ItemCard({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
-      onContextMenu={e => e.preventDefault()}
+      onContextMenu={e => {
+        if (suppressContextMenuRef.current) {
+          // Drag was initiated — eat the contextmenu so Radix doesn't
+          // open the menu over the dragged card. Don't reset here; the
+          // setTimeout in handlePointerDown clears it on its own
+          // schedule (avoids missing a duplicate fire on weird DPIs).
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        // Conflict-avoidance: opening the card's right-click menu
+        // mid-tool-mode lets the user "수정 / 삭제" the very card
+        // they should be slotting / linking / cleaning — silently
+        // breaks the tool flow. Block + shake instead.
+        const verdict = canPerform('card.edit', {
+          activeMode,
+          nodeEditMode: nodeBuilding.length > 0,
+          deckBuilding: false,
+          editingMemoId: null,
+          dialog: 'none',
+          tileOverlayGroup: null,
+          cmdOpen: false,
+        });
+        if (verdict !== true) {
+          e.preventDefault();
+          e.stopPropagation();
+          shakeElement(cardRef.current);
+          return;
+        }
+        // Suppress only the BROWSER default menu — Radix ContextMenu's
+        // own listener still fires off this event (we don't stopPropagation),
+        // so right-click without movement still opens our menu.
+        e.preventDefault();
+      }}
       className={`
         group relative flex flex-col items-center justify-center gap-1.5
         rounded-xl p-3 min-h-[82px] cursor-pointer select-none
         border transition-all duration-150 ease-out active:scale-[0.96]
         ${nodeClasses} ${isInactive ? 'opacity-50' : ''}
+        ${isNodeFullNonMember ? 'opacity-60' : ''}
       `}
       onMouseEnter={e => {
         (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-hover)';
@@ -534,9 +744,43 @@ export function ItemCard({
         setHintVisible(false);
       }}
     >
-      {/* ── Container badge (top-right) ──────────────────────────── */}
-      {item.isContainer && (
+      {/* ── Top-right corner glyph ──────────────────────────────────
+           Single visual slot, decided by priority:
+             (1) Container → grid_view (this is the most important state
+                 because it changes drag/click behaviour)
+             (2) else Pinned → bookmark (was previously encoded as a
+                 colour override on the bottom stripe; users said the
+                 pin signal got lost in the soup of stripes)
+           Both render at the same coords so only one shows at a time
+           — no visual conflict, no double-encoding. */}
+      {item.isContainer ? (
         <Icon name="grid_view" size={10} color="var(--accent)" style={{ position:'absolute', top:5, right:5, opacity:0.7 }} />
+      ) : pinned ? (
+        <Icon
+          name="bookmark"
+          size={11}
+          color="var(--accent)"
+          style={{ position:'absolute', top:3, right:5, opacity:0.55, transition:'opacity 0.15s' }}
+          className="group-hover:!opacity-90"
+        />
+      ) : null}
+
+      {/* ── Empty-slot ghost rectangles ──────────────────────────────
+           Show on container hover (after the 350ms hint dwell, same as
+           regular cards' direction arrows) so users discover that the
+           container has 4 slot positions. Click on a ghost = open the
+           slot picker pre-targeted to that direction. Suppressed during
+           drag (the ContainerBloom overlay takes over for that case)
+           and during hold popup or non-normal app modes. */}
+      {item.isContainer && hintVisible && !holdOpen && !isInactive && !isDragging
+        && activeMode === 'normal' && !isUserBusy() && cardRef.current
+        && filledSlots.length < 4 && (
+        <ContainerSlotGhosts
+          anchor={cardRef.current}
+          emptyDirs={(['up','down','left','right'] as SlotDir[]).filter(d => !slotItems?.[d])}
+          accent={item.color}
+          onClickGhost={(dir) => onEditSlots?.(dir)}
+        />
       )}
 
       {/* ── Container slot dots (4 edges) ────────────────────────── */}
@@ -571,27 +815,89 @@ export function ItemCard({
         <Icon name="keyboard_arrow_right" size={9} color="var(--text-dim)" style={{ position:'absolute', right:2,  top:'50%',   transform:'translateY(-50%)' }} />
       </div>
 
-      {/* ── Node + Deck badges (top-left) ────────────────────────────
-          Shown at full opacity in node/deck mode; hidden until hover in normal mode.
-          Circles no longer overlap — 2px gap keeps numbers readable.          */}
-      {((nodeBadges && nodeBadges.length > 0 && !isNodeAnchor) || (deckBadges && deckBadges.length > 0)) && (
+      {/* ── Node mode — BIG order badge (top-left) ──────────────────
+          During node mode (build OR edit-existing), member cards show
+          the 1-indexed launch order as a prominent accent badge. Drives
+          the user's mental model of "this is selected AND it's the
+          Nth in the launch sequence" — much louder than the small
+          membership pill that's used in normal mode hover.
+          The membership pill below is suppressed when this badge is
+          rendering (the !isNodeAnchor guard there) so they don't
+          double-render. */}
+      {nodeOrderIndex > 0 && (
         <div
-          className={`absolute top-[5px] left-[5px] flex gap-[2px] transition-opacity duration-150 ${
-            (activeMode === 'node' || activeMode === 'deck') ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-          }`}
+          className="absolute top-[5px] left-[5px]"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 18,
+            height: 18,
+            borderRadius: 6,
+            background: 'var(--accent)',
+            color: '#fff',
+            fontSize: 11,
+            fontWeight: 800,
+            lineHeight: 1,
+            boxShadow: '0 2px 8px rgba(99,102,241,0.45)',
+            // Spring-pop entry so the badge reads as a fresh state
+            // change rather than always-there decoration.
+            animation: 'cardEnter 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) both',
+            zIndex: 4,
+          }}
+          title={`노드 ${nodeOrderIndex}번 · 클릭으로 제거`}
         >
-          {nodeBadges && !isNodeAnchor && nodeBadges.slice(0, 2).map((idx) => (
-            <span key={`n${idx}`} style={{ width:13, height:13, borderRadius:'50%', background:'var(--accent)', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid rgba(255,255,255,0.2)' }}>
-              {idx}
-            </span>
-          ))}
-          {deckBadges && deckBadges.slice(0, 2).map((idx) => (
-            <span key={`d${idx}`} style={{ width:13, height:13, borderRadius:'50%', background:'#f97316', color:'#fff', fontSize:7, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', border:'1.5px solid rgba(255,255,255,0.2)' }}>
-              {idx}
-            </span>
-          ))}
+          {nodeOrderIndex}
         </div>
       )}
+
+      {/* ── Workflow membership pill (top-left) ──────────────────────
+          Replaces the previous "two separate coloured circles per card"
+          with ONE compact pill that lists membership inline. Reduces
+          colour count (was: blue node + orange deck on the same card =
+          chromatic mismatch), brings node and deck under one visual
+          grammar (small caps "n1·d2" letters), and saves space when a
+          card belongs to both.
+
+          Visibility: full opacity in node/deck mode; fades in on hover
+          in normal mode — same trigger as before. */}
+      {((nodeBadges && nodeBadges.length > 0 && !isNodeAnchor) || (deckBadges && deckBadges.length > 0)) && (() => {
+        const parts: Array<{ k: 'n' | 'd'; n: number }> = [];
+        if (nodeBadges && !isNodeAnchor) for (const i of nodeBadges.slice(0, 2)) parts.push({ k: 'n', n: i });
+        if (deckBadges)                  for (const i of deckBadges.slice(0, 2)) parts.push({ k: 'd', n: i });
+        if (parts.length === 0) return null;
+
+        return (
+          <div
+            className={`absolute top-[5px] left-[5px] transition-opacity duration-150 ${
+              (activeMode === 'node' || activeMode === 'deck') ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            }`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 2,
+              height: 14,
+              padding: '0 5px',
+              borderRadius: 7,
+              background: 'var(--accent)',
+              color: '#fff',
+              fontSize: 8,
+              fontWeight: 700,
+              letterSpacing: '0.02em',
+              fontFamily: 'inherit',
+            }}
+            title={parts.map(p => `${p.k === 'n' ? '노드' : '덱'} ${p.n}`).join(' · ')}
+          >
+            {parts.map((p, i) => (
+              <span key={`${p.k}${p.n}`} style={{ display: 'inline-flex', alignItems: 'center' }}>
+                {i > 0 && <span style={{ opacity: 0.5, margin: '0 2px' }}>·</span>}
+                <span style={{ opacity: 0.7, marginRight: 1 }}>{p.k}</span>
+                <span>{p.n}</span>
+              </span>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* ── Monitor badge (bottom-left) ──────────────────────────────
           Invisible when auto (monitor === undefined) — becomes visible on hover.
@@ -614,7 +920,7 @@ export function ItemCard({
               const rect = monitorBadgeRef.current?.getBoundingClientRect();
               if (rect) setMonitorPickerPos({ x: rect.left, y: rect.bottom + 4 });
             }}
-            title={item.monitor ? `모니터 ${item.monitor}` : '모니터 지정'}
+            title={item.monitor ? `모니터 ${item.monitor} 고정` : '모니터 지정'}
             style={{
               position:'absolute', bottom:5, left:5,
               width:15, height:15, borderRadius:4,
@@ -642,19 +948,21 @@ export function ItemCard({
               <div
                 onPointerDown={e => e.stopPropagation()}
                 onClick={e => e.stopPropagation()}
-                style={{ position:'fixed', left:monitorPickerPos.x, top:monitorPickerPos.y, zIndex:99999, background:'var(--bg-rgba, rgba(18,18,28,0.95))', backdropFilter:'blur(20px) saturate(150%)', border:'1px solid var(--border-rgba)', borderRadius:8, padding:4, display:'flex', flexDirection:'column', gap:2, boxShadow:'0 8px 28px rgba(0,0,0,0.35)', minWidth:120 }}
+                style={{
+                  position:'fixed',
+                  left: monitorPickerPos.x,
+                  top:  monitorPickerPos.y,
+                  zIndex: 99999,
+                  borderRadius: 10,
+                  boxShadow:'0 10px 32px rgba(0,0,0,0.32)',
+                }}
               >
-                <div style={{ fontSize:9, color:'var(--text-dim)', padding:'2px 8px 4px', fontWeight:600, letterSpacing:'0.05em' }}>모니터 지정</div>
-                <button onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onSetMonitor(undefined); setMonitorPickerPos(null); }} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', border:'none', borderRadius:5, cursor:'pointer', fontFamily:'inherit', background: item.monitor===undefined ? 'var(--accent-dim)' : 'transparent', color: item.monitor===undefined ? 'var(--accent)' : 'var(--text-color)', fontSize:11, fontWeight:600 }}>
-                  <span style={{ width:18, height:18, borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:800, background: item.monitor===undefined ? 'var(--accent)' : 'var(--border-rgba)', color: item.monitor===undefined ? '#fff' : 'var(--text-dim)' }}>C</span>
-                  자동 (마지막 위치)
-                </button>
-                {Array.from({ length: monitorCount }, (_, i) => i + 1).map(n => (
-                  <button key={n} onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); onSetMonitor(n); setMonitorPickerPos(null); }} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', border:'none', borderRadius:5, cursor:'pointer', fontFamily:'inherit', background: item.monitor===n ? 'var(--accent-dim)' : 'transparent', color: item.monitor===n ? 'var(--accent)' : 'var(--text-color)', fontSize:11, fontWeight:600 }}>
-                    <span style={{ width:18, height:18, borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center', fontSize:9, fontWeight:800, background: item.monitor===n ? 'var(--accent)' : 'var(--border-rgba)', color: item.monitor===n ? '#fff' : 'var(--text-dim)' }}>{n}</span>
-                    모니터 {n}{n===1 ? ' (주)' : ''}
-                  </button>
-                ))}
+                <MonitorPicker
+                  monitors={monitors}
+                  value={item.monitor}
+                  onPick={(idx) => { onSetMonitor(idx); setMonitorPickerPos(null); }}
+                  size="compact"
+                />
               </div>
             </>,
             document.body
@@ -665,20 +973,20 @@ export function ItemCard({
       {/* ── Icon — type-tint badge container ────────────────────────
           Wraps the icon in a 36×36 rounded square with 8% opacity type-color
           background. This gives the card a visual anchor and passively encodes
-          the item type through color — safe in both light/dark themes because
-          the tint is transparent enough to read over any background.
-          Inactive items get a red tint instead, replacing the old wifi_off corner icon. */}
+          the item type through colour.
+          Inactive items used to get a red tint here, but combined with the
+          50% card opacity it read as alarming — like an error. We now rely
+          on the card-level opacity alone, which is enough to communicate
+          "this is dimmed" without the safety-orange. */}
       <div
-        title={isInactive ? '창이 닫혀있습니다' : undefined}
+        title={isInactive ? '창이 닫혀 있어요' : undefined}
         style={{
           width: 36, height: 36, borderRadius: 9, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           // Image icons: let the image speak for itself — no tint behind it
           background: (item.iconType === 'image' && item.icon && !imageIconFailed)
             ? 'transparent'
-            : isInactive
-              ? 'rgba(239,68,68,0.1)'   // red tint = window is gone (replaces wifi_off icon)
-              : `${accentColor}14`,     // 8% type-color tint
+            : `${accentColor}14`,     // 8% type-color tint (always)
           transition: 'background 0.15s',
         }}
       >
@@ -700,9 +1008,15 @@ export function ItemCard({
         <HighlightText text={item.title} query={searchQuery} />
       </span>
 
-      {/* ── Bottom stripe — pin or space color (pin dot removed; stripe handles both) ── */}
-      {(pinned || space.color) && (
-        <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: pinned ? 'var(--accent)' : space.color, opacity: pinned ? 0.45 : 0.6 }} />
+      {/* ── Bottom stripe — space-color only ────────────────────────
+          Pre-v1.3.9 this stripe doubled as the pin indicator (accent
+          colour when pinned, space colour otherwise). That meant pinned
+          cards lost their space-membership signal, and unpinned cards
+          competed visually for the accent colour with node-linked cards.
+          Now: the stripe is ALWAYS the space colour; pin lives as a
+          dedicated bookmark glyph in the top-right corner. */}
+      {space.color && (
+        <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: space.color, opacity: 0.55 }} />
       )}
 
       {/* F6: stale dot — item hasn't been clicked in 60+ days AND was used before
@@ -715,7 +1029,7 @@ export function ItemCard({
         if (Date.now() - last < staleMs) return null;
         return (
           <div
-            title="60일 이상 사용하지 않음 — 정리 후보"
+            title="60일째 안 썼어요 · 정리 후보"
             className="absolute top-1.5 left-1.5 w-1.5 h-1.5 rounded-full"
             style={{ background: 'var(--text-dim)', opacity: 0.5 }}
           />
@@ -773,83 +1087,46 @@ export function ItemCard({
       </button>
 
       {holdMonitorMode ? (
-        // ── Monitor picker sub-mode ────────────────────────────
-        (() => {
-          // Direction → CSS position constants
-          const DIR_POS: Record<string, React.CSSProperties> = {
-            w: { bottom:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' },
-            d: { left:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
-            a: { right:'calc(50% + 38px)', top:'50%', transform:'translateY(-50%)' },
-            s: { top:'calc(50% + 38px)', left:'50%', transform:'translateX(-50%)' },
-          };
-          const DIR_HINT: Record<string, string> = { w:'W', a:'A', s:'S', d:'D' };
-          const DEFAULT_DIRS: Record<number, string> = { 1:'d', 2:'a', 3:'s' };
-          const effDirs = monitorDirections ?? DEFAULT_DIRS;
-          const usedDirs = new Set(Object.values(effDirs).filter(d => d !== 'c'));
-          const showAuto = !usedDirs.has('w');
-          return (
-            <>
-              {/* Glassmorphism circular backdrop */}
-              <div style={{
-                position:'absolute', left:'50%', top:'50%', transform:'translate(-50%,-50%)',
-                width:190, height:190, borderRadius:'50%',
-                background:'var(--bg-rgba, rgba(18,18,28,0.5))',
-                backdropFilter:'blur(28px) saturate(160%)',
-                WebkitBackdropFilter:'blur(28px) saturate(160%)',
-                border:'1px solid rgba(255,255,255,0.1)',
-                boxShadow:'0 8px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.12)',
-                pointerEvents:'none', zIndex:0,
-              }} />
-
-              {/* Auto (C) button — top, shown only if 'w' not taken by a monitor */}
-              {showAuto && (
-                <MonitorHoldBtn label="C" subLabel="자동" hint="W" active={item.monitor === undefined}
-                  position={DIR_POS.w}
-                  onClick={() => { launchOnMonitorRef.current(undefined); closeHoldPopup(); }} />
-              )}
-
-              {/* Monitor buttons — positioned by configured direction */}
-              {([1, 2, 3] as const).map(n => {
-                const dir = effDirs[n] ?? DEFAULT_DIRS[n] ?? 'd';
-                if (dir === 'c' || !DIR_POS[dir]) return null;
-                return (
-                  <MonitorHoldBtn key={n} label={String(n)} subLabel={n===1?'주 모니터':`모니터 ${n}`}
-                    hint={DIR_HINT[dir] ?? ''} active={item.monitor === n} disabled={n > monitorCount}
-                    position={DIR_POS[dir]}
-                    onClick={() => { launchOnMonitorRef.current(n); closeHoldPopup(); }} />
-                );
-              })}
-
-              {/* Settings icon — 5 o'clock position */}
-              <button
-                data-hold-popup
-                onPointerDown={e => e.stopPropagation()}
-                onClick={() => { closeHoldPopup(); setTimeout(() => onOpenMonitorSettings?.(), 50); }}
-                title="모니터 설정"
-                style={{
-                  position:'absolute',
-                  left:'calc(50% + 45px)', top:'calc(50% + 78px)',
-                  transform:'translate(-50%,-50%)',
-                  width:20, height:20, borderRadius:'50%',
-                  background:'var(--bg-rgba, rgba(18,18,28,0.7))',
-                  backdropFilter:'blur(12px)',
-                  border:'1px solid rgba(255,255,255,0.15)',
-                  display:'flex', alignItems:'center', justifyContent:'center',
-                  cursor:'pointer', pointerEvents:'auto', zIndex:2,
-                  opacity:0.55, transition:'opacity 0.1s',
-                }}
-                onMouseEnter={e => (e.currentTarget.style.opacity='1')}
-                onMouseLeave={e => (e.currentTarget.style.opacity='0.55')}
-              >
-                <Icon name="settings" size={11} color="var(--text-muted)" />
-              </button>
-
-              <div style={{ position:'absolute', left:'50%', bottom:-22, transform:'translateX(-50%)', whiteSpace:'nowrap', fontSize:9, color:'var(--text-dim)', pointerEvents:'none' }}>
-                이번 한 번만 · Esc
-              </div>
-            </>
-          );
-        })()
+        // ── Monitor picker sub-mode (proportional visual) ──────
+        // Replaces the previous WASD-mapped circular wheel. The new
+        // MonitorPicker shows the user's actual monitor layout
+        // scaled to fit, so it stays legible regardless of how
+        // many monitors they have. The circular ring backdrop
+        // stays for visual continuity with the 4-direction primary
+        // mode — we just punch the picker through its centre.
+        <>
+          <div style={{
+            position:'absolute', left:'50%', top:'50%', transform:'translate(-50%,-50%)',
+            width:220, height:220, borderRadius:'50%',
+            background:'var(--bg-rgba, rgba(18,18,28,0.55))',
+            backdropFilter:'blur(28px) saturate(160%)',
+            WebkitBackdropFilter:'blur(28px) saturate(160%)',
+            border:'1px solid rgba(255,255,255,0.1)',
+            boxShadow:'0 8px 40px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.12)',
+            pointerEvents:'none', zIndex:0,
+          }} />
+          <div
+            data-hold-popup
+            onPointerDown={e => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
+            style={{
+              position:'absolute', left:'50%', top:'50%',
+              transform:'translate(-50%,-50%)',
+              zIndex: 2, pointerEvents: 'auto',
+            }}
+          >
+            <MonitorPicker
+              monitors={monitors}
+              value={item.monitor}
+              size="wheel"
+              onPick={(idx) => { launchOnMonitorRef.current(idx); closeHoldPopup(); }}
+              onOpenSettings={onOpenMonitorSettings ? () => { closeHoldPopup(); setTimeout(() => onOpenMonitorSettings(), 50); } : undefined}
+            />
+          </div>
+          <div style={{ position:'absolute', left:'50%', bottom:-22, transform:'translateX(-50%)', whiteSpace:'nowrap', fontSize:9, color:'var(--text-dim)', pointerEvents:'none' }}>
+            이번 한 번만 · Esc로 취소
+          </div>
+        </>
       ) : (
         // ── 4-direction icon buttons ───────────────────────────
         DIRS.map(dir => {
@@ -940,12 +1217,26 @@ export function ItemCard({
     <>
       <ContextMenu>
         <ContextMenuTrigger>
-          <Tooltip>
-            <TooltipTrigger render={cardEl} />
-            <TooltipContent side="bottom" className="text-xs max-w-[200px] truncate">
-              {item.isContainer ? `컨테이너 · ${filledSlots.length}/${DIRS.length} 슬롯` : item.value}
-            </TooltipContent>
-          </Tooltip>
+          {/* Widgets and memos skip the Tooltip wrapper — they have no
+              `value` to show and their body already communicates what
+              they are. Regular cards' tooltip teaches the click model:
+              the user sees "짧게: 카드 실행 / 길게: 4방향 액션" at a
+              glance, instead of a cryptic file path. Discoverability
+              of the long-press gesture was effectively zero before;
+              this surfaces it on every hover. */}
+          {(isWidget || isMemo) ? cardEl : (
+            <Tooltip>
+              <TooltipTrigger render={cardEl} />
+              <TooltipContent side="bottom" className="text-xs max-w-[260px]">
+                <CardHoverHint
+                  type={item.type}
+                  isContainer={item.isContainer}
+                  filledSlots={filledSlots.length}
+                  totalSlots={DIRS.length}
+                />
+              </TooltipContent>
+            </Tooltip>
+          )}
         </ContextMenuTrigger>
 
         <ContextMenuContent>
@@ -957,22 +1248,28 @@ export function ItemCard({
             {pinned ? '핀 해제' : '위치 고정'}
           </ContextMenuItem>
 
-          <ContextMenuSeparator />
-
-          {!item.isContainer && onConvertToContainer && (
-            <ContextMenuItem onClick={onConvertToContainer} className="gap-2 cursor-pointer">
-              <Icon name="grid_view" className="text-sm" />컨테이너로 전환
-            </ContextMenuItem>
-          )}
-          {item.isContainer && (
+          {/* Container-related items don't apply to widget or memo cards
+              — neither is launchable, so wrapping them in a 4-slot
+              container has no meaning. */}
+          {!isWidget && !isMemo && (
             <>
-              <ContextMenuItem onClick={() => onEditSlots?.()} className="gap-2 cursor-pointer">
-                <Icon name="tune" className="text-sm" />슬롯 편집
-              </ContextMenuItem>
-              {onConvertFromContainer && (
-                <ContextMenuItem onClick={onConvertFromContainer} className="gap-2 cursor-pointer">
-                  <Icon name="grid_off" className="text-sm" />일반 카드로 전환
+              <ContextMenuSeparator />
+              {!item.isContainer && onConvertToContainer && (
+                <ContextMenuItem onClick={onConvertToContainer} className="gap-2 cursor-pointer">
+                  <Icon name="grid_view" className="text-sm" />컨테이너로 전환
                 </ContextMenuItem>
+              )}
+              {item.isContainer && (
+                <>
+                  <ContextMenuItem onClick={() => onEditSlots?.()} className="gap-2 cursor-pointer">
+                    <Icon name="tune" className="text-sm" />슬롯 편집
+                  </ContextMenuItem>
+                  {onConvertFromContainer && (
+                    <ContextMenuItem onClick={onConvertFromContainer} className="gap-2 cursor-pointer">
+                      <Icon name="grid_off" className="text-sm" />일반 카드로 전환
+                    </ContextMenuItem>
+                  )}
+                </>
               )}
             </>
           )}
@@ -984,40 +1281,67 @@ export function ItemCard({
         </ContextMenuContent>
       </ContextMenu>
 
-      {holdPopup}
+      {/* Hold popup is the long-press monitor / slot picker — only
+          relevant for launchable / container cards, not widgets. */}
+      {!isWidget && !isMemo && holdPopup}
     </>
   );
 }
 
-// ── Monitor button in hold popup ─────────────────────────────
-function MonitorHoldBtn({ label, subLabel, hint, active, disabled, position, onClick }: {
-  label: string; subLabel: string; hint?: string; active: boolean; disabled?: boolean;
-  position: React.CSSProperties; onClick: () => void;
+// ── Card hover hint — discoverability copy in tooltip ───────────
+//
+// Replaces the old "show path/URL on hover" with a 2-line teaching
+// affordance:
+//   line 1: short-click verb tailored to type (실행 / 열기 / 복사…)
+//   line 2: long-press explanation, surfacing the 4-direction wheel
+//
+// The 4 directions are constants in this file (CARD_ACTIONS) — the
+// hint mirrors them so the user can build muscle memory. For
+// containers we show the slot status instead since the click model
+// is fundamentally different (slot picker, not launch).
+function CardHoverHint({
+  type, isContainer, filledSlots, totalSlots,
+}: {
+  type: LauncherItem['type'];
+  isContainer?: boolean;
+  filledSlots: number;
+  totalSlots: number;
 }) {
+  // Two-column ledger format — `라벨 : 동작`. Same vocabulary
+  // across every interactive surface in the launcher (see
+  // widgets/widgetTokens.ts → HOVER_HINT). The user explicitly
+  // called out the inconsistency between "짧게:" and "길게 누르고
+  // 어쩌구" — this is the canonical answer.
+  if (isContainer) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.5 }}>
+        <div style={{ fontWeight: 600, marginBottom: 2 }}>
+          컨테이너 · {filledSlots}/{totalSlots} 슬롯
+        </div>
+        <div>짧게 : 슬롯 카드 발사</div>
+        <div>길게 : 슬롯 편집</div>
+      </div>
+    );
+  }
+
+  const shortVerb =
+    type === 'url' || type === 'browser' ? 'URL 열기' :
+    type === 'folder' ? '폴더 열기' :
+    type === 'app' ? '앱 실행' :
+    type === 'window' ? '창 전환' :
+    type === 'cmd' ? '명령어 실행' :
+    type === 'text' ? '텍스트 복사' :
+    '실행';
+
   return (
-    <button
-      data-hold-popup
-      onPointerDown={e => e.stopPropagation()}
-      onClick={disabled ? undefined : onClick}
-      style={{
-        position:'absolute', ...position,
-        width:46, height:46, borderRadius:12,
-        background: disabled ? 'rgba(255,255,255,0.08)' : active ? 'var(--accent)' : 'rgba(255,255,255,0.15)',
-        backdropFilter:'blur(20px)',
-        border:`1.5px solid ${disabled ? 'rgba(255,255,255,0.12)' : active ? 'var(--accent)' : 'rgba(255,255,255,0.35)'}`,
-        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3,
-        cursor: disabled ? 'not-allowed' : 'pointer', pointerEvents:'auto',
-        opacity: disabled ? 0.35 : 1,
-        boxShadow: active && !disabled ? '0 4px 20px rgba(99,102,241,0.4)' : '0 4px 16px rgba(0,0,0,0.25)',
-        transition:'all 0.1s',
-        fontFamily:'inherit',
-      }}
-    >
-      {hint && (
-        <span style={{ position:'absolute', top:3, right:4, fontSize:8, fontWeight:700, lineHeight:1, color: active && !disabled ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.18)', letterSpacing:'0.02em' }}>{hint}</span>
-      )}
-      <span style={{ fontSize:15, fontWeight:800, color:'#fff', lineHeight:1, opacity: disabled ? 0.4 : 1 }}>{label}</span>
-      <span style={{ fontSize:7, color: disabled ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.8)', fontWeight:500, textAlign:'center', maxWidth:42, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{subLabel}</span>
-    </button>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.5 }}>
+      <div>짧게 : {shortVerb}</div>
+      <div>길게 : ↑수정 ↓모니터 ←새창 →복사</div>
+    </div>
   );
 }
+
+// MonitorHoldBtn was the per-direction button used by the old WASD-
+// style monitor picker. Replaced by MonitorPicker (proportional
+// visual) so this is dead code. Kept intentionally empty here as a
+// breadcrumb in case anyone greps for the symbol in the history.

@@ -140,7 +140,10 @@ export function DeckPanel({
                       ref={nameInputRef}
                       value={editName}
                       onChange={e => setEditName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') onCancelBuild(); }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.stopPropagation(); handleSave(); }
+                        if (e.key === 'Escape') { e.stopPropagation(); onCancelBuild(); }
+                      }}
                       placeholder={`덱 ${decks.length + 1}`}
                       style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border-focus)', borderRadius: 6, padding: '5px 8px', fontSize: 11, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
                     />
@@ -193,7 +196,10 @@ function DeckCard({ deck, items, monitorCount, onLaunch, onDelete, onUpdateDeck 
         <Icon name="stacks" size={13} color="#f97316" style={{ flexShrink: 0 }} />
         {renaming ? (
           <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); } if (e.key === 'Escape') setRenaming(false); }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.stopPropagation(); onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); }
+              if (e.key === 'Escape') { e.stopPropagation(); setRenaming(false); }
+            }}
             onBlur={e => {
               const next = e.relatedTarget as HTMLElement | null;
               if (next?.closest('[data-rename-done]')) return;

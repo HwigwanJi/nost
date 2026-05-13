@@ -49,12 +49,36 @@ interface Props {
   /** Called on a bare left-click (no drag). Parent decides what "activate"
    *  means — currently it toggles the mini-window popover. */
   onClick: () => void;
+  /** True when this component instance is RE-rendered after a preset switch
+   *  rather than freshly created (newly pinned). Suppresses the landing
+   *  "boing" so Tab-cycling presets doesn't make every badge animate at
+   *  once. Defaults to false (= run the landing animation as before). */
+  skipLanding?: boolean;
+  /** Pixel diameter of the bubble. Driven by the global
+   *  `settings.badgeSize` slider (see SettingsDialog → "플로팅 뱃지").
+   *  Optional so Storybook / tests / any out-of-overlay caller still
+   *  works; absent value falls back to the historical 46 px so the
+   *  visual matches every install pre-v1.3.17. */
+  size?: number;
+  /** True while a node/deck group launch fired from this badge is in
+   *  flight. Renders an orbiting ring around the bubble so the user
+   *  gets feedback when mainWindow is hidden (the usual case — the
+   *  launcher's own toast lives inside it). BadgeOverlay sets this
+   *  on click and clears on a fallback timeout (no done-signal IPC
+   *  yet; the timeout is comfortably longer than a normal tile). */
+  launching?: boolean;
 }
 
 // Circular bubble — icon-only, no dangling text label. The click expands a
 // mini-window popover (rendered by BadgeOverlay) that shows the referenced
 // space/node/deck's items; see BadgeOverlay.tsx for that behaviour.
-const BADGE_SIZE = 46;
+//
+// The bubble used to be a hardcoded 46 px. v1.3.17 promoted it to a
+// user-controlled global setting (see AppSettings.badgeSize and the
+// "플로팅 뱃지" section in SettingsDialog). We keep 46 here as the
+// default-prop fallback so any caller that forgets to pass `size`
+// still renders at the historically familiar diameter.
+const DEFAULT_BADGE_SIZE = 46;
 const DRAG_THRESHOLD = 4;
 const DEFAULT_COLOR = '#6366f1';
 
@@ -73,7 +97,13 @@ const TYPE_GLYPH: Record<BadgeData['refType'], string> = {
   deck:  '■',
 };
 
-export function Badge({ data, originX, originY, api, onClick }: Props) {
+export function Badge({ data, originX, originY, api, onClick, skipLanding = false, size, launching = false }: Props) {
+  // Resolve the effective bubble diameter once per render. Pulled out of
+  // the style object so the inner icon/dot sizes (which scale relative
+  // to the bubble) can read the same number without re-doing the
+  // fallback dance. Sizes below ~32 px squeeze the Material glyph; the
+  // settings slider clamps to 28 px which is the practical floor.
+  const BADGE_SIZE = typeof size === 'number' && size > 0 ? size : DEFAULT_BADGE_SIZE;
   // Local position during drag — flips the element from server-authoritative
   // to local-authoritative while the user is moving it, then commits via
   // api.reposition on release.
@@ -81,7 +111,10 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
   const [hover, setHover]       = useState(false);
   const [pressed, setPressed]   = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [landing, setLanding]   = useState(true); // one-shot "boing" on mount
+  // Don't run the "boing" landing animation when this is just a preset-switch
+  // re-appearance — only the very first mount of a given refType:refId pair
+  // (= a genuinely new pin) triggers it.
+  const [landing, setLanding]   = useState(!skipLanding);
 
   // Drag bookkeeping.
   //
@@ -98,12 +131,13 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     started: boolean;
   } | null>(null);
 
-  // Run the landing animation for 260 ms after mount, then remove the class.
-  // Shorter + gentler than the original 420ms / 1.18× peak — the bouncier
-  // version created a "badge shrank after drag" illusion because scale(1)
-  // felt noticeably smaller than the freshly-landed scale(1.08) peak.
+  // Run the landing animation for 220 ms after mount, then remove the class.
+  // The keyframe rises monotonically (0.78 → 1.0) without any overshoot —
+  // a previous version peaked at 1.04 / 1.08, which made the post-landing
+  // resting state look like the badge had *shrunk* after the user touched
+  // it. Eliminating the >1 peak removes the illusion entirely.
   useEffect(() => {
-    const t = setTimeout(() => setLanding(false), 260);
+    const t = setTimeout(() => setLanding(false), 220);
     return () => clearTimeout(t);
   }, []);
 
@@ -219,16 +253,27 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     // ignore-mouse toggle via closest('[data-badge]').
     pointerEvents: 'auto',
     cursor: dragging ? 'grabbing' : 'grab',
+    // Resting / interaction transforms. Note: hover scale (1.04) is now
+    // ≤ landing peak (also 1.0) so once the landing animation finishes
+    // there is no perceived size jump. Drag scale stays slightly larger
+    // (1.05) so the user gets visual confirmation while moving.
     transform:
       pressed   ? 'scale(0.92)' :
       dragging  ? 'scale(1.05)' :
       landing   ? 'scale(1)'    :
-      hover     ? 'scale(1.06)' : 'scale(1)',
+      hover     ? 'scale(1.04)' : 'scale(1)',
     transition: dragging
       ? 'none'
-      : 'transform 180ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 180ms ease',
+      // Spring easing removed (was overshooting on tiny scale deltas and
+      // visually competing with the landing keyframe). Pure ease-out is
+      // boring but reads as solid.
+      // left/top is also transitioned so a preset switch that moves the
+      // badge to a different stored coord glides smoothly instead of
+      // snapping (key is now refType:refId so the component persists
+      // across preset switches — see BadgeOverlay).
+      : 'transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 180ms ease, left 280ms cubic-bezier(0.22, 1, 0.36, 1), top 280ms cubic-bezier(0.22, 1, 0.36, 1)',
     willChange: 'transform',
-    animation: landing ? 'nost-badge-land 260ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
+    animation: landing ? 'nost-badge-land 220ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
   };
 
   // ── Icon resolution ──────────────────────────────────────
@@ -248,15 +293,22 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
     borderRadius: '50%',
     background: `linear-gradient(145deg, ${hexToRgba(color, 0.92)}, ${hexToRgba(color, 0.68)})`,
     border: `1.5px solid ${hexToRgba(color, hover ? 0.95 : 0.7)}`,
+    // Shadow tuned ~30% lighter than the original 0.32 / 0.42 — the badge
+    // sits over arbitrary desktop content and the heavy shadow read as a
+    // black halo in many app contexts. The hover variant keeps a subtle
+    // colored ring so the bubble still feels lifted on focus.
     boxShadow: hover
-      ? `0 8px 22px rgba(0,0,0,0.42) , 0 0 0 3px ${hexToRgba(color, 0.22)}`
-      : '0 3px 12px rgba(0,0,0,0.32)',
+      ? `0 8px 22px rgba(0,0,0,0.30) , 0 0 0 3px ${hexToRgba(color, 0.18)}`
+      : '0 3px 12px rgba(0,0,0,0.22)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
     color: '#fff',
-    fontSize: data.iconIsEmoji ? 24 : 22,
+    // Icon font scales with the bubble diameter so a 28 px badge doesn't
+    // look like a 22 px glyph crammed into a small disc. The ratios
+    // (24/46 and 22/46) preserve the original look at the default size.
+    fontSize: data.iconIsEmoji ? Math.round(BADGE_SIZE * (24 / 46)) : Math.round(BADGE_SIZE * (22 / 46)),
     // Font-family for Material Symbols lives on the inner span (see ms-rounded
     // class in badges.html). Emojis inherit the Pretendard-backed body stack
     // so they render with the same kerning as the rest of the overlay.
@@ -267,9 +319,10 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
   // Color-dot fallback: a lighter pill at the bubble centre when the ref has
   // no icon but has a color. Smaller than the bubble so the tinted gradient
   // backdrop still reads as "this is space X".
+  const colorDotSize = Math.round(BADGE_SIZE * (16 / 46));
   const colorDot: CSSProperties = {
-    width: 16,
-    height: 16,
+    width: colorDotSize,
+    height: colorDotSize,
     borderRadius: '50%',
     background: '#fff',
     opacity: 0.9,
@@ -281,11 +334,20 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
       {/* Keyframes for one-shot landing animation. Kept co-located so the
           overlay has no external CSS dependency. */}
       <style>{`
+        /* Pure scale + opacity rise — NO translateY. An earlier
+           version included a 6 px translateY that disappeared at
+           the keyframe end; users perceived this as the badge
+           "jumping down" 6 px right after appearing, especially
+           when their first click happened to coincide with the
+           220 ms animation boundary. Scale + fade alone is enough
+           visual interest without touching final position. */
         @keyframes nost-badge-land {
-          0%   { transform: scale(0.55) translateY(-8px); opacity: 0; }
-          70%  { transform: scale(1.04) translateY(0);    opacity: 1; }
-          100% { transform: scale(1)    translateY(0);    opacity: 1; }
+          0%   { transform: scale(0.84); opacity: 0; }
+          100% { transform: scale(1);    opacity: 1; }
         }
+        /* Single orbiting ring shown while a node/deck launch is in
+           flight. Composited transform keeps it cheap. */
+        @keyframes nost-badge-spin-cw { to { transform: rotate(360deg); } }
       `}</style>
       <div
         data-badge={data.id}
@@ -303,11 +365,30 @@ export function Badge({ data, originX, originY, api, onClick }: Props) {
           {hasIcon ? (
             data.iconIsEmoji
               ? <span>{iconContent}</span>
-              : <span className="ms-rounded" style={{ fontSize: 22 }}>{iconContent}</span>
+              : <span className="ms-rounded" style={{ fontSize: Math.round(BADGE_SIZE * (22 / 46)) }}>{iconContent}</span>
           ) : data.color
               ? <span style={colorDot} />
               : <span>{iconContent}</span>}
         </div>
+        {launching && (
+          /* Single orbiting arc just outside the bubble. Two-ring
+             earlier design read as visually busy (the bubble felt
+             surrounded by gears); one arc is enough to signal "in
+             flight" while keeping the icon the focal point. */
+          <span
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: -4,
+              borderRadius: '50%',
+              border: '2px solid transparent',
+              borderTopColor: hexToRgba(color, 0.95),
+              borderRightColor: hexToRgba(color, 0.55),
+              animation: 'nost-badge-spin-cw 900ms linear infinite',
+              pointerEvents: 'none',
+            }}
+          />
+        )}
       </div>
     </>
   );

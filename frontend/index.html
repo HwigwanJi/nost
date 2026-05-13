@@ -48,6 +48,13 @@
         font-size: 12px;
         color: rgba(255, 255, 255, 0.3);
         letter-spacing: 0.02em;
+        /* Reserve vertical space so status-text swaps don't reflow
+           the spinner/bar above. The two longest messages are
+           "브라우저 확장 새로고침 중..." (15ch) so 200px is safe. */
+        min-height: 18px;
+        text-align: center;
+        max-width: 240px;
+        transition: opacity 0.15s;
       }
 
       /* Progress bar */
@@ -60,15 +67,15 @@
       }
       #ql-loading-bar {
         height: 100%;
-        width: 0%;
+        width: 8%;
         background: rgba(99, 102, 241, 0.7);
         border-radius: 99px;
-        transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-        animation: ql-bar-init 1.2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-      }
-      @keyframes ql-bar-init {
-        from { width: 0% }
-        to   { width: 35% }
+        /* JS now drives `width` directly on every boot:status message
+           (see boot-recovery.js). The transition keeps each step
+           visually smooth without us having to interpolate manually,
+           and the 8% initial fill provides immediate "we started"
+           feedback before the first status arrives (~150 ms in). */
+        transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
       }
 
       /* Spinner */
@@ -84,21 +91,90 @@
       @keyframes ql-spin {
         to { transform: rotate(360deg); }
       }
+
+      /* Error state — swapped in by main when boot:show-error IPC fires
+         after 8 s of no renderer-ready. Mirrors the visual language of
+         the loading state so the only thing the user sees change is
+         the message + buttons appearing in place of the progress bar. */
+      #ql-loading .ql-loading-default,
+      #ql-loading .ql-loading-error { display: contents; }
+      #ql-loading.ql-error .ql-loading-default { display: none; }
+      #ql-loading:not(.ql-error) .ql-loading-error { display: none; }
+      .ql-err-msg {
+        font-family: 'Pretendard Variable', Pretendard, -apple-system, sans-serif;
+        font-size: 12px;
+        color: rgba(248, 113, 113, 0.92);
+        text-align: center;
+        line-height: 1.5;
+        max-width: 280px;
+        padding: 0 18px;
+      }
+      .ql-err-actions {
+        display: flex;
+        gap: 8px;
+        -webkit-app-region: no-drag;
+        margin-top: 4px;
+      }
+      .ql-btn {
+        font-family: 'Pretendard Variable', Pretendard, -apple-system, sans-serif;
+        font-size: 11px;
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.04);
+        color: rgba(255,255,255,0.7);
+        cursor: pointer;
+        font-weight: 500;
+      }
+      .ql-btn:hover {
+        background: rgba(99,102,241,0.16);
+        border-color: rgba(99,102,241,0.35);
+      }
+      .ql-btn.primary {
+        background: rgba(99,102,241,0.7);
+        color: #fff;
+        border-color: transparent;
+      }
+      .ql-btn.primary:hover { background: rgba(99,102,241,0.85); }
     </style>
   </head>
   <body>
-    <!-- Loading screen: visible before React loads, draggable -->
+    <!-- Loading screen: visible before React loads, draggable.
+         Two states share the same shell:
+           .ql-loading-default  → progress bar + "불러오는 중…"
+           .ql-loading-error    → red logo + recovery buttons
+         Swap is driven by the parent `.ql-error` class, toggled by the
+         IPC-listener script below when main fires `boot:show-error`. -->
     <div id="ql-loading">
-      <div class="ql-loading-logo">
-        <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(99, 102, 241, 0.9)"/>
-        </svg>
+      <div class="ql-loading-default">
+        <div class="ql-loading-logo">
+          <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(99, 102, 241, 0.9)"/>
+          </svg>
+        </div>
+        <div class="ql-progress-wrap">
+          <div id="ql-loading-bar"></div>
+        </div>
+        <div class="ql-loading-text" id="ql-loading-status">시작하는 중...</div>
       </div>
-      <div class="ql-progress-wrap">
-        <div id="ql-loading-bar"></div>
+      <div class="ql-loading-error">
+        <div class="ql-loading-logo" style="background: rgba(248,113,113,0.12); border-color: rgba(248,113,113,0.25)">
+          <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(248, 113, 113, 0.9)"/>
+          </svg>
+        </div>
+        <div class="ql-err-msg">앱이 시작되지 못했어요.<br>네트워크 또는 데이터 폴더 문제일 수 있어요.</div>
+        <div class="ql-err-actions">
+          <button class="ql-btn" id="ql-btn-logs">로그 보기</button>
+          <button class="ql-btn primary" id="ql-btn-restart">재시작</button>
+        </div>
       </div>
-      <div class="ql-loading-text">불러오는 중...</div>
     </div>
+
+    <!-- External boot-recovery script (CSP-safe; production CSP is
+         script-src 'self', which forbids inline). Wires the in-window
+         error UI buttons + listens for the boot:show-error IPC. -->
+    <script src="/boot-recovery.js" defer></script>
 
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

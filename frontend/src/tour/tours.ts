@@ -6,6 +6,8 @@
  * zero React code.
  */
 
+import type { AppData } from '../types';
+
 export interface TourStep {
   /** Unique within the tour. */
   id: string;
@@ -25,10 +27,29 @@ export interface TourStep {
    *   - 'target-click' : listen for a click on the spotlighted element
    *   - 'next-button'  : show a 다음 button (default)
    *   - 'condition'    : poll `condition()` and auto-advance when true
+   *   - 'expects'      : poll `expects(data)` against the live AppData and
+   *                      auto-advance when it returns true. This is the
+   *                      sandbox-friendly variant — the tour overlay reads
+   *                      whatever the user is actually doing in the
+   *                      tutorial preset and advances on real progress.
    */
-  advanceOn?: 'target-click' | 'next-button' | 'condition';
+  advanceOn?: 'target-click' | 'next-button' | 'condition' | 'expects';
   /** For advanceOn='condition'. Polled every 400ms. */
   condition?: () => boolean;
+  /**
+   * For advanceOn='expects'. Pure predicate over the live AppData. Must
+   * stay synchronous and side-effect-free — the overlay polls it on every
+   * data update, plus a 600ms timer as a fallback for non-React state
+   * changes (e.g. floating badge drag persisted via IPC, which doesn't
+   * trigger a re-render until main pushes back).
+   */
+  expects?: (data: AppData) => boolean;
+  /**
+   * Short call-to-action shown next to the 다음 button when `expects` is
+   * set, so the user knows the tour is waiting on them. e.g. "직접 추가해
+   * 보세요". Falls back to no extra label if absent.
+   */
+  hint?: string;
   /** When the step ends (either advanced or aborted). */
   onLeave?: () => void;
   /**
@@ -43,7 +64,91 @@ export interface Tour {
   title: string;
   summary: string;
   steps: TourStep[];
+  /**
+   * When true, the tour runs inside the tutorial sandbox: App.tsx swaps
+   * AppData with seed content before the spotlight starts and offers a
+   * keep/discard modal on exit. Tours without `interactive` are pure text
+   * walkthroughs over the user's real data — no swap, no banner.
+   */
+  interactive?: boolean;
 }
+
+// ── Tour: Basics — 첫 실행용 ────────────────────────────────
+//
+// Order matters: this tour goes FIRST in TOURS so the WelcomeWizard's
+// default "투어 보기" picks it up. Earlier the default was the presets
+// tour, which told free users to click preset 2 — but that's a paywalled
+// action, so the paywall modal would pop, our busy-abort logic would
+// kill the tour, and the user got a confusing crash mid-onboarding.
+//
+// All steps here use `next-button` advance only. We never tell the user
+// to click something that might trigger a modal: clicking would advance
+// the tour, the modal's busy mark would then trip the abort effect, and
+// the spotlight would vanish before the user finishes reading. Free
+// guidance > forced interaction.
+const basicsTour: Tour = {
+  id: 'basics',
+  title: '기본 사용법',
+  summary: '직접 카드를 만들고 실행해보는 60초 가이드',
+  interactive: true,
+  steps: [
+    {
+      id: 'intro',
+      dataTourId: 'space-list',
+      title: '튜토리얼 모드입니다',
+      body: '지금부터 가짜 데이터로 nost를 직접 만져 봅니다. 여기서 만든 건 저장되지 않으니 마음껏 눌러보세요. 실제 데이터는 자동으로 백업됐습니다.',
+      placement: 'right',
+      advanceOn: 'next-button',
+    },
+    {
+      id: 'add',
+      dataTourId: 'add-card-button',
+      title: '+ 추가를 눌러 첫 카드 만들기',
+      body: '스페이스 하단의 "+ 추가"를 누르면 마법사가 열립니다. URL이나 앱 경로를 입력하고 저장해 보세요. 카드를 하나 만들면 자동으로 다음 단계로 갑니다.',
+      placement: 'top',
+      advanceOn: 'expects',
+      // Wait until the user actually creates a card in the sandbox space.
+      expects: (data) => (data.spaces[0]?.items?.length ?? 0) >= 1,
+      hint: '카드 1개를 만들면 자동 진행',
+    },
+    {
+      id: 'celebrate',
+      dataTourId: 'space-list',
+      title: '잘했어요',
+      body: '방금 만든 카드를 클릭하면 실제로 실행됩니다 (URL은 브라우저, 앱은 그 앱). 우클릭으로 편집·삭제·핀 메뉴를 열 수 있어요.',
+      placement: 'right',
+      advanceOn: 'next-button',
+      autoAdvanceMs: undefined,
+    },
+    {
+      id: 'search',
+      dataTourId: 'search-input',
+      title: '검색으로 빠르게 찾기',
+      body: '검색창에 카드 이름의 한두 글자만 입력해 보세요. 매칭되는 카드가 하이라이트되고 Enter로 실행됩니다. 오타도 어느 정도 잡아내요.',
+      placement: 'bottom',
+      advanceOn: 'expects',
+      // The `data` arg goes unused — search query lives in component state,
+      // not AppData. We cheat and read the input's DOM value directly. The
+      // tour overlay still polls this on every data change AND on a 600ms
+      // timer, so even a non-React typing path advances the step.
+      expects: (_data: AppData) => {
+        const el = document.querySelector<HTMLInputElement>(
+          '[data-tour-id="search-input"] input, input[data-tour-id="search-input"]',
+        );
+        return !!el && (el.value ?? '').trim().length >= 1;
+      },
+      hint: '한 글자만 입력해도 진행',
+    },
+    {
+      id: 'more',
+      dataTourId: 'search-input',
+      title: '/?로 더 알아보기',
+      body: '검색창에 /? 를 입력하면 쓸 수 있는 모든 명령이 정리돼서 나옵니다. 다른 튜토리얼은 설정 → 일반에서 다시 볼 수 있어요.',
+      placement: 'bottom',
+      advanceOn: 'next-button',
+    },
+  ],
+};
 
 // ── Tour: Presets 소개 ─────────────────────────────────────
 const presetsTour: Tour = {
@@ -62,10 +167,13 @@ const presetsTour: Tour = {
     {
       id: 'switch',
       dataTourId: 'preset-toggle',
-      title: '클릭해 전환',
-      body: '2 또는 3을 클릭하면 빈 프리셋으로 이동합니다. 그곳에서 새로 카드를 만들어보세요.',
+      title: '전환 방법',
+      body: '숫자를 클릭하면 그 프리셋으로 전환됩니다. 무료 플랜에서는 1번만 사용 가능하고, 2·3번은 Pro 전용이에요. 지금은 둘러만 보세요 — 클릭하면 결제 안내가 뜹니다.',
       placement: 'bottom',
-      advanceOn: 'target-click',
+      // Was 'target-click' before — but on free tier, clicking 2/3 fires
+      // the paywall, which interrupts the tour. Walk through with the
+      // Next button instead and just describe what would happen.
+      advanceOn: 'next-button',
     },
     {
       id: 'rename',
@@ -152,7 +260,9 @@ const floatingTour: Tour = {
   ],
 };
 
-export const TOURS: Tour[] = [presetsTour, slashTour, floatingTour];
+// Order is meaningful: TOURS[0] is what the WelcomeWizard runs by default
+// when the user clicks "투어 보기" without specifying an id.
+export const TOURS: Tour[] = [basicsTour, presetsTour, slashTour, floatingTour];
 
 export function findTour(id: string): Tour | undefined {
   return TOURS.find(t => t.id === id);

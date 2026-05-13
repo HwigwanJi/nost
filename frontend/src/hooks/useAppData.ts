@@ -1,9 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
-import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId } from '../types';
+import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId, MemoData, AppNotification } from '../types';
+import { DEFAULT_MEMO_SETTINGS, NOTIFICATION_MAX_AGE_MS } from '../types';
 import { newTrialLicense } from './useEntitlement';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
 import { createLogger } from '../lib/logger';
+import { purgeExpiredMemos } from '../lib/memoUtils';
 
 const log = createLogger('useAppData');
 
@@ -119,6 +121,7 @@ function migrateData(parsed: AppData): AppData {
     theme: parsed.settings.theme ?? 'dark',
     autoLaunch: parsed.settings.autoLaunch ?? false,
     autoHide: parsed.settings.autoHide ?? false,
+    windowOpenAt: parsed.settings.windowOpenAt === 'last' ? 'last' : 'cursor',
     accentColor: parsed.settings.accentColor ?? '#6366f1',
     documentExtensions: parsed.settings.documentExtensions ?? [],
     floatingButton: parsed.settings.floatingButton ?? {
@@ -127,6 +130,12 @@ function migrateData(parsed: AppData): AppData {
       size: 'normal',
       hideOnFullscreen: true,
     },
+    // Floating badge size — additive global field, no schema bump needed.
+    // We default to 46 (the legacy hardcoded value in Badge.tsx) so any
+    // pre-v1.3.x save file lights up the new slider at exactly the size
+    // its user has been seeing for months.
+    badgeSize: parsed.settings.badgeSize ?? 46,
+    memo: parsed.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS },
   };
 
   // ── Preset shape migration ──────────────────────────────────
@@ -204,20 +213,24 @@ function setLoadingProgress(pct: number) {
 
 function dismissLoadingScreen() {
   const el = document.getElementById('ql-loading');
-  log.debug(`dismissLoadingScreen called, overlay=${!!el}`);
+  // Promoted to info: production debug logs are stripped, so we can't
+  // see whether dismiss fires in user logs. Without that visibility
+  // the boot-stuck path is undebuggable. Keep this until we have
+  // enough confidence the unified flow is reliable.
+  log.info(`[boot] dismissLoadingScreen called, overlay=${!!el}`);
   if (!el) return;
   setLoadingProgress(100);
   // Signal Electron main that renderer is fully ready — window will be shown now
-  log.debug('electronAPI.signalReady() →');
+  log.info('[boot] electronAPI.signalReady() →');
   electronAPI.signalReady();
   setTimeout(() => {
     el.classList.add('fade-out');
-    setTimeout(() => { el.remove(); log.debug('loading overlay removed'); }, 280);
+    setTimeout(() => { el.remove(); log.info('[boot] loading overlay removed'); }, 280);
   }, 150);
 }
 
 export function useAppData() {
-  log.debug('useAppData() function called');
+  log.info('[boot] useAppData() function called');
   // `raw` is the true on-disk shape (presets[] + globals). All mutating
   // callers still see a backward-compat "flat" view via `data` (below) — the
   // `save` shim intercepts their writes and redirects per-preset keys into
@@ -227,16 +240,33 @@ export function useAppData() {
 
   // On mount: load from electron-store (migrating from localStorage if needed)
   useEffect(() => {
-    log.debug('useAppData mount effect running');
+    log.info('[boot] useAppData mount effect running');
     setLoadingProgress(60);
+    // Push a status string into the in-window #ql-loading overlay.
+    // boot-recovery.js wires `window.__bootStatus` for both main-IPC
+    // and direct calls; this is the direct path used by React.
+    (window as { __bootStatus?: (s: string) => void }).__bootStatus?.('데이터 불러오는 중...');
     electronAPI.setLoadingStatus('데이터 불러오는 중...');
+    log.info('[boot] electronAPI.storeLoad() →');
     electronAPI.storeLoad().then(stored => {
       const hasStore = !!(stored && typeof stored === 'object' && (
         'presets' in (stored as AppData) || 'spaces' in (stored as AppData)
       ));
-      log.debug(`storeLoad resolved. hasStore=${hasStore}`);
+      log.info(`[boot] storeLoad resolved. hasStore=${hasStore}`);
+      (window as { __bootStatus?: (s: string) => void }).__bootStatus?.('마무리하는 중...');
       if (hasStore) {
-        setRawData(migrateData(stored as AppData));
+        // Run the memo auto-purge sweep RIGHT after migration so the
+        // first paint already reflects expired→trash and trash→deleted
+        // transitions. We persist the swept shape so the store on disk
+        // matches what's in memory (otherwise an unchanged-on-render
+        // close+reopen would resurrect ghosts).
+        const migrated = migrateData(stored as AppData);
+        const swept = purgeExpiredMemos(migrated, Date.now());
+        setRawData(swept);
+        if (swept !== migrated) {
+          // No-op when nothing changed (purge returns ===).
+          electronAPI.storeSave(swept);
+        }
       } else {
         const localRaw = localStorage.getItem(STORAGE_KEY);
         if (!localRaw) setIsFirstRun(true);
@@ -245,11 +275,23 @@ export function useAppData() {
       }
       setLoadingProgress(90);
       electronAPI.setLoadingStatus('화면 그리는 중...');
+      // Notify the boot-gate orchestrator (AppShell) that data is
+      // ready. AppShell waits for this + auth + fonts before it
+      // dismisses the overlay. Going through a window event keeps
+      // useAppData's old call-site simple (no callback prop) and
+      // dodges a wider context refactor for a one-shot signal.
+      try { window.dispatchEvent(new Event('nost:store-ready')); } catch { /* noop */ }
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        log.debug('double-rAF fired → dismissLoadingScreen');
-        dismissLoadingScreen();
+        log.debug('double-rAF fired (store-ready dispatched)');
       }));
-    }).catch(err => log.error('storeLoad rejected', err));
+    }).catch(err => {
+      // Crucial: even if storeLoad rejects, dismiss the overlay so the
+      // user sees the (possibly empty) app shell rather than being
+      // stuck on the loading screen forever. signalReady() inside
+      // dismissLoadingScreen also unblocks main's window-show path.
+      log.error('storeLoad rejected — dismissing overlay anyway', err);
+      try { dismissLoadingScreen(); } catch (e) { log.error('dismiss after error failed', e); }
+    });
   }, []);
 
   // `raw` already has its top-level flat fields mirrored to the active preset
@@ -335,6 +377,77 @@ export function useAppData() {
     });
   }, []);
 
+  /**
+   * Move a single space (with all its items) from the active preset
+   * to another preset. The receiver gets the space appended to the
+   * end of its `spaces[]`; the sender loses it.
+   *
+   * Caveats consciously NOT handled here (yet):
+   *   - Floating badges referencing the moved space stay in the
+   *     SOURCE preset's badges array. They become dangling — the
+   *     overlay will quietly skip them on next render. Cleaning these
+   *     up would require deciding which preset "owns" each badge,
+   *     which is a UX call the user hasn't asked for. For now: live
+   *     dangling references; user can recreate the badge if they
+   *     want it on the target preset.
+   *   - Node groups / decks similarly may reference items inside the
+   *     moved space. Same trade-off — they're scoped per-preset, so
+   *     references in the source preset go stale.
+   *
+   * Why we mirror the active preset back into top-level `spaces`:
+   * the rest of the codebase reads `data.spaces` (not
+   * `data.presets[active].spaces`) — see migrateData. So when the
+   * source preset IS the active one, we have to update both views.
+   * When moving FROM active, the active preset loses the space; we
+   * mirror that. When moving TO the active preset, we'd never call
+   * this (target === active is filtered out at the call site), but
+   * the mirror logic stays defensive.
+   */
+  const moveSpaceToPreset = useCallback((spaceId: string, targetPresetId: PresetId) => {
+    setRawData(prev => {
+      // Find the source preset that owns this space.
+      const sourcePreset = prev.presets.find(p => p.spaces.some(s => s.id === spaceId));
+      if (!sourcePreset) return prev;
+      if (sourcePreset.id === targetPresetId) return prev;
+      const space = sourcePreset.spaces.find(s => s.id === spaceId);
+      if (!space) return prev;
+
+      // Atomic preset-array rebuild: source loses the space, target
+      // appends it. We don't rely on chained .map mutations because a
+      // future change might land both in the same render batch.
+      const newPresets = prev.presets.map(p => {
+        if (p.id === sourcePreset.id) {
+          return { ...p, spaces: p.spaces.filter(s => s.id !== spaceId) };
+        }
+        if (p.id === targetPresetId) {
+          // Don't reinsert if the target somehow already has it — the
+          // `targetPresetId !== sourcePreset.id` guard above means
+          // we'd only see it as a duplicate from a pathological state.
+          if (p.spaces.some(s => s.id === spaceId)) return p;
+          return { ...p, spaces: [...p.spaces, space] };
+        }
+        return p;
+      });
+
+      // Top-level `spaces` mirror — only changes when the active
+      // preset is involved. If the active preset is the source, drop
+      // the space from the mirror. If it's the target, append.
+      let nextSpaces = prev.spaces;
+      if (prev.activePresetId === sourcePreset.id) {
+        nextSpaces = nextSpaces.filter(s => s.id !== spaceId);
+      } else if (prev.activePresetId === targetPresetId) {
+        if (!nextSpaces.some(s => s.id === spaceId)) {
+          nextSpaces = [...nextSpaces, space];
+        }
+      }
+
+      const next = { ...prev, presets: newPresets, spaces: nextSpaces };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next).then(() => electronAPI.syncBadges());
+      return next;
+    });
+  }, []);
+
   const markTourCompleted = useCallback((tourId: string) => {
     setRawData(prev => {
       if ((prev.completedTours ?? []).includes(tourId)) return prev;
@@ -392,7 +505,7 @@ export function useAppData() {
   }, []);
 
   // ── Spaces ──────────────────────────────────────────────
-  const addSpace = useCallback((name?: string) => {
+  const addSpace = useCallback((name?: string): Space => {
     const newSpace: Space = {
       id: generateId(),
       name: name?.trim() || `Space ${data.spaces.length + 1}`,
@@ -401,6 +514,7 @@ export function useAppData() {
       pinnedIds: [],
     };
     save({ ...data, spaces: [...data.spaces, newSpace] });
+    return newSpace;
   }, [data, save]);
 
   const renameSpace = useCallback((id: string, name: string) => {
@@ -517,6 +631,11 @@ export function useAppData() {
         s.id === spaceId ? { ...s, items: [...s.items, newItem] } : s
       ),
     });
+    // Returning the new item lets callers chain follow-ups —
+    // e.g. "add a colour swatch and immediately open the edit
+    // dialog so the user can label it" (handleClipboardAdd, the
+    // hex fast-path in openQuickAdd, etc.).
+    return newItem;
   }, [data, save]);
 
   const updateItem = useCallback((spaceId: string, item: LauncherItem) => {
@@ -529,13 +648,97 @@ export function useAppData() {
   }, [data, save]);
 
   const deleteItem = useCallback((spaceId: string, itemId: string) => {
+    // Cascade cleanup: remove the deleted id from any node groups,
+    // decks, container slots, and pinned-id sets that still
+    // reference it. Without this, node order numbers drift (a node
+    // shows "1, _, 3" with a hole) and the gauge / staging UI counts
+    // a phantom member ("3/3" when only 2 cards exist). Same for
+    // decks. Same write tx as the items[] mutation so we don't
+    // momentarily expose a half-cleaned state to subscribers.
     save({
       ...data,
-      spaces: data.spaces.map(s =>
-        s.id === spaceId ? { ...s, items: s.items.filter(i => i.id !== itemId) } : s
-      ),
+      spaces: data.spaces.map(s => {
+        if (s.id !== spaceId) {
+          // Other spaces: items[] untouched, but pinnedIds may
+          // still reference cross-space (it doesn't, by design,
+          // but be defensive — also strip container-slot refs).
+          const slotsCleaner = (i: LauncherItem): LauncherItem => {
+            if (!i.isContainer || !i.slots) return i;
+            const newSlots: ContainerSlots = { ...i.slots };
+            (['up','down','left','right'] as const).forEach(d => {
+              if (newSlots[d] === itemId) delete newSlots[d];
+            });
+            return { ...i, slots: newSlots };
+          };
+          return { ...s, items: s.items.map(slotsCleaner) };
+        }
+        // The owning space: drop the item, prune pinnedIds, also
+        // clear any container slot refs to it.
+        const slotsCleaner = (i: LauncherItem): LauncherItem => {
+          if (!i.isContainer || !i.slots) return i;
+          const newSlots: ContainerSlots = { ...i.slots };
+          (['up','down','left','right'] as const).forEach(d => {
+            if (newSlots[d] === itemId) delete newSlots[d];
+          });
+          return { ...i, slots: newSlots };
+        };
+        return {
+          ...s,
+          items: s.items.filter(i => i.id !== itemId).map(slotsCleaner),
+          pinnedIds: (s.pinnedIds ?? []).filter(id => id !== itemId),
+        };
+      }),
+      nodeGroups: (data.nodeGroups ?? [])
+        .map(g => ({ ...g, itemIds: g.itemIds.filter(id => id !== itemId) }))
+        // A node with fewer than 2 members can't launch anything —
+        // drop it entirely rather than leave a dead row. Empty decks
+        // we keep (they're just empty buckets).
+        .filter(g => g.itemIds.length >= 2),
+      decks: (data.decks ?? [])
+        .map(d => ({ ...d, itemIds: d.itemIds.filter(id => id !== itemId) })),
     });
   }, [data, save]);
+
+  /**
+   * Apply many partial item patches in a single store write. The favicon
+   * migration uses this to fold N data-URL conversions into one save —
+   * calling updateItem in a loop closes over stale `data` and makes later
+   * calls overwrite earlier ones. Patches are keyed by (spaceId, itemId)
+   * and only the listed fields are merged; everything else on the item
+   * stays as-is.
+   */
+  const patchItems = useCallback((patches: Array<{
+    spaceId: string;
+    itemId: string;
+    patch: Partial<LauncherItem>;
+  }>) => {
+    if (patches.length === 0) return;
+    const bySpace = new Map<string, Map<string, Partial<LauncherItem>>>();
+    for (const { spaceId, itemId, patch } of patches) {
+      let m = bySpace.get(spaceId);
+      if (!m) { m = new Map(); bySpace.set(spaceId, m); }
+      m.set(itemId, { ...(m.get(itemId) ?? {}), ...patch });
+    }
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => {
+          const updates = bySpace.get(s.id);
+          if (!updates) return s;
+          return {
+            ...s,
+            items: s.items.map(i => {
+              const u = updates.get(i.id);
+              return u ? { ...i, ...u } : i;
+            }),
+          };
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [setDataRaw]);
 
   // ── Batch add / delete (functional-update form — safe for loops) ──
   // Regular addItem/deleteItem close over `data`, so calling them in a synchronous
@@ -566,11 +769,26 @@ export function useAppData() {
     if (itemIds.length === 0) return;
     const idSet = new Set(itemIds);
     setDataRaw(prev => {
+      // Cascade cleanup mirrors single deleteItem — strip from
+      // nodeGroups / decks / pinnedIds, drop sub-2 nodes.
+      const newNodeGroups = (prev.nodeGroups ?? [])
+        .map(g => ({ ...g, itemIds: g.itemIds.filter(id => !idSet.has(id)) }))
+        .filter(g => g.itemIds.length >= 2);
+      const newDecks = (prev.decks ?? [])
+        .map(d => ({ ...d, itemIds: d.itemIds.filter(id => !idSet.has(id)) }));
       const next: AppData = {
         ...prev,
         spaces: prev.spaces.map(s =>
-          s.id === spaceId ? { ...s, items: s.items.filter(i => !idSet.has(i.id)) } : s
+          s.id === spaceId
+            ? {
+                ...s,
+                items: s.items.filter(i => !idSet.has(i.id)),
+                pinnedIds: (s.pinnedIds ?? []).filter(id => !idSet.has(id)),
+              }
+            : s
         ),
+        nodeGroups: newNodeGroups,
+        decks: newDecks,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
       electronAPI.storeSave(next);
@@ -711,6 +929,56 @@ export function useAppData() {
     });
   }, [data, save]);
 
+  /**
+   * Move an item to a space in a DIFFERENT preset (and update its content
+   * in the same write). Used by ItemDialog when the user picks a different
+   * preset in the edit dropdowns.
+   *
+   * IMPORTANT: bypasses `setDataRaw` and goes straight to `setRawData`.
+   * `setDataRaw` is a convenience wrapper that folds active-preset
+   * mutations back into the `presets[]` shape — but it does the OPPOSITE
+   * of what we need here: it ignores any direct `presets[]` modification
+   * the caller makes and only propagates `flatNext.spaces`. We're
+   * deliberately mutating non-active presets, so we need raw control.
+   *
+   * The bug this fixes: cards moved into a non-active preset would
+   * disappear into the void. The mirror logic dropped the item from the
+   * source (which IS the active preset) but never propagated the addition
+   * to the target preset, so the card vanished from both ends.
+   */
+  const moveItemAcrossPresets = useCallback((
+    itemId: string,
+    targetPresetId: string,
+    targetSpaceId: string,
+    updatedItem: LauncherItem,
+  ) => {
+    setRawData(prev => {
+      const sourcePreset = prev.presets.find(p => p.spaces.some(s => s.items.some(i => i.id === itemId)));
+      if (!sourcePreset || sourcePreset.id === targetPresetId) return prev;
+
+      const removeFrom = (s: Space) => ({ ...s, items: s.items.filter(i => i.id !== itemId) });
+      const addTo = (s: Space) => s.id === targetSpaceId ? { ...s, items: [...s.items, updatedItem] } : s;
+
+      const newPresets = prev.presets.map(p => {
+        if (p.id === sourcePreset.id) return { ...p, spaces: p.spaces.map(removeFrom) };
+        if (p.id === targetPresetId)  return { ...p, spaces: p.spaces.map(addTo) };
+        return p;
+      });
+
+      let nextSpaces = prev.spaces;
+      if (prev.activePresetId === sourcePreset.id) nextSpaces = nextSpaces.map(removeFrom);
+      if (prev.activePresetId === targetPresetId)  nextSpaces = nextSpaces.map(addTo);
+
+      const next = { ...prev, presets: newPresets, spaces: nextSpaces };
+      // Mirror what `save` does — persist + tell main to refresh badges,
+      // since cross-preset moves can affect floatingBadges visibility on
+      // preset switch.
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next).then(() => electronAPI.syncBadges());
+      return next;
+    });
+  }, []);
+
   // ── Node Groups ──────────────────────────────────────────
   const getNodeGroupForItem = useCallback((itemId: string): NodeGroup | undefined => {
     return (data.nodeGroups ?? []).find(g => g.itemIds.includes(itemId));
@@ -721,7 +989,7 @@ export function useAppData() {
     save({ ...data, nodeGroups: [...(data.nodeGroups ?? []), group] });
   }, [data, save]);
 
-  const updateNodeGroup = useCallback((id: string, updates: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor'>>) => {
+  const updateNodeGroup = useCallback((id: string, updates: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor' | 'icon'>>) => {
     save({
       ...data,
       nodeGroups: (data.nodeGroups ?? []).map(g => g.id === id ? { ...g, ...updates } : g),
@@ -799,6 +1067,82 @@ export function useAppData() {
       s.id === containerSpaceId
         ? { ...s, items: s.items.map(i => i.id === containerItemId ? { ...i, slots } : i) }
         : s
+    );
+
+    save({ ...data, spaces: nextSpaces });
+  }, [data, save]);
+
+  /**
+   * Atomic "drag-into-slot" assignment used by the Bloom UX.
+   *
+   *  - Source item: marked `hiddenInSpace: true` so it disappears from
+   *    its source space's grid (it now lives "inside" the container).
+   *  - Container's slots[dir] = sourceItemId. Other directions kept,
+   *    *unless* the same source was already in another direction —
+   *    that slot is cleared (a single item never lives in two slots).
+   *  - Whatever was previously in `dir` (if anything, and if it's not
+   *    still in another slot of this container) is *restored*: we flip
+   *    its `hiddenInSpace` back to `false` so the user gets that item
+   *    back in their space grid instead of orphaning it. This is
+   *    intentionally different from the modal's "save slots" flow,
+   *    which keeps replaced items hidden — drag interactions are
+   *    incremental, so the principle of least surprise wins.
+   *
+   * Single `save()` call — atomic — because doing this as three chained
+   * store mutations races against stale closures (same lesson as
+   * saveContainerSlots).
+   */
+  const assignSlotFromItem = useCallback((opts: {
+    containerSpaceId: string;
+    containerId: string;
+    dir: 'up' | 'down' | 'left' | 'right';
+    sourceItemId: string;
+  }) => {
+    const { containerSpaceId, containerId, dir, sourceItemId } = opts;
+    let nextSpaces = data.spaces;
+
+    const container = nextSpaces.find(s => s.id === containerSpaceId)
+                                ?.items.find(i => i.id === containerId);
+    if (!container?.isContainer) return;
+    const oldSlots = container.slots ?? {};
+    const oldSlotItemId = oldSlots[dir];
+    if (oldSlotItemId === sourceItemId) return; // no-op
+
+    // Compose new slots: copy others, drop source from any other slot,
+    // then write source into `dir`.
+    const newSlots: ContainerSlots = {};
+    for (const k of ['up', 'down', 'left', 'right'] as const) {
+      const cur = oldSlots[k];
+      if (cur && cur !== sourceItemId && k !== dir) newSlots[k] = cur;
+    }
+    newSlots[dir] = sourceItemId;
+
+    // Items that need their hiddenInSpace flipped to false (restored
+    // to their original space). Only the previous occupant of `dir`
+    // qualifies, and only if it's not still referenced by some other
+    // slot in this container (which can happen if the source item
+    // came from another slot of the same container).
+    const toRestore = new Set<string>();
+    if (oldSlotItemId && oldSlotItemId !== sourceItemId &&
+        !Object.values(newSlots).includes(oldSlotItemId)) {
+      toRestore.add(oldSlotItemId);
+    }
+
+    // Apply hidden-flag changes everywhere they need to apply.
+    nextSpaces = nextSpaces.map(s => ({
+      ...s,
+      items: s.items.map(i =>
+        i.id === sourceItemId ? { ...i, hiddenInSpace: true }
+        : toRestore.has(i.id) ? { ...i, hiddenInSpace: false }
+        : i,
+      ),
+    }));
+
+    // Update the container's slots field.
+    nextSpaces = nextSpaces.map(s =>
+      s.id === containerSpaceId
+        ? { ...s, items: s.items.map(i => i.id === containerId ? { ...i, slots: newSlots } : i) }
+        : s,
     );
 
     save({ ...data, spaces: nextSpaces });
@@ -885,8 +1229,303 @@ export function useAppData() {
   const updateSettings = useCallback((settings: AppSettings) => {
     electronAPI.setOpacity(settings.opacity);
     electronAPI.updateShortcut(settings.shortcut);
+    // Push autoHide to main's hot cache so the blur handler doesn't
+    // have to re-read electron-store (which had a staleness bug).
+    electronAPI.setAutoHide(!!settings.autoHide);
+    // Same pattern for the window-open-at strategy — main's
+    // toggleMainWindow reads from a hot cache to avoid a disk
+    // roundtrip on every show.
+    electronAPI.setWindowOpenAt(settings.windowOpenAt === 'last' ? 'last' : 'cursor');
+    // Live-apply launcher window size %. Main owns the persistence
+    // path (it writes into electron-store's appData.settings directly)
+    // so we only fire when the value actually changed — sending it on
+    // every settings save would cause unnecessary setBounds churn.
+    if (typeof settings.windowSizePct === 'number' &&
+        settings.windowSizePct !== data.settings.windowSizePct) {
+      electronAPI.setWindowSizePct(settings.windowSizePct);
+    }
     save({ ...data, settings });
   }, [data, save]);
+
+  // ── Memos (사라지는 메모) ─────────────────────────────────
+  // Thin wrappers over addItem/updateItem that bake the memo-specific
+  // shape — keeping the call sites readable. The TTL math lives in
+  // memoUtils so tests can validate it without going through React.
+  const addMemo = useCallback((spaceId: string, initialBody?: string): LauncherItem | null => {
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlDays = settings.defaultTtlDays;
+    const memo: MemoData = {
+      body: initialBody ?? '',
+      createdAt: now,
+      expiresAt: now + ttlDays * 24 * 60 * 60 * 1000,
+      lastTouchedAt: now,
+    };
+    return addItem(spaceId, {
+      type: 'memo',
+      title: '',                    // computed from body at render time
+      value: '',                    // unused for memo (mirrors widget pattern)
+      iconType: 'material',
+      icon: 'sticky_note_2',
+      clickCount: 0,
+      pinned: false,
+      memo,
+    });
+  }, [data.settings.memo, addItem]);
+
+  /**
+   * Update a memo's body and RESET its TTL (edits = 살리기). Caller is
+   * responsible for the debounce; we just commit the latest snapshot.
+   * The title field is also regenerated so search / accessibility stay
+   * in sync.
+   */
+  const updateMemoBody = useCallback((spaceId: string, itemId: string, body: string) => {
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlMs = settings.defaultTtlDays * 24 * 60 * 60 * 1000;
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => s.id !== spaceId ? s : {
+          ...s,
+          items: s.items.map(i => {
+            if (i.id !== itemId || i.type !== 'memo' || !i.memo) return i;
+            // Lazy-import to avoid circular: derive title here inline.
+            const firstLine = (() => {
+              for (const raw of body.split(/\r?\n/)) {
+                const line = raw.replace(/^\s*[-*+•]\s+/, '').replace(/^\s*#{1,6}\s+/, '').replace(/^\s*\[[ xX]\]\s+/, '').trim();
+                if (line.length > 0) return line.slice(0, 80);
+              }
+              return '';
+            })();
+            return {
+              ...i,
+              title: firstLine,
+              memo: {
+                ...i.memo,
+                body,
+                lastTouchedAt: now,
+                expiresAt: now + ttlMs,
+              },
+            };
+          }),
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [data.settings.memo, setDataRaw]);
+
+  /** "점 톡 살리기" — TTL reset only, body untouched. */
+  const extendMemo = useCallback((spaceId: string, itemId: string) => {
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlMs = settings.defaultTtlDays * 24 * 60 * 60 * 1000;
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => s.id !== spaceId ? s : {
+          ...s,
+          items: s.items.map(i => {
+            if (i.id !== itemId || i.type !== 'memo' || !i.memo) return i;
+            return { ...i, memo: { ...i.memo, lastTouchedAt: now, expiresAt: now + ttlMs, trashedAt: undefined } };
+          }),
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [data.settings.memo, setDataRaw]);
+
+  /** Manual trash (× button on card) — sets trashedAt without waiting for TTL. */
+  const trashMemo = useCallback((spaceId: string, itemId: string) => {
+    const now = Date.now();
+    setDataRaw(prev => {
+      const next: AppData = {
+        ...prev,
+        spaces: prev.spaces.map(s => s.id !== spaceId ? s : {
+          ...s,
+          items: s.items.map(i => {
+            if (i.id !== itemId || i.type !== 'memo' || !i.memo) return i;
+            return { ...i, memo: { ...i.memo, trashedAt: now } };
+          }),
+        }),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, [setDataRaw]);
+
+  /** Bulk: extend every active (non-trashed, non-pinned) memo by the
+   *  default TTL — the buried-in-settings emergency button. */
+  const extendAllMemos = useCallback((): number => {
+    let count = 0;
+    const now = Date.now();
+    const settings = data.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS };
+    const ttlMs = settings.defaultTtlDays * 24 * 60 * 60 * 1000;
+    setDataRaw(prev => {
+      const sweep = (i: LauncherItem): LauncherItem => {
+        if (i.type !== 'memo' || !i.memo || i.memo.trashedAt || i.pinned) return i;
+        count++;
+        return { ...i, memo: { ...i.memo, lastTouchedAt: now, expiresAt: now + ttlMs } };
+      };
+      const newPresets = prev.presets.map(p => ({
+        ...p,
+        spaces: p.spaces.map(s => ({ ...s, items: s.items.map(sweep) })),
+      }));
+      const active = newPresets.find(p => p.id === prev.activePresetId)!;
+      const next: AppData = { ...prev, presets: newPresets, spaces: active.spaces };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+    return count;
+  }, [data.settings.memo, setDataRaw]);
+
+  // ── Notifications (bell-icon panel) ──────────────────────────
+  //
+  // Sources push via `addNotification`; the panel reads via the
+  // returned `notifications` array. Dedup keys collapse repeated
+  // pushes from the same source (electron-updater fires "available"
+  // on every check; we dedupe by `update-available-${version}`).
+  // Mark-all-read fires when the panel opens — this is the entire
+  // "read" model (no per-row click-to-read).
+  const addNotification = useCallback((notif: Omit<AppNotification, 'id' | 'createdAt'> & { id?: string }) => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      // Dedup by key — if we already have a non-dismissed notif with
+      // the same key, refresh its createdAt and bail (no duplicate).
+      if (notif.dedupKey) {
+        const dupIdx = existing.findIndex(n => n.dedupKey === notif.dedupKey && !n.dismissedAt);
+        if (dupIdx >= 0) {
+          const merged: AppNotification = {
+            ...existing[dupIdx],
+            // Refresh fields the source might have updated, but keep id/createdAt.
+            title: notif.title,
+            body: notif.body,
+            action: notif.action,
+            // A repeat push counts as a fresh read prompt — clear readAt.
+            readAt: undefined,
+          };
+          const nextList = existing.slice();
+          nextList[dupIdx] = merged;
+          const next = { ...prev, notifications: nextList };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+          electronAPI.storeSave(next);
+          return next;
+        }
+      }
+      const newNotif: AppNotification = {
+        ...notif,
+        id: notif.id ?? generateId(),
+        createdAt: now,
+      };
+      // Newest first — panel renders in order.
+      const nextList = [newNotif, ...existing];
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const dismissNotification = useCallback((id: string) => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      let touched = false;
+      const nextList = existing.map(n => {
+        if (n.id === id && !n.dismissedAt) { touched = true; return { ...n, dismissedAt: now }; }
+        return n;
+      });
+      if (!touched) return prev;
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const dismissAllNotifications = useCallback(() => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      let touched = false;
+      const nextList = existing.map(n => {
+        if (!n.dismissedAt) { touched = true; return { ...n, dismissedAt: now }; }
+        return n;
+      });
+      if (!touched) return prev;
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  const markAllNotificationsRead = useCallback(() => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      let touched = false;
+      const nextList = existing.map(n => {
+        if (!n.readAt && !n.dismissedAt) { touched = true; return { ...n, readAt: now }; }
+        return n;
+      });
+      if (!touched) return prev;
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
+  // 30-day sweep — runs ONCE on mount. Keeps the array bounded for
+  // users who never open the bell. We delete (not just dismiss) since
+  // these have already been ignored for a month.
+  useEffect(() => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      if (existing.length === 0) return prev;
+      const kept = existing.filter(n => now - n.createdAt < NOTIFICATION_MAX_AGE_MS);
+      if (kept.length === existing.length) return prev;
+      const next = { ...prev, notifications: kept };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Hard-empty trash across all presets. Returns count purged. */
+  const emptyMemoTrash = useCallback((): number => {
+    let count = 0;
+    setDataRaw(prev => {
+      const filterSpace = (s: Space): Space => {
+        const kept = s.items.filter(i => !(i.type === 'memo' && i.memo?.trashedAt));
+        const removed = s.items.length - kept.length;
+        if (removed === 0) return s;
+        count += removed;
+        return { ...s, items: kept };
+      };
+      const newPresets = prev.presets.map(p => ({
+        ...p,
+        spaces: p.spaces.map(filterSpace),
+      }));
+      const active = newPresets.find(p => p.id === prev.activePresetId)!;
+      const next: AppData = { ...prev, presets: newPresets, spaces: active.spaces };
+      if (count === 0) return prev;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+    return count;
+  }, [setDataRaw]);
 
   return {
     data,
@@ -905,6 +1544,7 @@ export function useAppData() {
     addItem,
     addItems,
     updateItem,
+    patchItems,
     deleteItem,
     deleteItems,
     deleteUnpinnedInSpace,
@@ -915,6 +1555,7 @@ export function useAppData() {
     reorderItems,
     moveItemToSpace,
     updateItemAndMove,
+    moveItemAcrossPresets,
     updateSettings,
     reloadFromStore,
     getNodeGroupForItem,
@@ -926,6 +1567,7 @@ export function useAppData() {
     updateDeck,
     deleteDeck,
     saveContainerSlots,
+    assignSlotFromItem,
     setFloatingBadgesLocal,
     dismissSuggestion,
     // ── Preset + tour (Phase 4) ────────────────────────────────
@@ -933,10 +1575,24 @@ export function useAppData() {
     activePresetId: raw.activePresetId,
     setActivePreset,
     renamePreset,
+    moveSpaceToPreset,
     completedTours: raw.completedTours ?? [],
     markTourCompleted,
     // ── Licensing (Phase 5) ────────────────────────────────────
     setLicense,
     startTrialIfEligible,
+    // ── Memos (사라지는 메모) ──────────────────────────────────
+    addMemo,
+    updateMemoBody,
+    extendMemo,
+    trashMemo,
+    extendAllMemos,
+    emptyMemoTrash,
+    // ── Notifications (bell icon panel) ────────────────────────
+    notifications: raw.notifications ?? [],
+    addNotification,
+    dismissNotification,
+    dismissAllNotifications,
+    markAllNotificationsRead,
   };
 }

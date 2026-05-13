@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { AppMode } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
+import { triggers as tutorialTriggers } from '../tutorial/triggers';
 
 interface SidebarProps {
   activeMode: AppMode;
@@ -87,8 +88,13 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           label="노드 편집"
           active={activeMode === 'node'}
           expanded={expanded}
-          onClick={() => onModeChange(activeMode === 'node' ? 'normal' : 'node')}
+          onClick={() => {
+            const next = activeMode === 'node' ? 'normal' : 'node';
+            onModeChange(next);
+            if (next === 'node') tutorialTriggers.fire('node-mode-entered');
+          }}
           accentColor="#6366f1"
+          dataTourId="node-mode-button"
         />
         <SidebarButton
           icon="stacks"
@@ -97,6 +103,7 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           expanded={expanded}
           onClick={() => onModeChange(activeMode === 'deck' ? 'normal' : 'deck')}
           accentColor="#f97316"
+          dataTourId="deck-mode-button"
         />
 
         <SidebarButton
@@ -117,6 +124,7 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           expanded={expanded}
           onClick={() => onRecommendClick?.()}
           accentColor="var(--accent)"
+          dataTourId="recommend-button"
         />
       </div>
 
@@ -164,6 +172,7 @@ function SidebarButton({
   onClick,
   accentColor,
   badge,
+  dataTourId,
 }: {
   icon: string;
   label: string;
@@ -172,11 +181,14 @@ function SidebarButton({
   onClick: () => void;
   accentColor: string;
   badge?: string;
+  /** Optional `data-tour-id` for tutorial spotlight targeting. */
+  dataTourId?: string;
 }) {
   return (
     <button
       onClick={onClick}
       title={!expanded ? label : undefined}
+      {...(dataTourId ? { 'data-tour-id': dataTourId } : {})}
       style={{
         display: 'flex',
         alignItems: 'center',

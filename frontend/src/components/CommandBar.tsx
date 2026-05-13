@@ -22,6 +22,7 @@ export type ParsedCommand =
   | { kind: 'set-opacity'; value: number }                      // /opacity N  (0–100)
   | { kind: 'start-tutorial'; tourId?: string }                 // /tutorial [id]
   | { kind: 'clean-unpinned'; scope: 'space' | 'all'; spaceIdx?: number }  // /clean [n]
+  | { kind: 'open-import' }                                                   // /import
   | { kind: 'invalid'; reason: string };
 
 export interface Suggestion {
@@ -141,6 +142,9 @@ export function parseCommand(input: string, spaces: Space[], _nodeGroups: NodeGr
       return { kind: 'start-tutorial', tourId: id };
     }
 
+    // /import → open the import wizard
+    if (/^import$/i.test(body)) return { kind: 'open-import' };
+
     // /clean [n] → delete unpinned cards in space n (1-indexed), or all spaces if no n
     if (/^clean(\s.*)?$/i.test(body)) {
       const rest = body.replace(/^clean\s*/i, '').trim();
@@ -254,6 +258,9 @@ export function buildSuggestions(
   if (cmd.kind === 'start-tutorial') {
     return [{ icon: 'school', label: cmd.tourId ? `튜토리얼 "${cmd.tourId}" 시작` : '튜토리얼 선택', sub: cmd.tourId ? '가이드 오버레이 실행' : '사용 가능한 튜토리얼 목록', onSelect: () => onExecute(cmd) }];
   }
+  if (cmd.kind === 'open-import') {
+    return [{ icon: 'file_download', label: '가져오기 마법사 열기', sub: '북마크 / 마크다운 / .nost', onSelect: () => onExecute(cmd) }];
+  }
   if (cmd.kind === 'clean-unpinned') {
     const sub = cmd.scope === 'all' ? '모든 스페이스에서 고정되지 않은 카드 삭제' : `스페이스 ${(cmd.spaceIdx ?? 0) + 1}의 고정되지 않은 카드 삭제`;
     return [{ icon: 'cleaning_services', label: '청소', sub, onSelect: () => onExecute(cmd) }];
@@ -311,6 +318,7 @@ const HELP_CONTENT = [
   { cmd: '/new 이름', desc: '새 스페이스 생성' },
   { cmd: '/pin n-m', desc: '해당 카드 핀 토글' },
   { cmd: '/clean [n]', desc: '고정되지 않은 카드 청소 (n 없으면 전체)' },
+  { cmd: '/import', desc: '가져오기 마법사 (북마크 · 마크다운 · .nost 백업)' },
   { cmd: '/theme', desc: '다크 / 라이트 테마 전환' },
   { cmd: '/opacity N', desc: '런처 투명도 (0~100, 예: /opacity 85)' },
   { cmd: '/50  /75  /100', desc: '런처 창 크기를 화면 대비 해당 비율로 조정 (중앙 배치)' },

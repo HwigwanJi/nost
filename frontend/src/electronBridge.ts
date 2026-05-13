@@ -9,6 +9,7 @@ declare global {
 
 export interface ElectronAPI {
   hideApp: () => void;
+  requestCloseAfter: () => void;
   openUrl: (url: string, closeAfter: boolean) => void;
   openPath: (folder: string, closeAfter: boolean) => void;
   openFolder: (folder: string, closeAfter: boolean) => void;
@@ -18,6 +19,36 @@ export interface ElectronAPI {
   copyText: (text: string, closeAfter: boolean) => void;
   getOpenWindows: () => Promise<{ windows: import('./types').WindowEntry[]; browserTabs: import('./types').ChromeTab[] }>;
   setOpacity: (opacity: number) => void;
+  /** Set the launcher's physical size as % of the active monitor's
+   *  work area (25..100). Same semantic as `/N` slash commands.
+   *  Main clamps + persists into settings.windowSizePct + applies
+   *  setBounds so every code path stays in sync. */
+  setWindowSizePct: (pct: number) => void;
+  /** Snapshot of the launcher's process-tree resource usage. cpuPct
+   *  is normalised to % of total system CPU (0..100) so the number
+   *  is comparable to Task Manager. perProc breaks down the same
+   *  numbers per child process for the status-bar tooltip. */
+  getResourceStats: () => Promise<{
+    cpuPct: number;
+    memMB: number;
+    procs: number;
+    cores: number;
+    perProc: Array<{ type: string; cpuPct: number; memMB: number }>;
+  }>;
+  setSuppressAutoHide: (suppress: boolean, source?: string) => void;
+  setAutoHide: (autoHide: boolean) => void;
+  setWindowOpenAt: (mode: 'cursor' | 'last') => void;
+  readTextFile: (filePath: string, maxBytes?: number) => Promise<
+    | { ok: true; text: string; encoding: string }
+    | { ok: false; reason: 'too-large' | 'read-error'; size?: number; error?: string }
+  >;
+
+  // ── Auth ─────────────────────────────────────────────────────
+  authGetSession: () => Promise<unknown | null>;
+  authSetSession: (session: unknown | null) => Promise<boolean>;
+  authOpenOAuthUrl: (url: string) => Promise<unknown>;
+  authConsumePendingDeepLink: () => Promise<string | null>;
+  onAuthDeepLink: (cb: (url: string) => void) => () => void;
   updateShortcut: (shortcut: string) => void;
   detectDialog: () => Promise<{ isDialog: boolean; title?: string; className?: string }>;
   jumpToDialogFolder: (folderPath: string) => void;
@@ -27,10 +58,17 @@ export interface ElectronAPI {
   moveWindow: (x: number, y: number) => void;
   windowDragEnd: () => void;
   exportData: () => Promise<{ success: boolean; filePath?: string; reason?: string }>;
-  importData: () => Promise<{ success: boolean; data?: unknown; reason?: string }>;
+  autoBackupData: (reason?: string) => Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  openUserDataFolder: (sub?: string) => Promise<{ success: boolean; reason?: string }>;
+  importData: () => Promise<{ success: boolean; data?: unknown; formatVersion?: number; reason?: string }>;
+  pickAndReadText: (kind: 'bookmarks-html' | 'markdown' | 'any') => Promise<{ success: boolean; text?: string; fileName?: string; reason?: string }>;
   pickFolder: () => Promise<string | null>;
   pickExe: () => Promise<string | null>;
   getFileIcon: (filePath: string) => Promise<string | null>;
+  /** Download the first acceptable favicon candidate as a data URL.
+   *  Resolves to null if every candidate fails or returns a placeholder.
+   *  Runs in main process — bypasses renderer CSP and rejects 1×1 placeholders. */
+  downloadFavicon: (candidates: string[]) => Promise<string | null>;
   getExtensionBridgeStatus: () => Promise<{
     connected: boolean;
     tabsCount: number;
@@ -48,6 +86,16 @@ export interface ElectronAPI {
     browserExePath?: string;
     reason?: string;
   }>;
+  /** Open the Chrome Web Store page for the nost-bridge extension in
+   *  the user's default browser. Recommended path post-2026-04 store
+   *  approval — replaces the dev-mode "load unpacked" flow as the
+   *  primary install method. */
+  openExtensionStore: () => Promise<{ success: boolean; url?: string; reason?: string; error?: string }>;
+  /** Best-effort: register the extension as an "external extension" via
+   *  HKCU registry so Chrome shows a one-click "활성화" notification
+   *  on next launch. Failure is silent — caller should always also
+   *  open the store URL as a guaranteed fallback. */
+  registerExtensionExternal: () => Promise<{ success: boolean; reason?: string; error?: string }>;
   tileWindows: (items: { type: string; value: string; title: string }[]) => Promise<{ success: boolean; debug?: string; error?: string }>;
   maximizeWindow: (args: { item: { type: string; value: string; title: string }; monitor?: number }) => Promise<{ success: boolean }>;
   resizeActiveWindow: (pct: number) => Promise<{ success: boolean }>;
@@ -59,7 +107,7 @@ export interface ElectronAPI {
   onMonitorsChanged: (cb: (monitors: Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>) => void) => void;
   getRecentItems: () => Promise<Array<{ title: string; value: string; type: 'folder' | 'app'; lastAccessed: string }>>;
   readClipboard: () => Promise<string>;
-  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'none'; value?: string; label?: string }>;
+  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'hex' | 'text' | 'none'; value?: string; label?: string; html?: string }>;
   checkWindowsAlive: (titles: string[]) => Promise<Record<string, boolean>>;
   checkFileExists: (filePath: string) => Promise<boolean>;
   checkItemsForTile: (items: { type: string; value: string; title: string }[]) => Promise<Array<{ idx: number; alive: boolean; note: string }>>;
@@ -87,16 +135,50 @@ export interface ElectronAPI {
     screenY?: number,
   ) => Promise<{ success: boolean; id?: string; reason?: string }>;
   syncBadges: () => void;
-  onBadgesLaunchItem: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string; itemId: string }) => void) => void;
-  onBadgesLaunchRef: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => void;
-  onBadgesRevealSpace: (cb: (payload: { refId: string }) => void) => void;
-  onBadgesUpdated: (cb: (badges: import('./types').FloatingBadge[]) => void) => void;
+  // Returns an unsubscribe function — call it from useEffect cleanup so
+  // listeners don't pile up. Pre-fix this returned void, which caused one
+  // badge click to launch N times after N effect re-runs.
+  onBadgesLaunchItem: (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string; itemId: string }) => void) => () => void;
+  onBadgesLaunchRef:  (cb: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void) => () => void;
+  notifyBadgesLaunchDone: (payload: { refType: 'space' | 'node' | 'deck'; refId: string }) => void;
+  // Both return unsubscribe fns — call from useEffect cleanup. The
+  // pre-fix void return triggered a listener pile-up bug under unstable
+  // deps, surfaced by Node's MaxListenersExceededWarning at ~10. See
+  // App.tsx's badges effect for the canonical consumption pattern.
+  onBadgesRevealSpace: (cb: (payload: { refId: string }) => void) => () => void;
+  onBadgesUpdated: (cb: (badges: import('./types').FloatingBadge[]) => void) => () => void;
+  // ── Media widget — write side only ──────────────────────────────
+  // We dropped the read side (NowPlaying via SMTC) after the YouTube
+  // freeze. The widget is a control surface — keys go out, no state
+  // comes back. mediaFocusSource taps the extension's tab list to
+  // bring the audible browser tab to front when the wrapper is clicked.
+  mediaCommand: (action: 'play-pause' | 'next' | 'prev' | 'stop' | 'vol-up' | 'vol-down' | 'mute') => void;
+  mediaFocusSource: () => Promise<{ tabId: number; title: string; url: string } | null>;
+  // ── Color picker (screen-capture eyedropper) ────────────────────
+  pickColorFromScreen: () => Promise<{ success: boolean; hex?: string; reason?: string }>;
+  // ── Memo (사라지는 메모) ────────────────────────────────────────
+  /** Export a memo body to a .txt file. Returns the absolute path on
+   *  success. Caller can pass `openAfter: true` to shell-open immediately. */
+  exportMemoTxt: (args: { body: string; slug: string; customFolder?: string; openAfter?: boolean }) =>
+    Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  /** OS save-as dialog flow. User picks the location; we write the
+   *  file. Caller should NOT delete the memo on success — this is a
+   *  snapshot, not a move. */
+  saveMemoAs: (args: { body: string; slug: string; format?: 'txt' | 'md' }) =>
+    Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  /** Write to temp + shell-open in the user's default text editor.
+   *  Mapped to the editor's "메모장에서 열기" button. */
+  openMemoExternal: (args: { body: string; slug: string }) =>
+    Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  openMemoFolder: (customFolder?: string) => Promise<{ success: boolean; filePath?: string; reason?: string }>;
+  getMemoDefaultFolder: () => Promise<string>;
 }
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
 
 export const electronAPI: ElectronAPI = window.electronAPI ?? {
   hideApp: noop,
+  requestCloseAfter: noop,
   openUrl: noop,
   openPath: noop,
   openFolder: noop,
@@ -106,6 +188,17 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   copyText: noop,
   getOpenWindows: async () => ({ windows: [], browserTabs: [] }),
   setOpacity: noop,
+  setWindowSizePct: noop,
+  getResourceStats: async () => ({ cpuPct: 0, memMB: 0, procs: 0, cores: 1, perProc: [] }),
+  setSuppressAutoHide: noop,
+  setAutoHide: noop,
+  setWindowOpenAt: noop,
+  readTextFile: async () => ({ ok: false, reason: 'read-error', error: 'dev-mode' }),
+  authGetSession: async () => null,
+  authSetSession: async () => true,
+  authOpenOAuthUrl: async () => ({}),
+  authConsumePendingDeepLink: async () => null,
+  onAuthDeepLink: () => () => {},
   updateShortcut: noop,
   detectDialog: async () => ({ isDialog: false }),
   jumpToDialogFolder: noop,
@@ -115,12 +208,18 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   moveWindow: noop,
   windowDragEnd: noop,
   exportData: async () => ({ success: false, reason: 'dev-mode' }),
+  autoBackupData: async () => ({ success: false, reason: 'dev-mode' }),
+  openUserDataFolder: async () => ({ success: false, reason: 'dev-mode' }),
   importData: async () => ({ success: false, reason: 'dev-mode' }),
+  pickAndReadText: async () => ({ success: false, reason: 'dev-mode' }),
   pickFolder: async () => null,
   pickExe: async () => null,
   getFileIcon: async () => null,
+  downloadFavicon: async () => null,
   getExtensionBridgeStatus: async () => ({ connected: false, tabsCount: 0, lastTabsUpdateAt: 0, lastExtensionConnectedAt: 0 }),
   openExtensionInstallHelper: async (_targetBrowser: 'chrome' | 'whale') => ({ success: false, reason: 'dev-mode' }),
+  openExtensionStore: async () => ({ success: false, reason: 'dev-mode' }),
+  registerExtensionExternal: async () => ({ success: false, reason: 'dev-mode' }),
   tileWindows: async () => ({ success: false }),
   maximizeWindow: async () => ({ success: false }),
   resizeActiveWindow: async () => ({ success: false }),
@@ -153,8 +252,23 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   onFloatingOpenSettings: noop,
   pinBadge: async () => ({ success: false, reason: 'dev-mode' }),
   syncBadges: noop,
-  onBadgesLaunchItem: noop,
-  onBadgesLaunchRef: noop,
-  onBadgesRevealSpace: noop,
-  onBadgesUpdated: noop,
+  // Dev-mode stubs — return a no-op unsubscribe to satisfy the new signature.
+  onBadgesLaunchItem: () => () => {},
+  onBadgesLaunchRef:  () => () => {},
+  notifyBadgesLaunchDone: noop,
+  // Dev-mode stubs — return no-op unsubscribes (signature parity).
+  onBadgesRevealSpace: () => () => {},
+  onBadgesUpdated: () => () => {},
+  // Dev-mode media stubs.
+  mediaCommand: noop,
+  mediaFocusSource: async () => null,
+  pickColorFromScreen: async () => ({ success: false, reason: 'dev-mode' }),
+  // Dev-mode memo stubs — exporting in browser dev makes no sense, so
+  // we return a "success" path that won't be opened (caller should
+  // gracefully degrade if filePath is empty).
+  exportMemoTxt: async () => ({ success: false, reason: 'dev-mode' }),
+  saveMemoAs: async () => ({ success: false, reason: 'dev-mode' }),
+  openMemoExternal: async () => ({ success: false, reason: 'dev-mode' }),
+  openMemoFolder: async () => ({ success: false, reason: 'dev-mode' }),
+  getMemoDefaultFolder: async () => '',
 };

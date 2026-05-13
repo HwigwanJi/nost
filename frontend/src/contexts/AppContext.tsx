@@ -17,11 +17,21 @@ export interface AppState {
   activeMode: AppMode;
   nodeGroups: NodeGroup[];
   nodeBuilding: string[];
+  /** When set, node mode is editing this existing NodeGroup (B mode).
+   *  Null = building a new group (A mode) or not in node mode at all.
+   *  ItemCard reads this to swap the click intent + display the
+   *  "edit-existing" subset of visual signals (group-name halo, etc.). */
+  editingNodeGroupId: string | null;
   deckItems: string[];
   decks: Deck[];
   deckAnchorItemIds: Set<string>;
   inactiveWindowIds: Set<string>;
   monitorCount: number;
+  /** Full monitor descriptors — bounds + primary flag — used by the
+   *  proportional MonitorPicker to render the user's actual layout.
+   *  monitorCount remains for cheap "do I have multiple monitors?"
+   *  checks; this is for spatial rendering. */
+  monitors: Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number } }>;
   allItems: LauncherItem[];
   monitorDirections: Record<number, string> | undefined;
   closeAfter: boolean;

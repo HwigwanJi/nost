@@ -2,6 +2,25 @@ import { useState, useEffect, useRef } from 'react';
 import type { NodeGroup, Deck, LauncherItem } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+
+// Monotone Material Symbols — node icon picker. Mirrors SPACE_ICONS in
+// SpaceAccordion both visually (same set + "hub" added as the default
+// representative) and semantically (single-tap on the icon opens the
+// picker, picking again clears back to default). Kept inline rather
+// than in a shared module because the set is small and the two pickers
+// are intentionally allowed to diverge (different domain hints — node
+// favors "workflow / hub / lightbulb" shapes, space favors "container
+// / shelf / book").
+const NODE_ICONS = [
+  'hub', 'workspaces', 'lightbulb', 'rocket_launch', 'sports_esports',
+  'work', 'menu_book', 'build', 'terminal', 'edit_note',
+  'flag', 'star', 'bolt', 'auto_awesome', 'category',
+];
+import {
   DndContext,
   closestCenter,
   PointerSensor,
@@ -35,7 +54,17 @@ interface NodePanelProps {
   onDeleteGroup: (groupId: string) => void;
   onRenameGroup: (groupId: string, name: string) => void;
   onReorderGroupItems: (groupId: string, itemIds: string[]) => void;
-  onUpdateGroup: (groupId: string, patch: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor'>>) => void;
+  onUpdateGroup: (groupId: string, patch: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor' | 'icon'>>) => void;
+  /** Promote this group into the global edit-existing mode (B mode).
+   *  When called, the main grid becomes click-to-toggle for membership;
+   *  see useNodeDeckMode.handleStartEditExistingGroup. */
+  onStartEditExistingGroup: (groupId: string) => void;
+  /** End the global edit-existing mode (called by 완료 button). */
+  onEndEditExistingGroup: () => void;
+  /** The currently-being-edited group's id, mirrored from app state so
+   *  the panel can highlight which group's row is "live". Null = no
+   *  edit-existing mode active. */
+  editingNodeGroupId: string | null;
   // ── Deck ──────────────────────────────────────────────────
   decks: Deck[];
   deckBuilding: boolean;
@@ -70,6 +99,7 @@ export function NodePanel({
   nodeEditMode, nodeBuilding,
   onStartEdit, onCancelEdit, onRemoveFromBuilding, onSaveGroup, onLaunchGroup,
   onDeleteGroup, onRenameGroup, onReorderGroupItems, onUpdateGroup,
+  onStartEditExistingGroup, onEndEditExistingGroup, editingNodeGroupId,
   decks, deckBuilding, deckItems,
   onStartDeckBuild, onCancelDeckBuild, onRemoveFromDeckBuilding,
   onSaveDeck, onLaunchDeck, onDeleteDeck, onUpdateDeck,
@@ -244,14 +274,22 @@ export function NodePanel({
                   onRenameCancel={() => setRenamingId(null)}
                   onReorderItems={itemIds => onReorderGroupItems(group.id, itemIds)}
                   onSetMonitor={monitor => onUpdateGroup(group.id, { monitor })}
+                  onSetIcon={icon => onUpdateGroup(group.id, { icon })}
                   onFloatOut={onFloatOutNode ? () => onFloatOutNode(group.id) : undefined}
                   isFloating={floatingNodeIds?.has(group.id)}
+                  isGlobalEditing={editingNodeGroupId === group.id}
+                  onStartGlobalEdit={() => onStartEditExistingGroup(group.id)}
+                  onEndGlobalEdit={onEndEditExistingGroup}
                 />
               );
             })}
 
-            {/* Node building UI */}
-            {(filter === 'all' || filter === 'node') && nodeEditMode && (
+            {/* Node building UI — only for the NEW-build path (A mode).
+                When `editingNodeGroupId` is set we're editing an existing
+                group (B mode); the group's own card already shows its
+                items, so this staging panel is redundant + visually
+                duplicates the same data. */}
+            {(filter === 'all' || filter === 'node') && nodeEditMode && !editingNodeGroupId && (
               <NodeDropZone id="drop-node-building" draggingItemId={draggingItemId}>
               <div style={{ margin: '6px 8px', padding: '10px', background: 'var(--accent-dim)', border: '1px solid var(--accent)', borderRadius: 10 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)', marginBottom: 8 }}>노드 편집 중 ({nodeBuilding.length}/3)</div>
@@ -269,7 +307,10 @@ export function NodePanel({
                 {nodeBuilding.length >= 2 && (
                   <div style={{ marginTop: 10 }}>
                     <input ref={nodeNameRef} value={nodeEditName} onChange={e => setNodeEditName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleSaveNode(); if (e.key === 'Escape') onCancelEdit(); }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.stopPropagation(); handleSaveNode(); }
+                        if (e.key === 'Escape') { e.stopPropagation(); onCancelEdit(); }
+                      }}
                       placeholder={`노드 ${nodeGroups.length + 1}`}
                       style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border-focus)', borderRadius: 6, padding: '5px 8px', fontSize: 11, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
                     <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
@@ -330,7 +371,10 @@ export function NodePanel({
                       ref={deckNameRef}
                       value={deckEditName}
                       onChange={e => setDeckEditName(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter') handleSaveDeck(); if (e.key === 'Escape') onCancelDeckBuild(); }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.stopPropagation(); handleSaveDeck(); }
+                        if (e.key === 'Escape') { e.stopPropagation(); onCancelDeckBuild(); }
+                      }}
                       placeholder={`덱 ${decks.length + 1}`}
                       style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border-focus)', borderRadius: 6, padding: '5px 8px', fontSize: 11, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
                     />
@@ -345,29 +389,12 @@ export function NodePanel({
             )}
           </div>
 
-          {/* ── Bottom add buttons ────────────────── */}
-          {!nodeEditMode && !deckBuilding && (
-            <div style={{ padding: '6px 8px 8px', flexShrink: 0, borderTop: '1px solid var(--border-rgba)', display: 'flex', gap: 5 }}>
-              {(filter === 'all' || filter === 'node') && (
-                <button onClick={onStartEdit}
-                  style={{ flex: 1, padding: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'transparent', border: '1.5px dashed var(--border-rgba)', borderRadius: 8, cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10, fontFamily: 'inherit', transition: 'all 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; e.currentTarget.style.color = 'var(--text-dim)'; }}>
-                  <Icon name="hub" size={13} />
-                  {filter === 'node' || filter === 'all' ? '노드' : ''}
-                </button>
-              )}
-              {(filter === 'all' || filter === 'deck') && (
-                <button onClick={onStartDeckBuild}
-                  style={{ flex: 1, padding: '6px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4, background: 'transparent', border: '1.5px dashed var(--border-rgba)', borderRadius: 8, cursor: 'pointer', color: 'var(--text-dim)', fontSize: 10, fontFamily: 'inherit', transition: 'all 0.15s' }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = DECK_COLOR; e.currentTarget.style.color = DECK_COLOR; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; e.currentTarget.style.color = 'var(--text-dim)'; }}>
-                  <Icon name="stacks" size={13} />
-                  {filter === 'deck' || filter === 'all' ? '덱' : ''}
-                </button>
-              )}
-            </div>
-          )}
+          {/* Bottom 노드/덱 add buttons removed — the sidebar
+              already exposes both modes (lightbulb/hub/stacks icons),
+              and a duplicate row at the panel's bottom collided
+              visually with the new full-width StatusBar (different
+              border-top alignment, dashed vs solid). Single entry
+              point per mode keeps the affordance unambiguous. */}
         </>
       )}
     </div>
@@ -430,7 +457,9 @@ function NodeGroupCard({
   draggingItemId,
   onLaunch, onDelete, onStartRename, onRenameDraftChange,
   onRenameConfirm, onRenameCancel, onReorderItems, onSetMonitor,
+  onSetIcon,
   onFloatOut, isFloating,
+  isGlobalEditing, onStartGlobalEdit, onEndGlobalEdit,
 }: {
   group: NodeGroup; items: LauncherItem[]; allItems: LauncherItem[]; monitorCount: number;
   isRenaming: boolean; renameDraft: string;
@@ -439,9 +468,22 @@ function NodeGroupCard({
   onRenameDraftChange: (v: string) => void; onRenameConfirm: () => void;
   onRenameCancel: () => void; onReorderItems: (itemIds: string[]) => void;
   onSetMonitor: (monitor: number | undefined) => void;
+  /** Persist a Material Symbol name (or empty string to revert to the
+   *  'hub' fallback). Wired through onUpdateGroup → store.updateNodeGroup. */
+  onSetIcon: (icon: string) => void;
   onFloatOut?: () => void; isFloating?: boolean;
+  /** True when this card is the target of the global B-mode edit. The
+   *  card visually pulses + the main grid becomes click-to-toggle. */
+  isGlobalEditing: boolean;
+  onStartGlobalEdit: () => void;
+  onEndGlobalEdit: () => void;
 }) {
-  const [editing, setEditing] = useState(false);
+  // Local `editing` is now slaved to the parent's isGlobalEditing flag
+  // so the panel's picker UI lights up exactly when the global B mode
+  // is targeting this group. We keep it as state (not derived) so the
+  // initial transition still triggers the rename/picker effects below.
+  const [editing, setEditing] = useState(isGlobalEditing);
+  useEffect(() => { setEditing(isGlobalEditing); }, [isGlobalEditing]);
   const [showPicker, setShowPicker] = useState(false);
   const [pickerQuery, setPickerQuery] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
@@ -541,10 +583,61 @@ function NodeGroupCard({
       )}
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', padding: '9px 10px 6px', gap: 6 }}>
-        <Icon name="hub" size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
+        {/* Icon picker — clicking the leading symbol opens a small
+            grid identical in pattern to SpaceAccordion's "더 보기"
+            icon section. We attach it directly to the existing icon
+            (rather than adding a new "more" button) so the node card
+            header layout doesn't grow a new chrome row. Click on
+            the trigger itself: stopPropagation so the card's
+            launch-on-click handler doesn't fire. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            onClick={e => e.stopPropagation()}
+            title="아이콘 변경"
+            style={{
+              background: 'none', border: 'none', padding: 0,
+              cursor: 'pointer', display: 'inline-flex', alignItems: 'center',
+              color: 'var(--accent)', flexShrink: 0, lineHeight: 0,
+            }}
+          >
+            <Icon name={group.icon || 'hub'} size={13} color="var(--accent)" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" sideOffset={4} onClick={e => e.stopPropagation()}>
+            <div style={{ padding: '6px 8px' }}>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>아이콘</div>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', maxWidth: 180 }}>
+                {NODE_ICONS.map(iconName => {
+                  const selected = (group.icon || 'hub') === iconName;
+                  return (
+                    <button
+                      key={iconName}
+                      title={iconName}
+                      // Picking the currently-active icon clears back to
+                      // the default ('hub'). Mirrors SpaceAccordion's
+                      // toggle-off behaviour so the picker doubles as a
+                      // reset.
+                      onClick={() => onSetIcon(selected ? '' : iconName)}
+                      style={{
+                        width: 26, height: 26, borderRadius: 4, border: 'none', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: selected ? 'var(--surface-hover)' : 'transparent',
+                        outline: selected ? '2px solid var(--border-focus)' : 'none',
+                      }}
+                    >
+                      <Icon name={iconName} size={16} color={selected ? 'var(--text-color)' : 'var(--text-muted)'} />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {isRenaming ? (
           <input autoFocus value={renameDraft} onChange={e => onRenameDraftChange(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') onRenameConfirm(); if (e.key === 'Escape') onRenameCancel(); }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.stopPropagation(); onRenameConfirm(); }
+              if (e.key === 'Escape') { e.stopPropagation(); onRenameCancel(); }
+            }}
             // `relatedTarget` carries the element the focus moved to. When the
             // user clicks the 완료 button, blur fires FIRST with that button as
             // relatedTarget — ignoring the blur in that case lets the button's
@@ -585,7 +678,15 @@ function NodeGroupCard({
             <button
               data-rename-done
               onMouseDown={e => e.preventDefault() /* keep input focused so onBlur's relatedTarget test works */}
-              onClick={() => { if (isRenaming) onRenameConfirm(); setEditing(false); setShowPicker(false); }}
+              onClick={() => {
+                if (isRenaming) onRenameConfirm();
+                setShowPicker(false);
+                // Tear down the global edit mode (which clears its
+                // toast + active mode). Local `editing` will follow
+                // via the useEffect that mirrors isGlobalEditing.
+                if (isGlobalEditing) onEndGlobalEdit();
+                else setEditing(false);
+              }}
               style={{
                 padding: '4px 10px', fontSize: 11, fontWeight: 700,
                 background: 'var(--accent)', color: '#fff',
@@ -602,8 +703,8 @@ function NodeGroupCard({
                   <Icon name="open_in_new" size={13} />
                 </button>
               )}
-              <button onClick={e => { e.stopPropagation(); setEditing(true); }}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, color: 'var(--text-dim)', borderRadius: 5 }} title="편집">
+              <button onClick={e => { e.stopPropagation(); onStartGlobalEdit(); }}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 3, color: 'var(--text-dim)', borderRadius: 5 }} title="편집 — 메인 그리드에서 카드 클릭으로 추가/제거">
                 <Icon name="edit" size={13} />
               </button>
               <button onClick={e => { e.stopPropagation(); onDelete(); }}
@@ -688,7 +789,10 @@ function NodeGroupCard({
                   ref={pickerInputRef}
                   value={pickerQuery}
                   onChange={e => setPickerQuery(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Escape') { setShowPicker(false); setPickerQuery(''); } if (e.key === 'Enter' && pickerItems.length > 0) handleAddItem(pickerItems[0].id); }}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') { e.stopPropagation(); setShowPicker(false); setPickerQuery(''); }
+                    if (e.key === 'Enter' && pickerItems.length > 0) { e.stopPropagation(); handleAddItem(pickerItems[0].id); }
+                  }}
                   placeholder="카드 검색..."
                   style={{ flex: 1, background: 'none', border: 'none', outline: 'none', fontSize: 10, color: 'var(--text-color)', fontFamily: 'inherit' }}
                 />
@@ -793,7 +897,10 @@ function DeckCard({ deck, items, monitorCount, draggingItemId, onLaunch, onDelet
         <Icon name="stacks" size={13} color={DECK_COLOR} style={{ flexShrink: 0 }} />
         {renaming ? (
           <input autoFocus value={renameDraft} onChange={e => setRenameDraft(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); } if (e.key === 'Escape') setRenaming(false); }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.stopPropagation(); onUpdateDeck(deck.id, { name: renameDraft }); setRenaming(false); }
+              if (e.key === 'Escape') { e.stopPropagation(); setRenaming(false); }
+            }}
             onBlur={e => {
               const next = e.relatedTarget as HTMLElement | null;
               if (next?.closest('[data-rename-done]')) return;

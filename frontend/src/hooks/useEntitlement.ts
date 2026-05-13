@@ -34,6 +34,7 @@ export interface Entitlement {
     nodes: number;
     decks: number;
     floatingBadges: number;
+    widgets: number;
     presets: number;
     containerEnabled: boolean;
   };
@@ -46,6 +47,7 @@ export interface Entitlement {
   canAddNode:          (currentCount: number) => boolean;
   canAddDeck:          (currentCount: number) => boolean;
   canAddFloatingBadge: (currentCount: number) => boolean;
+  canAddWidget:        (currentCount: number) => boolean;
   canUsePreset:        (presetId: '1' | '2' | '3') => boolean;
   canUseContainer:     () => boolean;
 }
@@ -56,6 +58,7 @@ const PRO_LIMITS = {
   nodes: Infinity,
   decks: Infinity,
   floatingBadges: Infinity,
+  widgets: Infinity,
   presets: 3,
   containerEnabled: true,
 } as const;
@@ -93,11 +96,24 @@ function resolveTier(license: License | undefined, now: number): {
   return { tier: 'free', reason: 'never-signed-in' };
 }
 
+/**
+ * BETA OVERRIDE — flip every user to Pro until billing infrastructure
+ * is in place. The license/entitlement plumbing stays intact (so code
+ * paths that gate features keep working as designed) but the resolved
+ * tier is forced regardless of what the license record actually says.
+ *
+ * Remove this flag once Toss + Supabase backend lands and we want
+ * paying-vs-free to differentiate again. Search for BETA_FORCE_PRO.
+ */
+const BETA_FORCE_PRO = true;
+
 export function useEntitlement(data: AppData): Entitlement {
   return useMemo(() => {
     const license = data.settings.license;
     const now = Date.now();
-    const { tier, reason } = resolveTier(license, now);
+    const resolved = resolveTier(license, now);
+    const tier   = BETA_FORCE_PRO ? 'pro' : resolved.tier;
+    const reason = BETA_FORCE_PRO ? '' : resolved.reason;
     const isPro = tier === 'pro';
     const limits = isPro ? PRO_LIMITS : FREE_LIMITS;
 
@@ -122,6 +138,7 @@ export function useEntitlement(data: AppData): Entitlement {
       canAddNode:          (n) => n < limits.nodes,
       canAddDeck:          (n) => n < limits.decks,
       canAddFloatingBadge: (n) => n < limits.floatingBadges,
+      canAddWidget:        (n) => n < limits.widgets,
       // Preset 1 is always free; 2/3 need pro tier.
       canUsePreset: (id) => id === '1' ? true : isPro,
       canUseContainer: () => limits.containerEnabled,

@@ -1,18 +1,27 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import type { AppData, AppMode, LauncherItem } from '../types';
 import { electronAPI } from '../electronBridge';
 import type { ShowToast } from '../contexts/AppContext';
+import { triggers as tutorialTriggers } from '../tutorial/triggers';
 
 interface UseNodeDeckModeOptions {
   data: AppData;
   store: {
     addNodeGroup: (name: string, itemIds: string[]) => void;
+    /** Patch a node group's itemIds (used by edit-existing-group mode
+     *  for live add/remove/FIFO-replace as the user clicks main grid). */
+    updateNodeGroup: (id: string, updates: { itemIds?: string[] }) => void;
     addDeck: (name: string, itemIds: string[]) => void;
   };
   showToast: ShowToast;
   dismissToast: () => void;
   showTileOverlay: (groupId: string) => void;
 }
+
+const NODE_MAX = 3;
+
+const arraysShallowEqual = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
 
 export function useNodeDeckMode({
   data,
@@ -24,6 +33,14 @@ export function useNodeDeckMode({
   const [activeMode, setActiveMode] = useState<AppMode>('normal');
   const [nodeEditMode, setNodeEditMode] = useState(false);
   const [nodeBuilding, setNodeBuilding] = useState<string[]>([]);
+  // ── Edit-existing-group mode ─────────────────────────────────────
+  // When set, node mode is editing an EXISTING NodeGroup (B mode in
+  // the spec) rather than building a new one (A mode). The single
+  // global `activeMode === 'node'` flag covers both — this id is the
+  // discriminator. nodeBuilding mirrors group.itemIds while we're in
+  // B mode so ItemCard's existing visual grammar (membership, order)
+  // works without a new context field.
+  const [editingNodeGroupId, setEditingNodeGroupId] = useState<string | null>(null);
   const [deckBuilding, setDeckBuilding] = useState(false);
   const [deckItems, setDeckItems] = useState<string[]>([]);
 
@@ -84,9 +101,117 @@ export function useNodeDeckMode({
   const handleCancelNodeEdit = useCallback(() => {
     setNodeEditMode(false);
     setNodeBuilding([]);
+    setEditingNodeGroupId(null);
     setActiveMode('normal');
     dismissToast();
   }, [dismissToast]);
+
+  // ── Edit existing node group (B mode) ──────────────────────────
+  //
+  // Triggered by the ✏️ button on a NodePanel group card. Promotes the
+  // app into the same `activeMode === 'node'` modality used for new-
+  // build, but with `editingNodeGroupId` set as the routing
+  // discriminator. ItemCard reads the same `nodeBuilding` array — we
+  // just preload it from the group's current itemIds so member cards
+  // already show the correct order badges from frame 1.
+  const handleStartEditExistingGroup = useCallback((groupId: string) => {
+    const group = (data.nodeGroups ?? []).find(g => g.id === groupId);
+    if (!group) return;
+    // Exit conflicting modes first (deck etc.). Same exclusivity rule
+    // as handleModeChange — a half-built deck shouldn't survive a node
+    // edit start.
+    setDeckBuilding(false);
+    setDeckItems([]);
+    setNodeEditMode(true);
+    setNodeBuilding([...group.itemIds]);
+    setEditingNodeGroupId(groupId);
+    setActiveMode('node');
+    dismissToast();
+    showToast(
+      `🔗 "${group.name}" 편집 — 카드 클릭으로 추가/제거 · ESC로 종료`,
+      { persistent: true },
+    );
+  }, [data.nodeGroups, showToast, dismissToast]);
+
+  // Click handler used during B mode (edit existing). Mutates the
+  // group LIVE — no separate save step. Three branches:
+  //   1. Card already a member → remove it.
+  //   2. Group has < 3 → append the new card at the end.
+  //   3. Group has 3 (full) → FIFO slide: drop the OLDEST member, push
+  //      the new card to the tail. Per Decision C in the design chat
+  //      ("가득차면 1번 대신 4번 추가"). Toast announces the swap so
+  //      the displacement isn't silent — silent eviction is the worst
+  //      outcome (user thinks add failed).
+  const handleNodeEditClick = useCallback((itemId: string) => {
+    if (!editingNodeGroupId) return;
+    const group = (data.nodeGroups ?? []).find(g => g.id === editingNodeGroupId);
+    if (!group) return;
+    // Read from local nodeBuilding (single source of truth during B
+    // mode) rather than data.nodeGroups, which is one render behind
+    // when the user clicks rapidly. The sync useEffect reconciles
+    // both directions, so nodeBuilding is always at-least-as-fresh.
+    const cur = nodeBuilding;
+
+    // Remove if already a member.
+    if (cur.includes(itemId)) {
+      const next = cur.filter(id => id !== itemId);
+      store.updateNodeGroup(group.id, { itemIds: next });
+      setNodeBuilding(next);
+      // Brief, transient toast — don't drown the persistent edit-mode
+      // toast. Use immediate so it stacks above without delay.
+      const removed = allItems.find(i => i.id === itemId);
+      if (removed) {
+        showToast(`"${removed.title}" 제거`, { duration: 1400, immediate: true });
+      }
+      return;
+    }
+
+    // Append when not full.
+    if (cur.length < NODE_MAX) {
+      const next = [...cur, itemId];
+      store.updateNodeGroup(group.id, { itemIds: next });
+      setNodeBuilding(next);
+      tutorialTriggers.fire('node-added', { itemId, groupId: group.id, via: 'click' });
+      const added = allItems.find(i => i.id === itemId);
+      if (added) {
+        showToast(`"${added.title}" 추가 (${next.length}/${NODE_MAX})`, { duration: 1400, immediate: true });
+      }
+      return;
+    }
+
+    // FIFO slide replace at full. Oldest (index 0) drops off, new card
+    // takes the tail. Visual order: [B, C, D] from prior [A, B, C].
+    const evictedId = cur[0];
+    const next = [...cur.slice(1), itemId];
+    store.updateNodeGroup(group.id, { itemIds: next });
+    setNodeBuilding(next);
+    const evicted = allItems.find(i => i.id === evictedId);
+    const added = allItems.find(i => i.id === itemId);
+    if (evicted && added) {
+      showToast(
+        `"${evicted.title}" → "${added.title}" 교체 (가득 참)`,
+        { duration: 2000, immediate: true },
+      );
+    }
+  }, [editingNodeGroupId, data.nodeGroups, nodeBuilding, allItems, store, showToast]);
+
+  // Sync nodeBuilding ← group.itemIds whenever the group changes from
+  // OUTSIDE (NodePanel internal drag-reorder, picker add, X-remove on
+  // a member chip). Without this, the panel's local mutations would
+  // diverge from the visual on the main grid until the user clicked
+  // again. Cheap: shallow-equal guard prevents render thrash.
+  useEffect(() => {
+    if (!editingNodeGroupId) return;
+    const g = (data.nodeGroups ?? []).find(g => g.id === editingNodeGroupId);
+    if (!g) {
+      // Group was deleted while editing — bail out of B mode.
+      handleCancelNodeEdit();
+      return;
+    }
+    if (!arraysShallowEqual(g.itemIds, nodeBuilding)) {
+      setNodeBuilding(g.itemIds);
+    }
+  }, [editingNodeGroupId, data.nodeGroups, nodeBuilding, handleCancelNodeEdit]);
 
   const handleSaveNodeGroup = useCallback((name: string | undefined) => {
     if (nodeBuilding.length < 2) return;
@@ -104,6 +229,11 @@ export function useNodeDeckMode({
     setNodeBuilding(prev => {
       if (prev.includes(itemId)) return prev.filter(id => id !== itemId);
       if (prev.length >= 3) return prev;
+      // Fire node-added so tutorial steps that use click-to-add can
+      // auto-advance. Drop-to-add already fires from App.tsx; this
+      // mirrors it for the click path so quest body "click a card"
+      // and advance="event:node-added" stay in sync.
+      tutorialTriggers.fire('node-added', { itemId, target: 'building', via: 'click' });
       return [...prev, itemId];
     });
   }, []);
@@ -201,11 +331,14 @@ export function useNodeDeckMode({
     activeMode, setActiveMode,
     nodeEditMode, setNodeEditMode,
     nodeBuilding, setNodeBuilding,
+    editingNodeGroupId,
     deckBuilding, setDeckBuilding,
     deckItems, setDeckItems,
     nodeGroups, decks, allItems, deckAnchorItemIds,
     handleModeChange,
     handleStartNodeEdit, handleCancelNodeEdit,
+    handleStartEditExistingGroup,
+    handleNodeEditClick,
     handleSaveNodeGroup, handleNodeBuildingClick, handleNodeGroupLaunch,
     handleDeckBuildingClick, handleSaveDeck, handleDeckLaunch, handleDeckGroupLaunch,
   };

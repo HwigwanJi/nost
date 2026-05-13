@@ -5,6 +5,43 @@ $target  = $env:QL_PATH
 $lnkArgs = ''
 $lnkCwd  = ''
 
+# ── Helper: rebase stale versioned browser exe paths ──────────────────
+# Chromium browsers (Chrome / Edge / Whale) put their version in the
+# install path: `...\Application\134.0.6998.166\chrome.exe`. When the
+# browser auto-updates, the OLD version folder is deleted — so any
+# .lnk or saved exe path captured before the update goes stale and
+# Test-Path fails. We detect that pattern and rebase to the highest-
+# numbered sibling under the same `Application\` parent.
+#
+# This fixes the most common failure mode for PWA shortcuts that
+# point through a versioned browser exe: the user complains "after
+# I close and reopen nost, the Claude card stops working" because
+# the saved Whale-PWA shortcut has a versioned target that's gone.
+function Rebase-VersionedBrowserPath([string]$path) {
+    if (-not $path) { return $path }
+    if ($path -match '^(.+\\Application)\\([\d.]+)\\([^\\]+\.exe)$') {
+        $appRoot = $Matches[1]
+        $exeName = $Matches[3]
+        if (Test-Path -LiteralPath $appRoot) {
+            try {
+                $latest = Get-ChildItem -LiteralPath $appRoot -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^[\d.]+$' } |
+                    Sort-Object { [version]$_.Name } -Descending |
+                    Select-Object -First 1
+                if ($latest) {
+                    $candidate = Join-Path $latest.FullName $exeName
+                    if (Test-Path -LiteralPath $candidate) {
+                        return $candidate
+                    }
+                }
+            } catch {
+                # Malformed version dirs — ignore and fall through to original path.
+            }
+        }
+    }
+    return $path
+}
+
 # ── Sanity check: the stored value must be a rooted absolute path ────
 # nost historically stored drag-dropped files as "Name.ext" (no directory)
 # on Electron 32+ because File.path became undefined. Such items can never
@@ -14,9 +51,21 @@ if (-not [System.IO.Path]::IsPathRooted($target)) {
     Write-Output "ERROR: 경로가 파일명만 저장되어 있습니다 ($target). 카드를 삭제하고 다시 등록하세요."
     exit
 }
+# Stale-path recovery (run BEFORE early existence bail so a saved
+# exe path that lost its version folder still gets a chance):
+#   - Versioned browser exe (Chrome / Edge / Whale) → rebase to
+#     the highest-numbered sibling under `\Application\`.
+#   - WindowsApps / Store MSIX paths → handled below in section (A)
+#     via Get-AppxPackage by package name; we just SKIP the bail
+#     for those so the fallback can run.
 if (-not (Test-Path -LiteralPath $target)) {
-    Write-Output "ERROR: 파일이 존재하지 않습니다: $target"
-    exit
+    $rebased = Rebase-VersionedBrowserPath $target
+    if ($rebased -ne $target -and (Test-Path -LiteralPath $rebased)) {
+        $target = $rebased
+    } elseif ($target -notmatch '\\WindowsApps\\') {
+        Write-Output "ERROR: 파일이 존재하지 않습니다: $target"
+        exit
+    }
 }
 
 # ── .lnk resolution ───────────────────────────────────────────────────
@@ -56,6 +105,17 @@ if ($target -match '\.lnk$') {
     } catch {
         Write-Output "ERROR: .lnk resolve failed: $($_.Exception.Message)"
         exit
+    }
+}
+
+# Rebase versioned browser paths AFTER .lnk resolution (so it covers
+# both directly-saved exe paths AND .lnk-resolved paths). If the
+# stored exe is `whale.exe` under a stale version folder, we hop
+# to the latest version that's actually on disk.
+if (-not (Test-Path -LiteralPath $target)) {
+    $rebased = Rebase-VersionedBrowserPath $target
+    if ($rebased -ne $target -and (Test-Path -LiteralPath $rebased)) {
+        $target = $rebased
     }
 }
 
@@ -128,12 +188,26 @@ if ($target -match '\\WindowsApps\\') {
         }
     } catch { $attemptErrors += "Get-StartApps: $($_.Exception.Message)" }
 
-    # Method 2: Extract AUMID from path + Get-AppxPackage
+    # Method 2: Get-AppxPackage by package NAME (first underscore segment
+    # of the WindowsApps folder), not by full prefix match. Prefix
+    # matching breaks the moment the Store auto-updates the app — the
+    # old saved path no longer starts with the new InstallLocation.
+    # Name-based matching survives version bumps.
     if (-not $launched) {
         try {
-            $pkg = Get-AppxPackage | Where-Object {
-                $_.InstallLocation -and $target.StartsWith($_.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)
-            } | Select-Object -First 1
+            $folderName = ($target -split '\\WindowsApps\\')[1] -split '\\' | Select-Object -First 1
+            $baseName   = ($folderName -split '_')[0]
+            $pkg = $null
+            if ($baseName) {
+                $pkg = Get-AppxPackage | Where-Object { $_.Name -eq $baseName } | Select-Object -First 1
+            }
+            if (-not $pkg) {
+                # Last-resort: full prefix match (covers exotic install paths
+                # outside Program Files that the name match might miss).
+                $pkg = Get-AppxPackage | Where-Object {
+                    $_.InstallLocation -and $target.StartsWith($_.InstallLocation, [System.StringComparison]::OrdinalIgnoreCase)
+                } | Select-Object -First 1
+            }
             if ($pkg) {
                 $manifest = Get-AppxPackageManifest -Package $pkg
                 $appId = $manifest.Package.Applications.Application.Id
@@ -145,16 +219,28 @@ if ($target -match '\\WindowsApps\\') {
         } catch { $attemptErrors += "AppxPackage: $($_.Exception.Message)" }
     }
 
-    # Method 3: Parse PackageFamilyName from folder path directly
+    # Method 3: Parse PackageFamilyName from folder path. Used when
+    # Get-AppxPackage couldn't be queried (locked-down environments,
+    # cross-user installs). We try several App-ID guesses in order of
+    # likelihood; per-iteration try/catch so a wrong guess doesn't
+    # kill the whole fallback (the original loop break-on-throw bug).
     if (-not $launched) {
         try {
             $folderName = ($target -split '\\WindowsApps\\')[1] -split '\\' | Select-Object -First 1
             if ($folderName -match '^(.+?)_[\d.]+_.*?__(.+)$') {
-                $familyName = "$($Matches[1])_$($Matches[2])"
-                foreach ($aid in @($Matches[1], 'App', 'app')) {
-                    Start-Process explorer.exe "shell:AppsFolder\${familyName}!${aid}" -ErrorAction Stop
-                    $launched = $true
-                    break
+                $familyName  = "$($Matches[1])_$($Matches[2])"
+                $packageName = $Matches[1]
+                # 'App' is the by-far most common AppID; lowercase 'app'
+                # next; the package short-name is rare but happens for
+                # apps with multiple Application entries.
+                foreach ($aid in @('App', 'app', $packageName)) {
+                    try {
+                        Start-Process explorer.exe "shell:AppsFolder\${familyName}!${aid}" -ErrorAction Stop
+                        $launched = $true
+                        break
+                    } catch {
+                        $attemptErrors += "PackageFamily!$aid : $($_.Exception.Message)"
+                    }
                 }
             }
         } catch { $attemptErrors += "PackageFamily parse: $($_.Exception.Message)" }

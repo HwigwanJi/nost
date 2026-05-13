@@ -1,0 +1,52 @@
+name: ci
+
+# Build + lint + unit tests on every push/PR. Smoke (e2e) gated to
+# Windows runner only — Playwright Electron drives the actual app
+# binary and our app is Windows-targeted (PS scripts, AUMID, DPAPI).
+# macOS/Linux runners would fail on the platform-specific paths
+# without giving us useful signal.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Install (root)
+        run: npm ci
+
+      - name: Install (frontend)
+        run: npm ci
+        working-directory: ./frontend
+
+      - name: Lint
+        run: npm run lint
+        working-directory: ./frontend
+
+      - name: Unit tests (Vitest)
+        run: npm test
+        working-directory: ./frontend
+
+      - name: Build renderer
+        run: npm run build
+        working-directory: ./frontend
+
+      - name: Smoke test (Playwright Electron)
+        run: npx playwright test
+        env:
+          NODE_ENV: test

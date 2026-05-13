@@ -1,0 +1,388 @@
+/* nost landing — minimal, content-first.
+   Mirrors the in-app design tokens (Pretendard, indigo accent, soft
+   surfaces) so the marketing page reads as one piece with the
+   launcher itself. */
+
+:root {
+  --accent:        #6366f1;
+  --accent-strong: #4f46e5;
+  --bg:            #fafafa;
+  --surface:       #ffffff;
+  --text:          #0f172a;
+  --text-muted:    #64748b;
+  --text-dim:      #94a3b8;
+  --border:        rgba(15, 23, 42, 0.08);
+  --shadow-card:   0 1px 3px rgba(15, 23, 42, 0.04), 0 12px 32px rgba(15, 23, 42, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:            #0a0a0f;
+    --surface:       #14141a;
+    --text:          #f3f4f6;
+    --text-muted:    #94a3b8;
+    --text-dim:      #64748b;
+    --border:        rgba(255, 255, 255, 0.08);
+    --shadow-card:   0 1px 3px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.6);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Pretendard Variable', Pretendard, -apple-system, 'Noto Sans KR', sans-serif;
+  font-feature-settings: 'ss18';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+a { color: inherit; text-decoration: none; }
+img { max-width: 100%; display: block; }
+
+/* ── Top bar ────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+.brand-mark { width: 28px; height: 28px; border-radius: 7px; }
+.brand-name { font-size: 18px; }
+.topnav a {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 6px;
+  transition: background 120ms ease, color 120ms ease;
+}
+.topnav a:hover { background: var(--surface); color: var(--text); }
+
+/* ── Main / hero ────────────────────────────────────── */
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.hero {
+  padding: 56px 0 32px;
+  text-align: center;
+}
+.eyebrow {
+  /* Small uppercase label that sits above a headline. Uppercase
+     Korean reads weirdly so we lean on letter-spacing + accent
+     color instead of `text-transform`. */
+  display: inline-block;
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+.sub strong {
+  color: var(--text);
+  font-weight: 700;
+}
+.headline {
+  font-size: clamp(34px, 6vw, 60px);
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin: 0 0 18px;
+}
+.accent-text {
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.sub {
+  font-size: clamp(15px, 2vw, 18px);
+  color: var(--text-muted);
+  line-height: 1.6;
+  max-width: 640px;
+  margin: 0 auto 32px;
+}
+
+/* ── Buttons ────────────────────────────────────────── */
+.cta-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1),
+              background 120ms ease,
+              box-shadow 160ms ease,
+              border-color 120ms ease;
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.32);
+}
+.btn-primary:hover {
+  background: var(--accent-strong);
+  box-shadow: 0 6px 22px rgba(99, 102, 241, 0.42);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border);
+}
+.btn-ghost:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+.btn-lg {
+  padding: 16px 28px;
+  font-size: 15px;
+  border-radius: 12px;
+}
+
+.meta {
+  margin: 14px 0 40px;
+  font-size: 12px;
+  color: var(--text-dim);
+  letter-spacing: 0.01em;
+}
+.meta-dot { margin: 0 8px; opacity: 0.5; }
+
+/* ── Screenshot ─────────────────────────────────────── */
+.screenshot-frame {
+  margin: 32px auto 0;
+  max-width: 940px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--border);
+}
+.screenshot-frame img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ── Problem section ────────────────────────────────────
+   Three quoted scenarios that build empathy before the
+   value prop lands. Visually quieter than feature cards —
+   no hover lift, muted text — because we want the reader
+   to nod along, not click. */
+.problem-section {
+  max-width: 940px;
+  margin: 72px auto 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.problem-card {
+  padding: 24px 22px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.problem-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-size: 20px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.08);
+}
+.problem-card h3 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 8px;
+  color: var(--text);
+  line-height: 1.4;
+}
+.problem-card p {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+/* ── Transition block ───────────────────────────────────
+   The bridge from "your problem" to "nost's answer". Only
+   place on the page where the value prop is stated this
+   directly, so it gets the biggest breathing room. */
+.transition-block {
+  max-width: 880px;
+  margin: 96px auto 0;
+  text-align: center;
+  padding: 0 24px;
+}
+.transition-headline {
+  font-size: clamp(24px, 4vw, 36px);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.35;
+  margin: 0 0 16px;
+  color: var(--text);
+}
+.transition-sub {
+  font-size: clamp(14px, 1.6vw, 16px);
+  color: var(--text-muted);
+  line-height: 1.7;
+  margin: 0;
+}
+
+/* ── Feature groups ─────────────────────────────────── */
+.feature-group {
+  max-width: 940px;
+  margin: 64px auto;
+}
+/* The first group sits closer to the screenshot above for visual
+   continuity; later groups get more breathing room because the
+   reader's already in "absorbing detail" mode. */
+.feature-group + .feature-group { margin-top: 88px; }
+
+.group-banner {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 28px;
+}
+.group-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.18), rgba(99, 102, 241, 0.06));
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  flex-shrink: 0;
+  border: 1px solid rgba(99, 102, 241, 0.18);
+}
+.group-banner h2 {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 4px;
+}
+.group-banner p {
+  font-size: 13.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+  max-width: 540px;
+}
+
+.group-items {
+  display: grid;
+  /* 2-up on desktop, 1-up on phones — keeps each item readable
+     instead of going to 4 narrow columns where the descriptions
+     get cramped. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 160ms ease;
+}
+.item:hover {
+  transform: translateY(-2px);
+  border-color: rgba(99, 102, 241, 0.32);
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.08);
+}
+.item h4 {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 6px;
+  color: var(--text);
+}
+.item p {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* ── Closing CTA ────────────────────────────────────── */
+.cta-end {
+  text-align: center;
+  padding: 64px 0 80px;
+  border-top: 1px solid var(--border);
+  margin-top: 32px;
+}
+.cta-end h2 {
+  font-size: clamp(24px, 3.6vw, 32px);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.3;
+  margin: 0 0 28px;
+}
+.cta-end .eyebrow { margin-bottom: 16px; }
+
+/* ── Footer ─────────────────────────────────────────── */
+footer {
+  padding: 24px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}
+footer a {
+  color: var(--text-muted);
+  border-bottom: 1px solid transparent;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+footer a:hover {
+  color: var(--text);
+  border-bottom-color: var(--text-muted);
+}
+
+/* ── Mobile ─────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .hero { padding: 32px 0 16px; }
+  .problem-section {
+    grid-template-columns: 1fr;
+    margin-top: 48px;
+    gap: 12px;
+  }
+  .problem-card { padding: 20px 18px; }
+  .transition-block { margin-top: 64px; }
+  .feature-group { margin: 48px auto; }
+  .feature-group + .feature-group { margin-top: 56px; }
+  .group-banner { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .group-icon { width: 44px; height: 44px; font-size: 22px; border-radius: 11px; }
+  .group-banner h2 { font-size: 20px; }
+  .cta-end { padding: 48px 0 64px; }
+}

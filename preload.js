@@ -15,6 +15,24 @@ if (!__cachedHome) {
     || '';
 }
 
+// Recovery API consumed by the inline boot script in
+// `frontend/index.html`. Mirrors the API previously exposed only to
+// the external splash window's preload (preload-splash.js); duplicated
+// here so the in-window `#ql-loading` overlay can wire up restart /
+// open-logs buttons without going through the main `electronAPI`
+// (which carries a much larger surface area we don't want the boot
+// shell taking a hard dependency on).
+contextBridge.exposeInMainWorld('splashAPI', {
+  onError:  (cb) => ipcRenderer.on('boot:show-error', () => cb()),
+  // Receive status text updates from main (ext-warmup stages, etc.).
+  // The corresponding writer in main.js fires `boot:status` with a
+  // single string payload; boot-recovery.js routes it into the
+  // overlay's status text via `window.__bootStatus`.
+  onStatus: (cb) => ipcRenderer.on('boot:status', (_e, text) => cb(text)),
+  restart:  () => ipcRenderer.send('splash:restart'),
+  openLogs: () => ipcRenderer.send('splash:open-logs'),
+});
+
 contextBridge.exposeInMainWorld('electronAPI', {
   log: (level, msg, extra) => ipcRenderer.send('nost-log', level, msg, extra),
   openLogsFolder: () => ipcRenderer.send('open-logs-folder'),
@@ -22,7 +40,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPath: (folder, closeAfter) => ipcRenderer.send('open-path', folder, closeAfter),
   copyText: (text, closeAfter) => ipcRenderer.send('copy-text', text, closeAfter),
   hideApp: () => ipcRenderer.send('hide-app'),
+  // Renderer-driven close-after: same effect as the closeAfter flag
+  // on a launch IPC, but used when the renderer can't decide ahead of
+  // time (e.g. positioning step finished). Funnels through
+  // tryDismissWindow so suppression sources are honored — unlike
+  // hideApp() which is an explicit user-intent override.
+  requestCloseAfter: () => ipcRenderer.send('request-close-after'),
   setOpacity: (opacity) => ipcRenderer.send('set-opacity', opacity),
+  setWindowSizePct: (pct) => ipcRenderer.send('set-window-size-pct', pct),
+  getResourceStats: () => ipcRenderer.invoke('get-resource-stats'),
+  setSuppressAutoHide: (suppress, source) => ipcRenderer.send('set-suppress-autohide', !!suppress, source ?? 'default'),
+  setAutoHide: (autoHide) => ipcRenderer.send('set-auto-hide', !!autoHide),
+  setWindowOpenAt: (mode) => ipcRenderer.send('set-window-open-at', mode === 'last' ? 'last' : 'cursor'),
+  readTextFile: (filePath, maxBytes) => ipcRenderer.invoke('read-text-file', filePath, maxBytes),
+
+  // ── Auth ────────────────────────────────────────────────────────
+  authGetSession: () => ipcRenderer.invoke('auth:get-session'),
+  authSetSession: (session) => ipcRenderer.invoke('auth:set-session', session),
+  authOpenOAuthUrl: (url) => ipcRenderer.invoke('auth:open-oauth-url', url),
+  authConsumePendingDeepLink: () => ipcRenderer.invoke('auth:consume-pending-deep-link'),
+  onAuthDeepLink: (cb) => {
+    const handler = (_e, url) => cb(url);
+    ipcRenderer.on('auth:deep-link', handler);
+    return () => ipcRenderer.removeListener('auth:deep-link', handler);
+  },
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),
   launchOrFocusApp: (exePath, closeAfter, monitor) => ipcRenderer.invoke('launch-or-focus-app', exePath, closeAfter, monitor),
@@ -35,13 +76,29 @@ contextBridge.exposeInMainWorld('electronAPI', {
   moveWindow: (x, y) => ipcRenderer.send('window-move', x, y),
   windowDragEnd: () => ipcRenderer.send('window-drag-end'),
   exportData: () => ipcRenderer.invoke('export-data'),
+  /** Silent backup to userData/tutorial-backups/. No dialog, returns the path. */
+  autoBackupData: (reason) => ipcRenderer.invoke('auto-backup-data', reason),
+  /** Open the user-data folder (or a sub-path) in OS file explorer. */
+  openUserDataFolder: (sub) => ipcRenderer.invoke('open-userdata-folder', sub),
   importData: () => ipcRenderer.invoke('import-data'),
+  /** Pick a text file and return its contents. `kind` filters the file
+   *  picker: 'bookmarks-html' / 'markdown' / 'any'. */
+  pickAndReadText: (kind) => ipcRenderer.invoke('pick-and-read-text', kind),
   runCmd: (command, closeAfter) => ipcRenderer.send('run-cmd', command, closeAfter),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   pickExe: () => ipcRenderer.invoke('pick-exe'),
   getFileIcon: (filePath) => ipcRenderer.invoke('get-file-icon', filePath),
+  /**
+   * Resolve a website's favicon by trying candidate URLs from the main
+   * process (bypasses renderer CSP) and returns a self-contained data URL.
+   * Saving the data URL on the item means the icon survives offline and
+   * service outages — no re-fetch on every render.
+   */
+  downloadFavicon: (candidates) => ipcRenderer.invoke('download-favicon', candidates),
   getExtensionBridgeStatus: () => ipcRenderer.invoke('get-extension-bridge-status'),
   openExtensionInstallHelper: (targetBrowser) => ipcRenderer.invoke('open-extension-install-helper', targetBrowser),
+  openExtensionStore: () => ipcRenderer.invoke('open-extension-store'),
+  registerExtensionExternal: () => ipcRenderer.invoke('register-extension-external'),
   tileWindows: (items) => ipcRenderer.invoke('tile-windows', items),
   maximizeWindow: (item) => ipcRenderer.invoke('maximize-window', item),
   checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
@@ -92,17 +149,77 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  (e.g. after an import) so the overlay rebuilds. */
   syncBadges: () => ipcRenderer.send('badges-sync'),
   /** Mini-window fired a single-item launch. Main renderer should route
-   *  the item through its full launch pipeline. */
-  onBadgesLaunchItem: (cb) =>
-    ipcRenderer.on('badges-launch-item', (_, payload) => cb(payload)),
+   *  the item through its full launch pipeline.
+   *  Returns an unsubscribe fn so the renderer can detach on effect
+   *  cleanup — without it, every effect re-run piles a new listener
+   *  and one badge click ends up firing N launches. */
+  onBadgesLaunchItem: (cb) => {
+    const handler = (_, payload) => cb(payload);
+    ipcRenderer.on('badges-launch-item', handler);
+    return () => ipcRenderer.removeListener('badges-launch-item', handler);
+  },
   /** Mini-window fired a node/deck group launch ("묶음 실행" / "순차 실행"). */
-  onBadgesLaunchRef: (cb) =>
-    ipcRenderer.on('badges-launch-ref', (_, payload) => cb(payload)),
-  /** Badge context-menu "실행" on a space ref → scroll that space into view. */
-  onBadgesRevealSpace: (cb) =>
-    ipcRenderer.on('badges-reveal-space', (_, payload) => cb(payload)),
+  onBadgesLaunchRef: (cb) => {
+    const handler = (_, payload) => cb(payload);
+    ipcRenderer.on('badges-launch-ref', handler);
+    return () => ipcRenderer.removeListener('badges-launch-ref', handler);
+  },
+  /** Renderer notifies main that a badge-fired group launch has
+   *  finished (or errored). Main forwards to every overlay so the
+   *  spinning ring on the originating badge can clear immediately
+   *  instead of waiting for the overlay's safety-timeout. */
+  notifyBadgesLaunchDone: (payload) =>
+    ipcRenderer.send('badges-launch-done', payload),
+  /** Badge context-menu "실행" on a space ref → scroll that space into view.
+   *  Returns an unsubscribe fn — same lesson as onBadgesLaunchItem: without
+   *  it, every effect re-run piles a listener and the warning at ~10 fires
+   *  ("MaxListenersExceededWarning"), shortly followed by main-process
+   *  thrashing as each IPC fan-outs N times. */
+  onBadgesRevealSpace: (cb) => {
+    const handler = (_, payload) => cb(payload);
+    ipcRenderer.on('badges-reveal-space', handler);
+    return () => ipcRenderer.removeListener('badges-reveal-space', handler);
+  },
   /** Fires whenever the floatingBadges list changes — main renderer can
    *  update UI (e.g. hide the "float" button for already-pinned items). */
-  onBadgesUpdated: (cb) =>
-    ipcRenderer.on('badges-updated', (_, badges) => cb(badges)),
+  onBadgesUpdated: (cb) => {
+    const handler = (_, badges) => cb(badges);
+    ipcRenderer.on('badges-updated', handler);
+    return () => ipcRenderer.removeListener('badges-updated', handler);
+  },
+
+  // ── Memo (사라지는 메모) — txt export ───────────────────────────
+  /** Export a memo body as a UTF-8 .txt file. Returns the absolute path
+   *  on success. `slug` is the renderer-prepared filename slug; main
+   *  re-sanitises it as defence-in-depth. `customFolder` overrides the
+   *  default %APPDATA%/nost/memos/. `openAfter` shell-opens the file
+   *  after writing. */
+  exportMemoTxt: (args) => ipcRenderer.invoke('memo-export-txt', args),
+  /** OS save-as dialog → user picks location + filename. Writes UTF-8
+   *  with BOM so Win10 Notepad reads Korean correctly. Caller should
+   *  NOT delete the memo on success — this is a snapshot, not a move. */
+  saveMemoAs: (args) => ipcRenderer.invoke('memo-save-as', args),
+  /** Write the body to a temp file (userData/memos) and shell-open
+   *  in the user's default editor. The "메모장에서 열기" button. */
+  openMemoExternal: (args) => ipcRenderer.invoke('memo-open-external', args),
+  /** Open the memos folder (default or custom) in OS file explorer. */
+  openMemoFolder: (customFolder) => ipcRenderer.invoke('memo-open-folder', customFolder),
+  /** Resolve the default memo export folder (no custom override). Used
+   *  to populate the settings UI placeholder. */
+  getMemoDefaultFolder: () => ipcRenderer.invoke('memo-default-folder'),
+
+  // ── Media widget — Windows media-key bridge ─────────────────────
+  /** Fire a media key. action: 'play-pause' | 'next' | 'prev' | 'stop' |
+   *  'vol-up' | 'vol-down' | 'mute'. */
+  mediaCommand: (action) => ipcRenderer.send('media-command', action),
+  /** Ask main to focus whichever browser tab is currently playing
+   *  audio. Returns null if no audible tab is known (extension not
+   *  installed / no audio playing). */
+  mediaFocusSource: () => ipcRenderer.invoke('media-focus-source'),
+
+  // ── Color picker (screen-capture eyedropper) ────────────────────
+  /** Hide launcher → screenshot primary display → open fullscreen picker.
+   *  Resolves with the hex the user clicked, or { success:false, reason }
+   *  on cancel / busy / failure. The launcher is always restored. */
+  pickColorFromScreen: () => ipcRenderer.invoke('eyedropper-pick'),
 });

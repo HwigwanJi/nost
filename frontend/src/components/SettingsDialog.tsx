@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState, useRef } from 'react';
 import type { AppSettings } from '../types';
+import {
+  MEMO_TTL_DAYS_MIN, MEMO_TTL_DAYS_MAX, DEFAULT_MEMO_SETTINGS,
+} from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { electronAPI } from '../electronBridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -7,18 +10,25 @@ import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
+import { useAuth, signIn, signOut } from '../lib/auth';
+import { AccordionPanel } from '../tutorial';
 import { ExtensionInstallWizard } from './ExtensionInstallWizard';
 import { DEFAULT_DOCUMENT_EXTENSIONS } from '../lib/documentExtensions';
+import { useBusyMark } from '../lib/userBusy';
+import { TOURS } from '../tour/tours';
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'dev-mode' | 'error';
-type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'data';
+type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'tutorial' | 'data' | 'account';
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: 'general',   label: '일반',   icon: 'tune' },
-  { id: 'monitor',   label: '모니터', icon: 'desktop_windows' },
-  { id: 'docs',      label: '문서',   icon: 'description' },
-  { id: 'extension', label: '확장',   icon: 'extension' },
-  { id: 'data',      label: '데이터', icon: 'save' },
+  { id: 'account',   label: '계정',     icon: 'account_circle' },
+  { id: 'general',   label: '일반',     icon: 'tune' },
+  { id: 'monitor',   label: '모니터',   icon: 'desktop_windows' },
+  { id: 'docs',      label: '문서',     icon: 'description' },
+  { id: 'extension', label: '확장',     icon: 'extension' },
+  { id: 'memo',      label: '메모',     icon: 'sticky_note_2' },
+  { id: 'tutorial',  label: '튜토리얼', icon: 'school' },
+  { id: 'data',      label: '데이터',   icon: 'save' },
 ];
 
 interface MonitorInfo {
@@ -38,6 +48,17 @@ interface SettingsDialogProps {
   updateDownloaded?: boolean;
   downloadProgress?: number | null;
   initialTab?: Tab;
+  /** Optional — invoked when the user picks a quest from the
+   *  튜토리얼 tab. App routes through TutorialProvider.start. */
+  onStartTutorial?: (quest: import('../tutorial').Quest) => void;
+  // ── Memo (사라지는 메모) ────────────────────────────────────────
+  /** Open the trash dialog (memos are stored in the data tree, but the
+   *  trash UI lives at App-level; we call up to surface it). */
+  onOpenMemoTrash?: () => void;
+  /** Bulk +ttl across every active memo. Returns count touched. */
+  onExtendAllMemos?: () => number;
+  /** Empty the trash hard. Returns count purged. */
+  onEmptyMemoTrash?: () => number;
 }
 
 // ── Small building blocks ────────────────────────────────────────────
@@ -82,6 +103,207 @@ function SwitchRow({ icon, title, description, checked, onCheckedChange }: {
   );
 }
 
+// ── Memo (사라지는 메모) — small pickers ─────────────────────────
+const TTL_PRESETS: number[] = [1, 3, 7, 14, 30];
+
+function MemoTtlPicker({ value, onChange }: { value: number; onChange: (days: number) => void }) {
+  const [customMode, setCustomMode] = useState(!TTL_PRESETS.includes(value));
+  const [customStr, setCustomStr] = useState(String(value));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {TTL_PRESETS.map(d => {
+          const active = !customMode && value === d;
+          return (
+            <button
+              key={d}
+              onClick={() => { setCustomMode(false); onChange(d); }}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 7,
+                background: active ? 'var(--accent-dim)' : 'var(--surface)',
+                color: active ? 'var(--accent)' : 'var(--text-color)',
+                border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                fontSize: 12,
+                fontWeight: active ? 600 : 500,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              {d}일
+            </button>
+          );
+        })}
+        <button
+          onClick={() => { setCustomMode(true); }}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 7,
+            background: customMode ? 'var(--accent-dim)' : 'var(--surface)',
+            color: customMode ? 'var(--accent)' : 'var(--text-color)',
+            border: `1px solid ${customMode ? 'var(--accent)' : 'var(--border-rgba)'}`,
+            fontSize: 12,
+            fontWeight: customMode ? 600 : 500,
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+          }}
+        >
+          직접 입력
+        </button>
+      </div>
+      {customMode && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Input
+            type="number"
+            value={customStr}
+            min={MEMO_TTL_DAYS_MIN}
+            max={MEMO_TTL_DAYS_MAX}
+            onChange={e => setCustomStr(e.target.value)}
+            onBlur={() => {
+              const n = Math.max(MEMO_TTL_DAYS_MIN, Math.min(MEMO_TTL_DAYS_MAX, Math.round(Number(customStr) || 7)));
+              setCustomStr(String(n));
+              onChange(n);
+            }}
+            style={{ width: 70, fontSize: 12 }}
+          />
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            일 (1~90)
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function MemoTrashRetentionPicker({ value, onChange }: { value: 24 | 72 | 168; onChange: (h: 24 | 72 | 168) => void }) {
+  const opts: Array<{ h: 24 | 72 | 168; label: string }> = [
+    { h: 24,  label: '24시간' },
+    { h: 72,  label: '3일' },
+    { h: 168, label: '7일' },
+  ];
+  return (
+    <div style={{ display: 'flex', gap: 6 }}>
+      {opts.map(o => {
+        const active = value === o.h;
+        return (
+          <button
+            key={o.h}
+            onClick={() => onChange(o.h)}
+            style={{
+              padding: '6px 12px',
+              borderRadius: 7,
+              background: active ? 'var(--accent-dim)' : 'var(--surface)',
+              color: active ? 'var(--accent)' : 'var(--text-color)',
+              border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+              fontSize: 12,
+              fontWeight: active ? 600 : 500,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function AccountTab() {
+  const auth = useAuth();
+  if (!auth.configured) {
+    return (
+      <Section>
+        <SectionLabel icon="warning" text="Supabase 미설정" />
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+          로그인을 사용하려면 <code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'var(--surface)' }}>frontend/.env</code>에
+          {' '}<code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'var(--surface)' }}>VITE_SUPABASE_URL</code>과
+          {' '}<code style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, padding: '1px 4px', borderRadius: 3, background: 'var(--surface)' }}>VITE_SUPABASE_ANON_KEY</code>를
+          {' '}설정한 뒤 nost를 다시 시작해주세요.
+        </p>
+      </Section>
+    );
+  }
+  if (auth.status === 'signed-in' && auth.user) {
+    const u = auth.user;
+    const name = (u.user_metadata?.full_name as string | undefined) ?? (u.user_metadata?.name as string | undefined) ?? u.email ?? '사용자';
+    const avatar = (u.user_metadata?.avatar_url as string | undefined) ?? null;
+    return (
+      <>
+        <Section>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {avatar ? (
+              <img src={avatar} alt="" referrerPolicy="no-referrer"
+                style={{ width: 44, height: 44, borderRadius: '50%', border: '1px solid var(--border-rgba)' }} />
+            ) : (
+              <div style={{
+                width: 44, height: 44, borderRadius: '50%',
+                background: 'var(--accent-dim)', border: '1px solid var(--accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Icon name="person" size={22} color="var(--accent)" />
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-color)' }}>{name}</div>
+              {u.email && <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{u.email}</div>}
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
+                {(u.app_metadata?.provider as string | undefined) ?? 'oauth'} · 로그인됨
+              </div>
+            </div>
+          </div>
+        </Section>
+        <Section>
+          <SectionLabel icon="cloud_sync" text="동기화" />
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+            카드·메모의 클라우드 동기화는 다음 단계에서 활성화됩니다 (Phase 2). 지금은 로그인만 가능해요.
+          </p>
+        </Section>
+        <Section>
+          <SectionLabel icon="logout" text="로그아웃" />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
+              이 PC에서 로그아웃합니다. 로컬 카드·메모는 그대로 유지돼요.
+            </p>
+            <GhostBtn onClick={() => { signOut(); }}>로그아웃</GhostBtn>
+          </div>
+        </Section>
+      </>
+    );
+  }
+  // signed-out / authing / error
+  const isAuthing = auth.status === 'authing';
+  return (
+    <>
+      <Section>
+        <SectionLabel icon="login" text="로그인" />
+        <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55, marginBottom: 10 }}>
+          로그인하면 다른 PC에서도 같은 카드와 메모를 이어서 쓸 수 있어요. (동기화는 다음 단계에 활성화)
+        </p>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <AccentBtn onClick={() => signIn('google')} disabled={isAuthing} style={{ flex: 1 }}>
+            <Icon name="login" size={14} /> Google로 계속
+          </AccentBtn>
+          <GhostBtn onClick={() => signIn('github')} disabled={isAuthing} style={{ flex: 1 }}>
+            <Icon name="code" size={14} /> GitHub으로 계속
+          </GhostBtn>
+        </div>
+        {isAuthing && (
+          <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 8, lineHeight: 1.5 }}>
+            브라우저에서 인증을 완료해주세요. nost는 잠시 후 자동으로 이어집니다.
+          </p>
+        )}
+        {auth.errorMessage && (
+          <p style={{ fontSize: 10, color: 'var(--destructive, #ef4444)', marginTop: 8, lineHeight: 1.5 }}>
+            {auth.errorMessage}
+          </p>
+        )}
+      </Section>
+    </>
+  );
+}
+
 function AccentBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
@@ -118,9 +340,21 @@ function GhostBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttribut
 
 // ── Main component ───────────────────────────────────────────────────
 
-export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onStartTutorial, onOpenMemoTrash, onExtendAllMemos, onEmptyMemoTrash }: SettingsDialogProps) {
+  useBusyMark('modal:settings', open);
   const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
   const [form, setForm] = useState<AppSettings>({ ...settings });
+  // Snapshot of settings at the moment this dialog opened — used for
+  // dirty detection and the rollback path. Captured once on open;
+  // form mutations apply LIVE via onSave (modern UX: see immediate
+  // result while sliding/toggling), and we revert to this snapshot
+  // when the user picks "적용 안 함" on the close confirm.
+  const originalRef = useRef<AppSettings>({ ...settings });
+  // 3-button close confirm modal — only appears when the user attempts
+  // to close (Esc / outside-click / 취소 button) AND the live form
+  // diverges from originalRef. The Save button bypasses this entirely
+  // (its whole purpose is "I want this to stick").
+  const [pendingClose, setPendingClose] = useState(false);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
   const [currentVersion, setCurrentVersion] = useState<string>('');
@@ -147,8 +381,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
 
   useEffect(() => {
     if (open) {
+      // Take a fresh snapshot of "what the user will rollback to" at
+      // the moment the dialog opens. Subsequent live-preview writes
+      // mutate `settings` upstream, but originalRef stays pinned to
+      // this moment.
+      originalRef.current = { ...settings };
       setForm({ ...settings });
       setTab(initialTab ?? 'general');
+      setPendingClose(false);
       electronAPI.getMonitors().then(ms => setMonitors(ms as MonitorInfo[]));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -158,8 +398,73 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
     if (open) checkExtStatus();
   }, [open, checkExtStatus]);
 
+  // Live-preview write. Setting locally + propagating upstream on the
+  // same render keeps the form controls "controlled" while letting
+  // every other surface in the app reflect the change immediately
+  // (theme flip, opacity, badge size, etc). The previous "click 저장
+  // to apply" model felt dated — modern apps preview-on-edit and
+  // confirm-on-close.
+  //
+  // Implementation note: rather than wrapping every existing
+  // `setForm(...)` callsite, we use a useEffect-based reflector below
+  // that fires onSave whenever the form diverges from the upstream
+  // settings. That keeps the existing call sites untouched while
+  // guaranteeing live preview from a single point of truth.
   const f = <K extends keyof AppSettings>(k: K, v: AppSettings[K]) =>
     setForm(prev => ({ ...prev, [k]: v }));
+
+  // Reflector — runs whenever form changes. Equality check via
+  // JSON.stringify is fine: the settings blob is small (< 1 KB) and
+  // this runs at most a few times per second under heavy slider use.
+  // Skip while the dialog is closed (we just store-loaded the form
+  // from `settings`, no need to immediately echo it back).
+  useEffect(() => {
+    if (!open) return;
+    const formStr = JSON.stringify(form);
+    if (formStr === JSON.stringify(settings)) return;
+    onSave(form);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, open]);
+
+  // Dirty detection — same JSON-string approach but compared against
+  // `originalRef` (the open-time snapshot), not `settings` (which is
+  // already kept up to date by the live reflector above).
+  const isDirty = useCallback(
+    () => JSON.stringify(form) !== JSON.stringify(originalRef.current),
+    [form],
+  );
+
+  /** Close path. Branches:
+   *  - No changes → close immediately (no nag).
+   *  - Changes pending → 3-button confirm. */
+  const handleCloseAttempt = useCallback(() => {
+    if (isDirty()) {
+      setPendingClose(true);
+      return;
+    }
+    onClose();
+  }, [isDirty, onClose]);
+
+  // Confirm modal actions:
+  //   - 저장 (Apply): live writes are already applied; just close. Tell main about
+  //     floating-orb config so the orb window can spawn/respawn with new settings.
+  //   - 적용 안 함 (Discard): rollback to originalRef via onSave, then close.
+  //   - 취소 (Cancel): just dismiss the modal — settings dialog stays open.
+  const confirmKeep = useCallback(() => {
+    setPendingClose(false);
+    electronAPI.notifyFloatingSettingsChanged();
+    onClose();
+  }, [onClose]);
+
+  const confirmDiscard = useCallback(() => {
+    onSave(originalRef.current);
+    setPendingClose(false);
+    onClose();
+  }, [onSave, onClose]);
+
+  const confirmCancel = useCallback(() => {
+    setPendingClose(false);
+  }, []);
 
   const docExts = form.documentExtensions && form.documentExtensions.length > 0
     ? form.documentExtensions
@@ -197,7 +502,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
   };
 
   return (
-    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+    <Dialog open={open} onOpenChange={v => { if (!v) handleCloseAttempt(); }}>
       <DialogContent
         style={{
           width: 680,
@@ -268,6 +573,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', scrollbarWidth: 'none' } as React.CSSProperties}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
 
+              {/* ══ 계정 ═══════════════════════════════════════════ */}
+              {tab === 'account' && (
+                <AccountTab />
+              )}
+
               {/* ══ 일반 ═══════════════════════════════════════════ */}
               {tab === 'general' && <>
                 <Section>
@@ -306,6 +616,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     className="w-full" />
                 </Section>
 
+                {/* 창 크기 섹션은 status bar 우측 슬라이더 + `/N`
+                    슬래시 명령에서 이미 노출되므로 설정에서 제거.
+                    설정값(settings.windowSizePct)은 그대로 유지 —
+                    삭제한 건 UI surface일 뿐. */}
+
                 <Section>
                   <SwitchRow icon="start" title="Windows 시작 시 자동 실행"
                     description="Windows 로그인 시 nost를 자동 실행합니다."
@@ -325,6 +640,68 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                 </Section>
 
                 <Section>
+                  <SectionLabel icon="open_with" text="창이 뜨는 위치" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: -2, marginBottom: 8, lineHeight: 1.45 }}>
+                    단축키 / 트레이 / 플로팅 버튼으로 창을 띄울 때 어디에 나타날지 결정합니다.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {([
+                      { value: 'cursor', icon: 'my_location', title: '마우스 위치',  desc: '커서가 있는 모니터의 가운데에 나타납니다.' },
+                      { value: 'last',   icon: 'restart_alt',  title: '최근 위치',  desc: '마지막에 닫은 위치 그대로 다시 나타납니다.' },
+                    ] as const).map(opt => {
+                      const active = (form.windowOpenAt ?? 'cursor') === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => f('windowOpenAt', opt.value)}
+                          style={{
+                            display: 'flex', alignItems: 'flex-start', gap: 10,
+                            padding: '10px 12px',
+                            background: active ? 'var(--accent-dim)' : 'var(--surface)',
+                            border: `1px solid ${active ? 'var(--accent)' : 'var(--border-rgba)'}`,
+                            borderRadius: 8,
+                            cursor: 'pointer',
+                            fontFamily: 'inherit',
+                            textAlign: 'left',
+                            color: 'var(--text-color)',
+                            transition: 'background 0.12s, border-color 0.12s',
+                          }}
+                        >
+                          <span
+                            aria-hidden
+                            style={{
+                              width: 14, height: 14, borderRadius: '50%',
+                              border: `2px solid ${active ? 'var(--accent)' : 'var(--border-focus)'}`,
+                              background: 'transparent',
+                              flexShrink: 0,
+                              marginTop: 2,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            {active && (
+                              <span style={{
+                                width: 6, height: 6, borderRadius: '50%',
+                                background: 'var(--accent)',
+                              }} />
+                            )}
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <Icon name={opt.icon} size={14} color={active ? 'var(--accent)' : 'var(--text-muted)'} />
+                              <span style={{ fontSize: 12, fontWeight: 600 }}>{opt.title}</span>
+                            </div>
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 3, lineHeight: 1.45 }}>{opt.desc}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Section>
+
+                <Section>
                   <SectionLabel icon="keyboard" text="전역 단축키" />
                   <Input value={form.shortcut} onChange={e => f('shortcut', e.target.value)}
                     placeholder="예: Alt+Space" className="font-mono text-sm" />
@@ -341,35 +718,41 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     onCheckedChange={v => f('floatingButton', {
                       enabled: v,
                       idleOpacity: form.floatingButton?.idleOpacity ?? 0.65,
-                      size: form.floatingButton?.size ?? 'normal',
+                      size: form.floatingButton?.size ?? 48,
                       hideOnFullscreen: form.floatingButton?.hideOnFullscreen ?? true,
                       position: form.floatingButton?.position,
                     })}
                   />
 
-                  {form.floatingButton?.enabled && (
+                  {form.floatingButton?.enabled && (() => {
+                    // Migrate legacy 'small' / 'normal' string values to numbers
+                    // so the slider has a real value to bind to.
+                    const rawSize = form.floatingButton?.size;
+                    const sizePx =
+                      typeof rawSize === 'number' ? rawSize :
+                      rawSize === 'small' ? 40 : 48;
+                    return (
                     <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 12 }}>
-                      {/* Size */}
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>크기</span>
-                        <div style={{ display: 'flex', background: 'var(--border-rgba)', borderRadius: 8, padding: 3, gap: 2 }}>
-                          {(['small', 'normal'] as const).map(sz => (
-                            <button
-                              key={sz}
-                              onClick={() => f('floatingButton', { ...form.floatingButton!, size: sz })}
-                              style={{
-                                padding: '4px 14px', fontSize: 11, borderRadius: 6,
-                                fontWeight: form.floatingButton?.size === sz ? 700 : 400,
-                                border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                                background: form.floatingButton?.size === sz ? 'var(--bg-rgba)' : 'transparent',
-                                color: form.floatingButton?.size === sz ? 'var(--text-color)' : 'var(--text-muted)',
-                                transition: 'all 0.15s',
-                              }}
-                            >
-                              {sz === 'small' ? '작게' : '보통'}
-                            </button>
-                          ))}
+                      {/* Size — continuous slider, 28..72px (icon hits 64px Material grid budget at the top end) */}
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>크기</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)', background: 'var(--border-rgba)', padding: '2px 8px', borderRadius: 5 }}>
+                            {sizePx}px
+                          </span>
                         </div>
+                        <Slider
+                          value={[sizePx]}
+                          min={28} max={72} step={2}
+                          onValueChange={val => {
+                            const v = Array.isArray(val) ? (val as number[])[0] : (val as number);
+                            f('floatingButton', { ...form.floatingButton!, size: v });
+                          }}
+                          className="w-full"
+                        />
+                        <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.4 }}>
+                          작게 28 · 보통 48 · 크게 64. 변경은 즉시 반영됩니다.
+                        </p>
                       </div>
 
                       {/* Idle opacity */}
@@ -394,7 +777,44 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                         </p>
                       </div>
                     </div>
-                  )}
+                    );
+                  })()}
+                </Section>
+
+                {/* ── Floating badge size (global) ──────────────────
+                   Distinct from the "플로팅 버튼" section above: this
+                   slider scales the small SPACE/NODE/DECK chips that the
+                   user pins on monitor edges (rendered by the badges
+                   overlay BrowserWindow), NOT the main FAB orb. The two
+                   share a 28..72 px range so users with muscle memory
+                   from one slider read the other intuitively. Changes
+                   are live — see main.js `store-save` which diffs
+                   badgeSize and re-pushes to every overlay. */}
+                <Section>
+                  <SectionLabel icon="bubble_chart" text="플로팅 뱃지" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 12 }}>
+                    화면 가장자리에 핀한 스페이스 / 노드 / 덱 뱃지의 크기를 조절합니다.
+                  </p>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>크기</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, fontFamily: 'monospace', color: 'var(--text-color)', background: 'var(--border-rgba)', padding: '2px 8px', borderRadius: 5 }}>
+                        {form.badgeSize ?? 46}px
+                      </span>
+                    </div>
+                    <Slider
+                      value={[form.badgeSize ?? 46]}
+                      min={28} max={72} step={2}
+                      onValueChange={val => {
+                        const v = Array.isArray(val) ? (val as number[])[0] : (val as number);
+                        setForm(prev => ({ ...prev, badgeSize: v }));
+                      }}
+                      className="w-full"
+                    />
+                    <p style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.4 }}>
+                      작게 28 · 보통 46 · 크게 64. 모든 뱃지에 동일하게 적용됩니다.
+                    </p>
+                  </div>
                 </Section>
 
                 <Section>
@@ -410,6 +830,54 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     <input type="color" value={form.accentColor || '#6366f1'}
                       onChange={e => f('accentColor', e.target.value)} title="직접 선택"
                       style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--border-rgba)', cursor: 'pointer', padding: 0, background: 'none' }} />
+                  </div>
+                </Section>
+
+                {/* ── Tutorials replay ──
+                   Re-run any of the spotlight tours from the start. We close
+                   the dialog first and defer the dispatch by a tick so the
+                   modal's busy mark clears before TourOverlay's listener
+                   evaluates `whenIdle` — otherwise the tour would queue
+                   itself behind our own settings dialog. */}
+                <Section>
+                  <SectionLabel icon="school" text="튜토리얼 다시 보기" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
+                    각 기능별 안내를 다시 볼 수 있어요.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {TOURS.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          onClose();
+                          // small defer so the dialog finishes unmounting and
+                          // releases its busy mark before the tour starts.
+                          setTimeout(() => {
+                            window.dispatchEvent(
+                              new CustomEvent('nost:start-tour', { detail: { tourId: t.id } }),
+                            );
+                          }, 250);
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          padding: '9px 12px', borderRadius: 8,
+                          background: 'var(--bg-rgba)',
+                          border: '1px solid var(--border-rgba)',
+                          color: 'var(--text-color)', fontSize: 12, fontWeight: 600,
+                          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent)'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-rgba)'; }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Icon name="play_circle" size={14} color="var(--accent)" />
+                          {t.title}
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                          {t.steps.length}단계
+                        </span>
+                      </button>
+                    ))}
                   </div>
                 </Section>
               </>}
@@ -645,7 +1113,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                 </Section>
 
                 <Section>
-                  <SectionLabel icon="extension" text="브라우저 확장 설치 도우미" />
+                  <SectionLabel icon="extension" text="브라우저 확장 설치" />
                   {showExtWizard ? (
                     <div style={{ marginTop: 4 }}>
                       <ExtensionInstallWizard onSuccess={() => { setTimeout(() => setShowExtWizard(false), 1800); checkExtStatus(); }} />
@@ -659,11 +1127,11 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   ) : (
                     <>
                       <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
-                        Chrome / Whale에서 탭 스캔과 타일 분할을 사용하려면 확장 프로그램이 필요합니다.
+                        Chrome 웹 스토어에서 한 번에 설치할 수 있습니다. 탭 스캔과 타일 분할이 활성화됩니다.
                       </p>
                       <AccentBtn onClick={() => setShowExtWizard(true)}>
                         <Icon name="extension" size={15} />
-                        단계별 설치 도우미 열기
+                        확장 설치하기
                       </AccentBtn>
                     </>
                   )}
@@ -671,6 +1139,130 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
               </>}
 
               {/* ══ 데이터 ══════════════════════════════════════════ */}
+              {/* ══ 메모 (사라지는 메모) ════════════════════════════ */}
+              {tab === 'memo' && <>
+                <Section>
+                  <SectionLabel icon="schedule" text="새 메모 기본 수명" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    새로 만드는 메모가 이 기간 뒤 휴지통으로 갑니다. 기존
+                    메모와 핀 고정한 메모는 영향 없음.
+                  </p>
+                  <MemoTtlPicker
+                    value={(form.memo ?? DEFAULT_MEMO_SETTINGS).defaultTtlDays}
+                    onChange={(days) => setForm(f => ({
+                      ...f,
+                      memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), defaultTtlDays: days },
+                    }))}
+                  />
+                </Section>
+
+                <Section>
+                  <SectionLabel icon="delete" text="휴지통" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    만료된 메모는 휴지통에 보관됐다가, 아래 시간이 지나면
+                    영구 삭제됩니다.
+                  </p>
+                  <MemoTrashRetentionPicker
+                    value={(form.memo ?? DEFAULT_MEMO_SETTINGS).trashRetentionHours}
+                    onChange={(h) => setForm(f => ({
+                      ...f,
+                      memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), trashRetentionHours: h },
+                    }))}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <GhostBtn onClick={() => onOpenMemoTrash?.()}>
+                      <Icon name="folder_open" size={14} />
+                      휴지통 보기
+                    </GhostBtn>
+                    <GhostBtn onClick={() => {
+                      if (!onEmptyMemoTrash) return;
+                      const n = onEmptyMemoTrash();
+                      setBackupStatus(n > 0 ? `${n}개 메모를 영구 삭제했어요` : '휴지통이 이미 비어있어요');
+                      setTimeout(() => setBackupStatus(null), 4000);
+                    }}>
+                      <Icon name="delete_forever" size={14} />
+                      비우기
+                    </GhostBtn>
+                  </div>
+                </Section>
+
+                <Section>
+                  <SectionLabel icon="folder" text="메모 내보내기 폴더" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    메모를 txt 파일로 내보낼 때 저장될 폴더입니다. 비워
+                    두면 기본 폴더(<code style={{ fontSize: 10, opacity: 0.85 }}>%APPDATA%/nost/memos/</code>)에 저장됩니다.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <Input
+                      value={(form.memo ?? DEFAULT_MEMO_SETTINGS).exportFolder ?? ''}
+                      placeholder="기본 폴더 사용"
+                      onChange={e => setForm(f => ({
+                        ...f,
+                        memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), exportFolder: e.target.value || undefined },
+                      }))}
+                      style={{ flex: 1, fontSize: 11 }}
+                    />
+                    <GhostBtn
+                      onClick={async () => {
+                        const folder = await electronAPI.pickFolder();
+                        if (folder) {
+                          setForm(f => ({
+                            ...f,
+                            memo: { ...(f.memo ?? DEFAULT_MEMO_SETTINGS), exportFolder: folder },
+                          }));
+                        }
+                      }}
+                      style={{ width: 'auto', flexShrink: 0, padding: '7px 12px' }}
+                    >
+                      <Icon name="folder_open" size={14} />
+                      찾기
+                    </GhostBtn>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <GhostBtn onClick={() => electronAPI.openMemoFolder((form.memo ?? DEFAULT_MEMO_SETTINGS).exportFolder)}>
+                      <Icon name="open_in_new" size={14} />
+                      폴더 열기
+                    </GhostBtn>
+                  </div>
+                </Section>
+
+                <Section>
+                  <SectionLabel icon="restart_alt" text="일괄 정리" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                    여행 다녀와서 한 번씩 쓰는 비상 버튼. 모든 활성 메모의
+                    수명을 기본 일수만큼 다시 채웁니다 (핀, 휴지통 제외).
+                  </p>
+                  <GhostBtn onClick={() => {
+                    if (!onExtendAllMemos) return;
+                    const n = onExtendAllMemos();
+                    setBackupStatus(n > 0 ? `${n}개 메모의 수명을 다시 채웠어요` : '활성 메모가 없어요');
+                    setTimeout(() => setBackupStatus(null), 4000);
+                  }}>
+                    <Icon name="schedule" size={14} />
+                    모든 메모 +수명
+                  </GhostBtn>
+                  {backupStatus && (
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>{backupStatus}</p>
+                  )}
+                </Section>
+              </>}
+
+              {tab === 'tutorial' && <>
+                <Section>
+                  <SectionLabel icon="school" text="튜토리얼" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6, marginBottom: 12 }}>
+                    퀘스트를 진행하며 nost를 익히세요. 완주할 때마다 무료 일수가 적립됩니다.
+                  </p>
+                  <AccordionPanel onStartQuest={(q) => {
+                    // Hand off to TutorialProvider via the prop
+                    // App threaded down. Closes settings so the
+                    // ScanLoader → QuestRunner flow gets the screen.
+                    onStartTutorial?.(q);
+                    onClose();
+                  }} />
+                </Section>
+              </>}
+
               {tab === 'data' && <>
                 <Section>
                   <SectionLabel icon="system_update" text="앱 업데이트" />
@@ -742,21 +1334,86 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
         </div>
 
         {/* ── Footer ─────────────────────────────────────────────── */}
+        {/* The Save button now means "I've decided these stay" — no actual
+            write happens here because every change has already streamed
+            upstream via the live-preview reflector. The 취소 button
+            triggers handleCloseAttempt, which presents the 3-button
+            confirm modal IF (and only if) form differs from openTime
+            snapshot. That gives modern UX (immediate preview) without
+            losing the "rollback" safety net users expect.  */}
         <div style={{
-          display: 'flex', justifyContent: 'flex-end', gap: 8,
+          display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8,
           padding: '12px 20px',
           borderTop: '1px solid var(--border-rgba)',
           flexShrink: 0,
         }}>
-          <Button variant="ghost" onClick={onClose}>취소</Button>
+          {isDirty() && (
+            <span style={{ fontSize: 11, color: 'var(--text-dim)', marginRight: 'auto' }}>
+              변경사항이 즉시 적용되고 있어요
+            </span>
+          )}
+          <Button variant="ghost" onClick={handleCloseAttempt}>취소</Button>
           <Button onClick={() => {
-            onSave(form);
-            // Notify main so it can spawn/destroy the floating orb window
-            // and push updated visual settings into it.
+            // Live writes already happened. Just notify the orb (it
+            // refreshes on a different signal than `setOpacity`/etc.)
+            // and close.
             electronAPI.notifyFloatingSettingsChanged();
             onClose();
           }}>저장</Button>
         </div>
+
+        {/* ── Close-confirm modal ─────────────────────────────────
+            Shown only when the user attempts to close (not Save) and
+            the form differs from the open-time snapshot. Three
+            actions match the OS-standard "save / discard / cancel"
+            pattern — same one used by macOS System Settings, VSCode,
+            Figma, etc.   */}
+        {pendingClose && (
+          <div
+            // Backdrop. Opaque enough to focus attention on the modal
+            // but not as dark as a hard system modal — settings is a
+            // friendly surface, not a destructive operation gate.
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(0,0,0,0.45)',
+              backdropFilter: 'blur(4px)',
+              WebkitBackdropFilter: 'blur(4px)',
+              zIndex: 20,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onClick={confirmCancel}
+          >
+            <div
+              role="dialog"
+              aria-label="설정 저장 확인"
+              onClick={e => e.stopPropagation()}
+              style={{
+                width: 'min(380px, 90%)',
+                background: 'var(--surface)',
+                border: '1px solid var(--border-rgba)',
+                borderRadius: 14,
+                padding: '20px 20px 16px',
+                boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+              }}
+            >
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-color)', marginBottom: 8 }}>
+                변경사항을 어떻게 할까요?
+              </div>
+              <p style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.55, marginBottom: 16 }}>
+                지금까지의 변경은 이미 적용되어 있어요. 그대로 유지할까요,
+                아니면 처음 상태로 되돌릴까요?
+              </p>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <Button variant="ghost" onClick={confirmCancel}>취소</Button>
+                <Button variant="ghost" onClick={confirmDiscard}>적용 안 함</Button>
+                <Button onClick={confirmKeep}>저장</Button>
+              </div>
+            </div>
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   );

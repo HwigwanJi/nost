@@ -9,7 +9,10 @@ type WizardPhase =
   | { kind: 'idle' }
   | { kind: 'launching'; browser: Browser }
   | { kind: 'step'; n: 1 | 2 | 3; browser: Browser }
-  | { kind: 'checking'; browser: Browser }
+  | { kind: 'checking'; browser?: Browser }
+  // Chrome Web Store path: store page opened in default browser,
+  // waiting for user to click "Chrome에 추가" then come back and verify.
+  | { kind: 'store-installing' }
   | { kind: 'success' }
   | { kind: 'error'; message: string };
 
@@ -299,6 +302,11 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
   const [phase, setPhase] = useState<WizardPhase>({ kind: 'idle' });
   const [selectedBrowser, setSelectedBrowser] = useState<Browser>('chrome');
   const [extensionDir, setExtensionDir] = useState<string | null>(null);
+  // Web Store is now the recommended path. The dev-mode unpacked-load
+  // flow is still useful (testing, custom builds, environments where
+  // Chrome Web Store is blocked) so we keep it tucked behind a
+  // disclosure rather than ripping it out.
+  const [showManual, setShowManual] = useState(false);
 
   const browserLabel = (b: Browser) => (b === 'chrome' ? 'Chrome' : 'Whale');
   const browserIcon = (b: Browser) => (b === 'chrome' ? 'open_in_browser' : 'open_in_new');
@@ -328,9 +336,47 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
       setPhase({ kind: 'success' });
       setTimeout(() => onSuccess(), 1200);
     } else {
-      setPhase({ kind: 'step', n: 3, browser });
+      setPhase({ kind: 'step', n: 3, browser: browser as Browser });
     }
   }, [phase, selectedBrowser, onSuccess]);
+
+  // ── Web Store install path ───────────────────────────────────
+  // Two-pronged strategy:
+  //  1. Best-effort HKCU registry write (ExternalExtensions). If it
+  //     succeeds, Chrome on its next launch shows a one-click
+  //     "활성화" notification — the most automated path possible
+  //     within Chrome's security model.
+  //  2. Always open the store page in the default browser as a
+  //     guaranteed fallback. User can complete via "Chrome에 추가"
+  //     even if the registry path didn't fire (Chrome closed,
+  //     dismissed notification, etc.).
+  const handleStoreInstall = useCallback(async () => {
+    // Fire-and-forget; never blocks the UX path.
+    electronAPI.registerExtensionExternal().catch(() => undefined);
+
+    const res = await electronAPI.openExtensionStore();
+    if (!res.success) {
+      setPhase({ kind: 'error', message: '스토어 페이지를 열 수 없습니다. 브라우저에서 직접 검색해주세요: nost-bridge' });
+      return;
+    }
+    setPhase({ kind: 'store-installing' });
+  }, []);
+
+  const handleVerifyStoreInstall = useCallback(async () => {
+    setPhase({ kind: 'checking' });
+    const status = await electronAPI.getExtensionBridgeStatus();
+    const connected = status.connected || status.tabsCount > 0;
+    if (connected) {
+      setPhase({ kind: 'success' });
+      setTimeout(() => onSuccess(), 1200);
+    } else {
+      // Stay on store-installing; surface a soft toast instead of
+      // bouncing back to error — the user might just need 1-2s for the
+      // SSE handshake after Chrome auto-loads the extension.
+      setPhase({ kind: 'store-installing' });
+      toast.error('아직 연결되지 않았습니다. 설치 완료 후 잠시 기다린 다음 다시 시도해주세요.');
+    }
+  }, [onSuccess]);
 
   // ── Idle: browser selection ──────────────────────────────────
   if (phase.kind === 'idle') {
@@ -355,13 +401,84 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
           </div>
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-color)' }}>
-              브라우저 확장 설치 도우미
+              브라우저 확장 설치
             </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.4 }}>
               탭 스캔과 타일 분할을 위해 확장이 필요합니다.
             </div>
           </div>
         </div>
+
+        {/* ── Primary install path ───────────────────────────────
+             A single confident CTA. We removed the 2024-era badge
+             ("권장 · Chrome 웹 스토어") and tinted-box pattern in
+             favor of a clean surface card — visual prominence comes
+             from the button itself, not chrome around it. Manual
+             install (dev mode) lives behind the disclosure below. */}
+        <div
+          style={{
+            padding: '14px 16px 16px',
+            borderRadius: 12,
+            background: 'var(--surface)',
+            border: '1px solid var(--border-rgba)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 12,
+          }}
+        >
+          <div style={{ fontSize: 12.5, color: 'var(--text-color)', lineHeight: 1.55 }}>
+            Chrome 웹 스토어에서 nost-bridge를 설치합니다.
+            <span style={{ color: 'var(--text-muted)' }}> 클릭 한 번이면 됩니다.</span>
+          </div>
+          <ActionButton
+            icon="open_in_new"
+            label="Chrome 웹 스토어에서 설치"
+            onClick={handleStoreInstall}
+          />
+        </div>
+
+        {/* ── Disclosure: manual / dev-mode install ───────────── */}
+        {!showManual ? (
+          <button
+            onClick={() => setShowManual(true)}
+            style={{
+              alignSelf: 'center',
+              padding: '6px 10px',
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-dim)',
+              fontSize: 11,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            <Icon name="expand_more" size={13} />
+            수동 설치 (개발자용)
+          </button>
+        ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, paddingTop: 6, borderTop: '1px dashed var(--border-rgba)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>
+              수동 설치 — 개발자 모드
+            </span>
+            <button
+              onClick={() => setShowManual(false)}
+              style={{
+                padding: '3px 6px',
+                background: 'transparent',
+                border: 'none',
+                color: 'var(--text-dim)',
+                fontSize: 11,
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              접기
+            </button>
+          </div>
 
         {/* Browser selector */}
         <div>
@@ -429,6 +546,57 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
           label="설치 시작하기"
           onClick={handleStart}
         />
+        </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── Store install — waiting for user to confirm in browser ──
+  if (phase.kind === 'store-installing') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 10,
+            padding: '12px 14px',
+            borderRadius: 10,
+            background: 'rgba(34,197,94,0.08)',
+            border: '1px solid rgba(34,197,94,0.25)',
+          }}
+        >
+          <Icon name="check_circle" size={18} color="#22c55e" style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-color)' }}>
+              브라우저에서 마지막 단계만 남았습니다
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.5 }}>
+              열린 스토어 페이지에서 <strong>Chrome에 추가</strong>를 누르거나, Chrome 우상단에 뜬 알림에서 <strong>활성화</strong>를 눌러주세요.
+            </div>
+          </div>
+        </div>
+
+        <InstructionCard
+          icon="auto_awesome"
+          title="자동 설치도 시도했습니다"
+          description="Chrome을 열어두셨다면 우상단에 '확장 프로그램이 추가됨' 알림이 뜰 수 있습니다. 알림에서 한 번만 활성화하면 됩니다."
+        />
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          <ActionButton
+            icon="arrow_back"
+            label="뒤로"
+            onClick={() => setPhase({ kind: 'idle' })}
+            variant="secondary"
+          />
+          <ActionButton
+            icon="check"
+            label="연결 확인"
+            onClick={handleVerifyStoreInstall}
+          />
+        </div>
       </div>
     );
   }
@@ -791,9 +959,11 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
 
   // ── Checking ─────────────────────────────────────────────────
   if (phase.kind === 'checking') {
+    // StepBar belongs to the dev-mode 3-step flow; the store-install
+    // verify path doesn't carry a browser, so we hide it then.
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <StepBar current={3} />
+        {phase.browser && <StepBar current={3} />}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '16px 0' }}>
           <Icon name="sync" size={32} color="var(--accent)" className="animate-spin" />
           <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>확장 연결 상태 확인 중...</p>

@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
-import type { WindowEntry, ChromeTab } from '../types';
+import type { WindowEntry } from '../types';
 import { electronAPI } from '../electronBridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ExtensionInstallWizard } from './ExtensionInstallWizard';
+import { scanCurrentEnvironment, type ScanResult as EngineScanResult } from '../lib/scanEngine';
 
+// Local rename of the engine's bucket field names (apps→programs,
+// documents→browsers) so the existing JSX doesn't have to change.
+// We could rename in the JSX too, but this keeps the diff small and
+// the dialog's mental model stays "browsers / folders / programs."
 interface ScanResult {
-  browsers: ChromeTab[];
-  folders: WindowEntry[];
-  programs: WindowEntry[];
+  browsers: EngineScanResult['documents'];
+  folders: EngineScanResult['folders'];
+  programs: EngineScanResult['apps'];
 }
 
 interface SelectExtra {
@@ -279,12 +284,12 @@ export function ScanDialog({ open, onClose, onSelect }: ScanDialogProps) {
 
   const refreshScan = useCallback(async () => {
     setLoading(true);
-    const payload = await electronAPI.getOpenWindows();
-    const browsers = payload.browserTabs ?? [];
-    const all = payload.windows ?? [];
-    const folders = all.filter(w => w.ProcessName.toLowerCase() === 'explorer');
-    const programs = all.filter(w => w.ProcessName.toLowerCase() !== 'explorer');
-    setResult({ browsers, folders, programs });
+    // Centralised — same shape RecommendPanel + useGhostCards consume.
+    // Categorisation rules (Explorer detection, internal-URL filter)
+    // live in the engine so Cursor in scan dialog == Cursor in ghost
+    // matcher == Cursor in recommend panel.
+    const r = await scanCurrentEnvironment();
+    setResult({ browsers: r.documents, folders: r.folders, programs: r.apps });
     setLoading(false);
   }, []);
 
@@ -343,22 +348,47 @@ export function ScanDialog({ open, onClose, onSelect }: ScanDialogProps) {
             flexShrink: 0,
           }}
         >
-          <DialogTitle
-            style={{
-              fontSize: 14,
-              fontWeight: 500,
-              color: 'var(--text-color)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 7,
-            }}
-          >
-            <Icon name="radar" size={16} color="var(--text-muted)" />
-            스마트 스캔
-          </DialogTitle>
-          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-            현재 열려 있는 창/탭을 클릭해서 스페이스에 빠르게 추가하세요.
-          </p>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <DialogTitle
+                style={{
+                  fontSize: 14,
+                  fontWeight: 500,
+                  color: 'var(--text-color)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 7,
+                }}
+              >
+                <Icon name="radar" size={16} color="var(--text-muted)" />
+                스마트 스캔
+              </DialogTitle>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                현재 열려 있는 창/탭을 클릭해서 스페이스에 빠르게 추가하세요.
+              </p>
+            </div>
+            <button
+              onClick={() => void refreshScan()}
+              disabled={loading}
+              title="다시 스캔"
+              aria-label="다시 스캔"
+              style={{
+                flexShrink: 0,
+                width: 28, height: 28,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                background: 'transparent',
+                border: '1px solid var(--border-rgba)',
+                borderRadius: 7,
+                color: 'var(--text-muted)',
+                cursor: loading ? 'default' : 'pointer',
+                opacity: loading ? 0.5 : 1,
+                transition: 'opacity 0.15s, background 0.15s',
+                fontFamily: 'inherit',
+              }}
+            >
+              <Icon name="refresh" size={14} style={{ animation: loading ? 'spin 0.9s linear infinite' : 'none' }} />
+            </button>
+          </div>
         </DialogHeader>
 
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px 18px' }}>

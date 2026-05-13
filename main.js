@@ -5,10 +5,38 @@
 
 'use strict';
 
+// ── 0. Sentry init (must be FIRST so we capture early errors) ────────
+// DSN comes from env (SENTRY_DSN) — no DSN = noop (safe in dev or
+// when the user opted out). Errors auto-captured from main + renderer
+// processes with breadcrumbs. Lightweight — adds ~80 KB to main bundle.
+const Sentry = require('@sentry/electron/main');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    release: require('./package.json').version,
+    environment: process.env.NODE_ENV || 'production',
+    // Don't sample performance traces by default — opt-in via env
+    tracesSampleRate: parseFloat(process.env.SENTRY_TRACES_RATE || '0'),
+    // Strip safeStorage encrypted blobs and other potentially sensitive
+    // payloads before they leave the device.
+    beforeSend(event) {
+      // Drop stored auth tokens that may sneak into breadcrumbs
+      if (event.breadcrumbs) {
+        event.breadcrumbs = event.breadcrumbs.filter(b => {
+          const msg = String(b.message ?? '').toLowerCase();
+          return !msg.includes('authsessionenc') && !msg.includes('access_token');
+        });
+      }
+      return event;
+    },
+  });
+}
+
 // ── 1. Requires & Store ──────────────────────────────────────────────
 const {
   app, BrowserWindow, globalShortcut, ipcMain, shell, clipboard,
-  Tray, Menu, nativeImage, dialog, session,
+  Tray, Menu, nativeImage, dialog, session, net, desktopCapturer,
+  safeStorage,
 } = require('electron');
 const path            = require('node:path');
 const { exec, spawn } = require('child_process');
@@ -17,6 +45,7 @@ const http            = require('http');
 const Store           = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 const log             = require('electron-log/main');
+const foregroundWindow = require('./foreground-window');
 
 // ── electron-log setup ──────────────────────────────────────────────
 // File:    %APPDATA%\nost\logs\main.log (and renderer.log for renderer)
@@ -32,9 +61,124 @@ const store = new Store({ name: 'nost-data' });
 
 // ── 2. Module-level globals ──────────────────────────────────────────
 let mainWindow;
-let loadingWindow    = null;
+// Hot cache of the user's preferred launcher size as a % of the
+// active display's work area (25..100). Read once from electron-store
+// at app ready, mutated by every code path that resizes the launcher
+// (slash `/N`, status-bar slider, settings preset, IPC), applied at
+// cold-start window creation AND on every show (so a settings change
+// while hidden takes effect on the next pop-in).
+let cachedWindowSizePct = 100;
+// Renderer-controlled suppression of automatic dismissals. Multiple
+// independent sources can request suppression (clean mode, active
+// tutorial, …); ref-counted via a Set so source A's release doesn't
+// cancel source B's still-active need.
+const suppressAutoHideSources = new Set();
+
+// Hot cache of autoHide setting. Renderer pushes via setAutoHide IPC
+// on every settings save → blur handler reads from cache, no disk
+// roundtrip per event. Initialised from disk in createMainWindow.
+let cachedAutoHide = false;
+// Hot cache of "where should the launcher reappear?" setting. Same
+// pattern as cachedAutoHide — initialised from disk on createWindow,
+// pushed by renderer via 'set-window-open-at' IPC whenever the user
+// changes the dropdown in Settings. Two valid values:
+//   'cursor' (default) → moveToCursorMonitor + centre on that screen
+//   'last'             → setBounds back to lastUserPosition (if known)
+let cachedWindowOpenAt = 'cursor';
+// Last user-visible bounds (x/y/width/height) — captured on hide so
+// the 'last' open-at mode can restore them. width/height already live
+// in `windowBounds` storage; we keep position in-memory only by default
+// (cold start still centres) and persist on hide so a graceful quit
+// retains position for the next launch.
+let lastUserPosition = null;
+
+/**
+ * Single dismissal policy. EVERY automatic hide path funnels here.
+ *
+ * Reasons:
+ *   'blur'         — focus lost, autoHide setting respected
+ *   'close-after'  — card launched with closeAfterOpen, ditto
+ *
+ * Explicit user-initiated hides (Esc / X button / global toggle
+ * shortcut / screen picker) bypass this and call mainWindow.hide()
+ * directly — the user clearly meant to dismiss, no policy negotiation.
+ *
+ * Returns true if hide was performed.
+ */
+function tryDismissWindow(reason, opts = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (suppressAutoHideSources.size > 0) {
+    log.debug(`[dismiss] reason=${reason} skipped — suppress sources: [${Array.from(suppressAutoHideSources).join(',')}]`);
+    return false;
+  }
+  if (reason === 'blur' && !cachedAutoHide) return false;
+  if (reason === 'close-after' && !opts.closeAfter) return false;
+
+  const delay = opts.delayMs ?? 0;
+  const fire = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    log.debug(`[dismiss] reason=${reason} → hide`);
+    mainWindow.hide();
+  };
+  if (delay > 0) setTimeout(fire, delay);
+  else fire();
+  return true;
+}
+
+function maybeCloseAfter(closeAfter, delayMs = 0) {
+  if (!closeAfter) return;
+  tryDismissWindow('close-after', { closeAfter: true, delayMs });
+}
+
+/**
+ * Reassert top-most z-order after an external app launch. On Windows,
+ * SetForegroundWindow from a freshly-launched process can shove a
+ * topmost window below until the user re-focuses it. We delay so the
+ * external window has time to actually appear before we re-claim the
+ * top, and bail if user closed nost in the interim (closeAfter true).
+ */
+function reassertTopAfterLaunch(closeAfter) {
+  if (closeAfter) return; // user opted to dismiss after launch — leave alone
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  setTimeout(() => {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return;
+    try {
+      mainWindow.setAlwaysOnTop(true, 'screen-saver');
+      mainWindow.moveTop();
+    } catch (e) { log.debug('[reassert-top]', e?.message); }
+  }, 250);
+}
+
+/**
+ * Brief grace window after a user-initiated launch where we ignore
+ * blur events. Rationale: when the user clicks a card with autoHide
+ * ON and closeAfter OFF, the just-launched external window briefly
+ * grabs foreground focus, fires blur on mainWindow, and the launcher
+ * dismisses itself before the user even sees the result. The user's
+ * mental model is "I clicked, but I didn't ask to close" — so we
+ * suppress the next blur for a short window. closeAfter is still
+ * honored separately via maybeCloseAfter, so opt-in dismissal still
+ * works. See `plans/focus-state-audit.md` Issue 4.
+ */
+function armLaunchGrace(closeAfter, ms = 600) {
+  if (closeAfter) return; // closeAfter path actively wants to hide — don't fight it
+  suppressAutoHideSources.add('launch-grace');
+  setTimeout(() => suppressAutoHideSources.delete('launch-grace'), ms);
+}
 let floatingWindow   = null;   // Phase 1 floating orb (always-on-top FAB)
-let badgeOverlay     = null;   // Phase 2 single overlay window hosting every floating badge
+// One BrowserWindow per display — keyed by display.id. The previous
+// single-overlay-spans-all-displays design was broken on cross-DPI
+// multi-monitor setups: Electron renders the window at the home
+// display's DPR, then the OS maps those pixels 1:1 onto the other
+// display, producing the wrong physical size and hence visible
+// clipping/scaling on secondaries. Per-display overlays sidestep the
+// problem entirely — each window's DPR matches its own display, so
+// CSS pixels align with physical pixels exactly on every screen.
+const badgeOverlays  = new Map();
+let dialogPopupWin   = null;   // Save-As dialog companion popup
+let dialogPollTimer  = null;   // setInterval handle for dialog detection
+let dialogTrackedHwnd = 0;     // last seen dialog HWND so we can detect "still the same dialog" vs "different one"
+let dialogDismissedHwnd = 0;   // user clicked ✕ for THIS dialog — don't show until they open a different one
 let tray             = null;
 let currentShortcut  = 'Alt+4';
 
@@ -120,30 +264,84 @@ function getMonitorWorkArea(monitorIndex) {
   return { wa: disp.workArea, disp };
 }
 
+// ── PS-unaware work-area cache ──────────────────────────────────────
+//
+// Why this exists: every `run-tile-ps.ps1` invocation pays ~250-400 ms
+// just to `Add-Type -AssemblyName System.Windows.Forms` and enumerate
+// `[System.Windows.Forms.Screen]::AllScreens` so it can compute work
+// areas in DPI-unaware coordinates (which differ from Electron's DIP
+// coords on cross-DPI multi-monitor setups — see monitorEnvFor's
+// comment block). Those numbers don't change between tile calls UNLESS
+// the user's display configuration changes — plugging/unplugging a
+// monitor, swapping primary, changing scale factor, rotating, etc.
+//
+// So we cache them keyed by monitorIndex, capture them from the first
+// real PS run via the existing onLine stream, and serve them as env
+// vars on every subsequent run. Both the script header (diagnostic
+// block) and `Get-NativeWorkArea` then take a fast path that doesn't
+// touch System.Windows.Forms at all.
+//
+// Robustness: Electron's `screen` module emits the three events below
+// whenever Windows reports any layout change. We clear the entire
+// cache on any of them — the next tile call pays the enumeration cost
+// once to repopulate, then we're cheap again. This means a freshly-
+// plugged monitor is correctly tiled to without manual restart.
+const psWorkAreaCache = new Map();   // monitorIndex (number) → { X, Y, W, H }
+let psCacheLogged = false;           // suppress repeat "cache cleared" lines
+
+function clearPsWorkAreaCache(reason) {
+  if (psWorkAreaCache.size === 0) return;
+  psWorkAreaCache.clear();
+  if (!psCacheLogged) {
+    log.debug(`[tile-cache] cleared (${reason}) — next tile will repopulate from PS`);
+    psCacheLogged = true;
+    setTimeout(() => { psCacheLogged = false; }, 500);  // re-arm after burst settles
+  }
+}
+
+// Wire screen events as soon as Electron's app is ready. Wrapped in a
+// function so we can call it from app.whenReady (where `screen` is
+// guaranteed initialized) without polluting module load order.
+function bindMonitorChangeInvalidator() {
+  try {
+    const sc = getScreen();
+    sc.on('display-added',           (_e, d) => clearPsWorkAreaCache(`display-added id=${d?.id}`));
+    sc.on('display-removed',         (_e, d) => clearPsWorkAreaCache(`display-removed id=${d?.id}`));
+    sc.on('display-metrics-changed', (_e, d, changed) => clearPsWorkAreaCache(`display-metrics-changed id=${d?.id} changed=${(changed||[]).join(',')}`));
+  } catch (e) {
+    log.warn('[tile-cache] could not bind screen events:', e?.message);
+  }
+}
+
 /**
- * ONE place that prepares the QL_SCREEN_* env block for EVERY PS window
- * placement call. Electron's monitor enumeration is the single source of
- * truth; PS's own System.Windows.Forms.Screen order can differ and has
- * caused "monitor 1 vs 2" flip-flopping across the card / node / deck /
- * snap paths.
+ * ONE place that prepares the env block for EVERY PS window placement call.
  *
- * ── Coordinate system conversion ──────────────────────────────────
- * Electron reports in its own DIP space where:
- *   - Each display has its native DIP size (bounds.width/height at its scale)
- *   - Positions accumulate in a unified space based on PRIMARY's scale
+ * ── Coordinate system reality (2026-04 update) ──────────────────────
+ * The earlier comment claimed Electron DIP and DPI-unaware PS shared a
+ * coord system. They DON'T, in cross-DPI multi-monitor setups:
  *
- * PS (per-monitor aware, default on Windows 10+) uses PHYSICAL pixels for
- * MoveWindow. Passing Electron DIPs directly puts windows on the wrong
- * physical monitor whenever primary ≠ secondary DPI. Example:
- *   Electron: secondary starts at DIP x=1536 (primary is 1536 DIP wide)
- *   PS phys : secondary starts at px 1920  (primary is 1920 physical wide)
- *   1536 ≠ 1920 → window lands on primary's right edge, not secondary.
+ *   Setup: primary 1920×1080 @ 125%, secondary 1920×1080 @ 100%, side-by-side
  *
- * Translation rule (verified against this user's setup):
- *   phys_x = dip_x * primary_scale    (positions use primary scale)
- *   phys_y = dip_y * primary_scale
- *   phys_w = dip_w * display_scale    (sizes use each display's own scale)
- *   phys_h = dip_h * display_scale
+ *   Electron DIP space (contiguous):
+ *     mon#1 = (0..1536, 0..864)          ← 1920/1.25 = 1536
+ *     mon#2 = (1536..3456, 0..1080)
+ *
+ *   DPI-unaware PS space (gap on secondary because Windows lays out the
+ *   virtual canvas using PHYSICAL distances from primary's right edge):
+ *     mon#1 = (0..1536, 0..864)
+ *     gap   = (1536..1920) ← no monitor here
+ *     mon#2 = (1920..3840, 0..1080)
+ *
+ *   So Electron's mon#2 DIP X=1536 lands in the GAP for PS, not on mon#2.
+ *
+ * Old fix (passing QL_SCREEN_X = electron DIP) accidentally worked when
+ * primary scale = 100% (no gap) or only the primary was targeted. It
+ * silently broke every cross-DPI secondary tile.
+ *
+ * New rule: PS queries its OWN enumeration for work-area coords (those
+ * are already in the unaware coord space). We just tell PS WHICH monitor
+ * via QL_MONITOR (index) + QL_MONITOR_PRIMARY (flag) for sanity check.
+ * QL_SCREEN_* still emitted for diagnostic / legacy fallback.
  */
 function monitorEnvFor(monitorIndex) {
   const screen   = getScreen();
@@ -155,19 +353,8 @@ function monitorEnvFor(monitorIndex) {
     : primary;
   const wa = disp.workArea;
 
-  // IMPORTANT — pass raw Electron DIP values, NOT physical pixels.
-  //
-  // PS runs DPI-unaware, which means Windows already virtualizes its
-  // coordinate system to primary's DIP space. When we call MoveWindow with
-  // value X, Windows multiplies by primary.scaleFactor to get physical.
-  // If we ALSO multiply in this function, we double-scale:
-  //   Electron DIP 1536 → (we ×1.25) → PS 1920 → (Windows ×1.25) → physical 2400
-  // and the window lands ~500 px past the monitor's right edge.
-  //
-  // Electron's DIP numbers happen to match exactly what the DPI-unaware PS
-  // process sees — both coordinate systems are "primary-scale-virtualized
-  // DIP". Hand the values off unchanged and Windows does the right thing
-  // for every monitor regardless of its DPI.
+  // QL_SCREEN_* are now DIP-space DIAGNOSTIC values. PS no longer treats
+  // them as authoritative for placement — see _Position.ps1 Get-NativeWorkArea.
   const physX = wa.x;
   const physY = wa.y;
   const physW = wa.width;
@@ -202,11 +389,22 @@ function monitorEnvFor(monitorIndex) {
   });
 
   return {
+    // Diagnostic only — DIP coords. PS doesn't use these for placement.
     QL_SCREEN_X: String(physX),
     QL_SCREEN_Y: String(physY),
     QL_SCREEN_W: String(physW),
     QL_SCREEN_H: String(physH),
-    QL_MONITOR:  String(monitorIndex ?? 0),
+    // The actual selectors. PS picks the screen by index, then sanity-checks
+    // that PS's enumeration agrees with Electron about whether it's primary.
+    // If they disagree (rare — happens with rearranged displays), PS falls
+    // back to searching by primary flag.
+    QL_MONITOR:           String(monitorIndex ?? 0),
+    QL_MONITOR_PRIMARY:   disp.id === primary.id ? 'True' : 'False',
+    QL_MONITOR_DIP_X:     String(wa.x),
+    QL_MONITOR_DIP_Y:     String(wa.y),
+    QL_MONITOR_DIP_W:     String(wa.width),
+    QL_MONITOR_DIP_H:     String(wa.height),
+    QL_MONITOR_SCALE:     String(disp.scaleFactor),
     // 0 = unsafe to overshoot (different-DPI neighbour). 8 = safe.
     QL_BORDER_LEFT:   touchesMismatched('left')   ? '0' : '8',
     QL_BORDER_RIGHT:  touchesMismatched('right')  ? '0' : '8',
@@ -360,15 +558,50 @@ const extServer = http.createServer((req, res) => {
       res.end('ok');
     });
   } else if (req.url === '/events') {
-    // Extension opens a long-lived SSE channel to receive commands
+    // Extension opens a long-lived SSE channel to receive commands.
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection':   'keep-alive',
+      // Disable Node's default response timeout — SSE is meant to be
+      // long-lived. Without this, some proxies / antivirus shims will
+      // tear the stream down after the default ~2 min idle window.
+      'X-Accel-Buffering': 'no',
     });
+    // Make sure the socket itself doesn't get garbage-collected by a
+    // keep-alive idle timeout on the Node http server. Same intent
+    // as the header above; belt + suspenders.
+    res.socket?.setKeepAlive?.(true, 15000);
+    res.socket?.setTimeout?.(0);
     sseConnection = res;
     lastExtensionConnectedAt = Date.now();
-    req.on('close', () => { if (sseConnection === res) sseConnection = null; });
+
+    // Periodic heartbeat. SSE comment lines (start with `:`) are
+    // ignored by every spec-compliant parser, so the extension's
+    // ReadableStream reader sees a `read()` resolution every 15 s
+    // but no `data:` event fires. That's enough to keep Chrome's
+    // MV3 service worker classified as "active" — without it the
+    // SW idles out after ~30 s of no traffic and Chrome terminates
+    // it, taking any pending setTimeout reconnect with it. After
+    // nost auto-update the user would then see the extension
+    // permanently disconnected until they triggered some unrelated
+    // tab event that woke the SW.
+    const heartbeat = setInterval(() => {
+      // Write only while the response is still writable. If the
+      // socket closed between intervals we'd otherwise crash with
+      // "write after end".
+      if (res.writableEnded || res.destroyed) {
+        clearInterval(heartbeat);
+        return;
+      }
+      try { res.write(`: heartbeat ${Date.now()}\n\n`); }
+      catch { clearInterval(heartbeat); }
+    }, 15000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      if (sseConnection === res) sseConnection = null;
+    });
   } else {
     res.writeHead(404); res.end();
   }
@@ -471,45 +704,184 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+  app.on('second-instance', (_event, argv) => {
+    // Custom-scheme deep-link arrives here on Windows because the
+    // already-running primary instance receives the OS launch via
+    // single-instance lock. Look for the nost:// URL in argv.
+    const deepLink = argv.find(a => typeof a === 'string' && a.startsWith('nost://'));
+    if (deepLink) handleDeepLink(deepLink);
+    if (mainWindow) {
+      moveToCursorMonitor();
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
 }
 
-// ── 8. Splash Window ─────────────────────────────────────────────────
+// ── Custom URL Scheme: nost:// ──────────────────────────────────────
+// Used for OAuth callbacks (Supabase auth → external browser →
+// system hands the redirect back to us via this scheme). On Windows
+// the OS launches a fresh exe with the URL in argv; the single-
+// instance lock above forwards it to the running primary instance.
+// On macOS the 'open-url' event delivers it directly.
+if (process.defaultApp) {
+  // Dev mode: the executable is electron.exe and the script is argv[1].
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('nost', process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('nost');
+}
 
-function createLoadingWindow() {
-  loadingWindow = new BrowserWindow({
-    width: 300, height: 210,
+app.on('open-url', (event, url) => {
+  // macOS path
+  event.preventDefault();
+  handleDeepLink(url);
+});
+
+function handleDeepLink(url) {
+  // Parse fragment / query for OAuth tokens. Supabase returns tokens
+  // either in the URL fragment (#access_token=…) or query, depending
+  // on the flow. Forward whatever we get to the renderer; the auth
+  // state machine there extracts what it needs and calls
+  // supabase.auth.setSession.
+  log.info('[deep-link]', url);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    mainWindow.webContents.send('auth:deep-link', url);
+  } else {
+    // Stash for the renderer-ready event to consume
+    pendingDeepLink = url;
+  }
+}
+let pendingDeepLink = null;
+
+// ── 8. Splash Window ─────────────────────────────────────────────────
+// (removed) The external splash BrowserWindow used to be created here
+// while mainWindow loaded its frontend. We unified onto a single
+// loading surface: the in-window `#ql-loading` overlay defined in
+// `frontend/index.html`. mainWindow is now shown on `ready-to-show`
+// (same ~240 ms cold-start gate) so the user sees that overlay
+// directly, with no two-stage transition. Recovery UI (restart /
+// open-logs) lives inside the same overlay — see force-show-error
+// IPC below and the `#ql-loading` markup in index.html.
+// Stub: previously created an external glass splash BrowserWindow.
+// We now rely solely on the in-window `#ql-loading` overlay (see
+// frontend/index.html); mainWindow is shown on `ready-to-show` so
+// the user sees that overlay directly. Function kept (no-op) so any
+// stragglers calling it don't ReferenceError.
+function createLoadingWindow() { /* no-op — unified onto #ql-loading */ }
+
+// Dead code below preserved temporarily so commit history shows
+// what the splash markup looked like; safe to delete in a follow-up.
+function _unused_legacySplashMarkup() {  // eslint-disable-line no-unused-vars
+  const loadingWindow = new BrowserWindow({
+    // Match the rough proportions of the in-window #ql-loading overlay
+    // (frontend/index.html). The user found phase 2's design more on-
+    // brand, so phase 1 (this external splash) was redesigned to share
+    // the same visual language: dark surface, square SVG logo, thin
+    // 2-px progress bar — no light glassmorphism, no gradient text,
+    // no spinner ring, no tips. Error-state retains its own buttons.
+    width: 240, height: 180,
     show: true, frame: false, transparent: true,
     resizable: false, alwaysOnTop: true, skipTaskbar: true, center: true,
-    webPreferences: { nodeIntegration: false, contextIsolation: true },
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload-splash.js'),
+    },
   });
 
   const html = encodeURIComponent(`<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
-html,body{width:100%;height:100%;background:transparent}
-body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%);-webkit-backdrop-filter:blur(40px) saturate(180%);border:1px solid rgba(255,255,255,0.9);box-shadow:0 8px 32px rgba(0,0,0,0.12),0 2px 8px rgba(0,0,0,0.08),inset 0 1px 0 #fff;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;user-select:none;-webkit-app-region:no-drag}
-.logo{font-size:34px;font-weight:800;letter-spacing:-2px;background:linear-gradient(135deg,#6366f1 0%,#818cf8 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.sub{font-size:11px;color:rgba(80,80,120,0.55);margin-top:5px;letter-spacing:0.5px;font-weight:500}
-.ring{margin-top:18px;width:22px;height:22px;border:2.5px solid rgba(99,102,241,0.18);border-top-color:#6366f1;border-radius:50%;animation:spin 0.75s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.tip{margin-top:20px;padding:8px 14px;background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.15);border-radius:8px;font-size:10px;color:rgba(80,80,120,0.65);line-height:1.5;text-align:center;max-width:240px;animation:fadeIn 0.6s ease 0.3s both}
-@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-.tip-label{font-size:9px;color:rgba(99,102,241,0.6);font-weight:600;letter-spacing:0.5px;margin-bottom:3px}
+html,body{width:100%;height:100%;background:transparent;overflow:hidden;user-select:none}
+body{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;
+  height:100vh;
+  background:rgba(5,5,8,0.97);
+  border:1px solid rgba(255,255,255,0.07);
+  border-radius:14px;
+  font-family:'Pretendard Variable',Pretendard,'Segoe UI',system-ui,sans-serif;
+  -webkit-app-region:drag;
+}
+.logo{
+  width:40px;height:40px;border-radius:12px;
+  background:rgba(99,102,241,0.12);
+  border:1px solid rgba(99,102,241,0.2);
+  display:flex;align-items:center;justify-content:center;
+  -webkit-app-region:no-drag;
+}
+.bar-wrap{
+  width:120px;height:2px;border-radius:99px;
+  background:rgba(255,255,255,0.06);overflow:hidden;
+}
+.bar{
+  height:100%;width:0%;border-radius:99px;
+  background:rgba(99,102,241,0.7);
+  animation:bar-init 1.2s cubic-bezier(0.4,0,0.2,1) forwards;
+}
+@keyframes bar-init{from{width:0%}to{width:35%}}
+.text{font-size:12px;color:rgba(255,255,255,0.3);letter-spacing:0.02em}
+.err-msg{font-size:11px;color:rgba(248,113,113,0.92);text-align:center;line-height:1.5;padding:0 14px}
+.err-actions{display:flex;gap:8px;-webkit-app-region:no-drag}
+.btn{
+  font-family:inherit;font-size:11px;padding:6px 12px;border-radius:6px;
+  border:1px solid rgba(255,255,255,0.08);
+  background:rgba(255,255,255,0.04);
+  color:rgba(255,255,255,0.7);cursor:pointer;font-weight:500;
+}
+.btn:hover{background:rgba(99,102,241,0.16);border-color:rgba(99,102,241,0.35)}
+.btn.primary{
+  background:rgba(99,102,241,0.7);color:#fff;border-color:transparent;
+}
+.btn.primary:hover{background:rgba(99,102,241,0.85)}
+.hidden{display:none}
 </style></head>
 <body>
-  <div class="logo">nost</div>
-  <div class="sub" id="ql-status">시작하는 중...</div>
-  <div class="ring"></div>
-  <div class="tip"><div class="tip-label">💡 팁</div>${getRandomTip()}</div>
+  <div id="loading-state" style="display:flex;flex-direction:column;align-items:center;gap:20px">
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(99, 102, 241, 0.9)"/>
+      </svg>
+    </div>
+    <div class="bar-wrap"><div class="bar"></div></div>
+    <div class="text">불러오는 중...</div>
+  </div>
+  <div id="error-state" class="hidden" style="flex-direction:column;align-items:center;gap:14px">
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M 116 418 L 116 196 Q 116 88 256 88 Q 396 88 396 196 L 396 418 L 326 418 L 326 212 Q 326 158 256 158 Q 186 158 186 212 L 186 418 Z" fill="rgba(248, 113, 113, 0.9)"/>
+      </svg>
+    </div>
+    <div class="err-msg">앱이 시작되지 못했어요.<br>네트워크 또는 데이터 폴더 문제일 수 있어요.</div>
+    <div class="err-actions">
+      <button class="btn" id="btn-logs">로그 보기</button>
+      <button class="btn primary" id="btn-restart">재시작</button>
+    </div>
+  </div>
+  <script>
+    // Toggle to error state when main signals it. preload exposes
+    // splashAPI; if missing (older bundle) we silently no-op.
+    if (window.splashAPI && window.splashAPI.onError) {
+      window.splashAPI.onError(() => {
+        document.getElementById('loading-state').classList.add('hidden');
+        const err = document.getElementById('error-state');
+        err.classList.remove('hidden');
+        err.style.display = 'flex';
+      });
+      document.getElementById('btn-restart').addEventListener('click', () => window.splashAPI.restart());
+      document.getElementById('btn-logs').addEventListener('click', () => window.splashAPI.openLogs());
+    }
+  </script>
 </body></html>`);
 
   loadingWindow.loadURL(`data:text/html;charset=utf-8,${html}`);
 }
 
 // ── 9. Main Window ────────────────────────────────────────────────────
+//   (closing brace for the _unused_legacySplashMarkup wrapper above)
 
 /**
  * Register (or re-register) the global toggle shortcut.
@@ -537,6 +909,34 @@ body{background:rgba(255,255,255,0.72);backdrop-filter:blur(40px) saturate(180%)
  * back to the original bounds in the same tick so the user never sees the
  * jiggle.
  */
+/**
+ * Move mainWindow to the display the cursor is on, centered in its
+ * work area. Spotlight/Raycast-style "follows me" behavior. Cheap —
+ * one screen lookup + one setBounds. Skip if window already on the
+ * right display to avoid pointless setBounds churn.
+ *
+ * Why centered: the user's natural gaze is roughly center of screen
+ * when they hit the shortcut. Anchoring elsewhere (last position) on
+ * a monitor they aren't using means hunting.
+ */
+function moveToCursorMonitor() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    const sc = getScreen();
+    const cursor = sc.getCursorScreenPoint();
+    const target = sc.getDisplayNearestPoint(cursor);
+    const cur = sc.getDisplayMatching(mainWindow.getBounds());
+    if (cur && cur.id === target.id) return; // already on the right monitor
+    const wa = target.workArea;
+    const b = mainWindow.getBounds();
+    const x = wa.x + Math.round((wa.width - b.width) / 2);
+    const y = wa.y + Math.round((wa.height - b.height) / 2);
+    mainWindow.setBounds({ x, y, width: b.width, height: b.height });
+  } catch (e) {
+    log.debug('[moveToCursorMonitor]', e?.message);
+  }
+}
+
 function recoverTransparentBacking(win) {
   if (!win || win.isDestroyed()) return;
   try {
@@ -554,13 +954,64 @@ function toggleMainWindow() {
   _toggleLocked = true;
   setTimeout(() => { _toggleLocked = false; }, 150);
 
+  // Show-path timing for the lag investigation (decision 7 — user
+  // reported lag is most felt on app show). t0 = entry, t1 = post-
+  // moveToCursorMonitor, t2 = post-show, t3 = post-recover. Logged
+  // at debug level, easy to grep in main.log.
+  const tStart = Date.now();
+
   try {
     if (mainWindow.isVisible()) {
+      // Capture position right before hide so the 'last' open-at mode
+      // has a coordinate to restore. Even if the user has 'cursor'
+      // mode selected we still record it — flipping the mode later
+      // shouldn't require a hide/show cycle to seed the value.
+      try {
+        const b = mainWindow.getBounds();
+        lastUserPosition = { x: b.x, y: b.y, width: b.width, height: b.height };
+      } catch (_) { /* getBounds shouldn't throw, but be safe */ }
       mainWindow.hide();
     } else {
+      if (cachedWindowOpenAt === 'last' && lastUserPosition) {
+        // Restore the prior position. We still re-apply the saved
+        // size after, because the user may have resized via /N
+        // slider while hidden and we want the new size honored.
+        // Clamp x/y so a stored position from a monitor that's
+        // since been unplugged falls back to a visible spot.
+        try {
+          const sc = getScreen();
+          const disp = sc.getDisplayMatching({
+            x: lastUserPosition.x, y: lastUserPosition.y,
+            width: lastUserPosition.width, height: lastUserPosition.height,
+          });
+          const wa = disp.workArea;
+          let x = lastUserPosition.x;
+          let y = lastUserPosition.y;
+          if (x + lastUserPosition.width  > wa.x + wa.width)  x = wa.x + wa.width  - lastUserPosition.width;
+          if (y + lastUserPosition.height > wa.y + wa.height) y = wa.y + wa.height - lastUserPosition.height;
+          if (x < wa.x) x = wa.x;
+          if (y < wa.y) y = wa.y;
+          mainWindow.setBounds({ x, y, width: lastUserPosition.width, height: lastUserPosition.height });
+        } catch (e) {
+          log.debug('[restore-last-position]', e?.message);
+          moveToCursorMonitor();   // fall back to the cursor strategy
+        }
+      } else {
+        moveToCursorMonitor();
+      }
+      // Re-apply the saved size every time we pop in. moveToCursorMonitor
+      // may have parked the window on a different display (different
+      // work area), and the user may have changed `windowSizePct`
+      // while we were hidden — both paths land here. applyWindowSizePct
+      // recomputes against the *current* monitor's work area.
+      applyWindowSizePct(mainWindow, cachedWindowSizePct);
+      const tMove = Date.now();
       mainWindow.show();
       mainWindow.focus();
+      const tShow = Date.now();
       recoverTransparentBacking(mainWindow);
+      const tRec = Date.now();
+      log.debug(`[show-path] move=${tMove - tStart}ms show=${tShow - tMove}ms recover=${tRec - tShow}ms total=${tRec - tStart}ms`);
     }
   } catch (e) {
     console.warn('[toggleMainWindow]', e.message);
@@ -615,6 +1066,62 @@ function centeredBounds(pct = 75) {
   };
 }
 
+/**
+ * SSOT for launcher resizing. Used by:
+ *   - cold-start (createWindow reads cachedWindowSizePct)
+ *   - showMainWindow (re-applies before show so an in-hidden settings
+ *     change takes effect on the next pop-in)
+ *   - `set-window-size-pct` IPC (status bar slider, preset dropdown,
+ *     settings dialog)
+ *   - `resize-active-window` IPC (`/N` slash command)
+ *
+ * Picks the work area of whichever display the window currently sits
+ * on (matches `/N`'s historical behaviour) and centers within it.
+ * `pct >= 100` collapses to "fill work area" so the slash `/100`
+ * still produces an exactly-fit window with no rounding wobble.
+ */
+function applyWindowSizePct(win, pct) {
+  if (!win || win.isDestroyed()) return;
+  const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
+  let wa;
+  try {
+    wa = getScreen().getDisplayMatching(win.getBounds()).workArea;
+  } catch {
+    wa = getScreen().getPrimaryDisplay().workArea;
+  }
+  if (clamped >= 100) {
+    win.setBounds({ x: wa.x, y: wa.y, width: wa.width, height: wa.height }, true);
+    return;
+  }
+  const w = Math.round(wa.width  * clamped / 100);
+  const h = Math.round(wa.height * clamped / 100);
+  win.setBounds({
+    x: wa.x + Math.round((wa.width  - w) / 2),
+    y: wa.y + Math.round((wa.height - h) / 2),
+    width: w, height: h,
+  }, true);
+}
+
+/**
+ * Write the size percentage into electron-store's appData.settings.
+ * Done from main (rather than asking the renderer to round-trip the
+ * full settings object) so origin-of-the-mutation doesn't matter:
+ * `/N` typed in the renderer command bar, the status-bar slider, the
+ * settings dialog preset, and the IPC handler all converge on the
+ * same persistence path. The renderer's reactive store will pick up
+ * the new value on its next load (and immediately for the
+ * `set-window-size-pct` flow because the renderer drove the change).
+ */
+function persistWindowSizePct(pct) {
+  try {
+    const data = store.get('appData') || {};
+    data.settings = { ...(data.settings || {}), windowSizePct: pct };
+    store.set('appData', data);
+  } catch (e) {
+    log.warn('[window-size] persist failed', e?.message);
+  }
+}
+
 // ── Floating orb window (Phase 1 MVP) ────────────────────────────────
 //
 // A separate always-on-top, frameless, transparent BrowserWindow that hosts
@@ -635,8 +1142,18 @@ function centeredBounds(pct = 75) {
 // hover (when the halo is at its widest) without wasting screen real estate.
 const FLOATING_ORB_GLOW_PAD = 22;
 
+// Accept either a numeric pixel size (current schema) or a legacy enum
+// ('small' / 'normal') from older settings blobs. Clamp to a sane range so a
+// corrupt store can't render a 1×1 or 2000×2000 orb.
 function floatingWindowSizeFor(sizePreset) {
-  const orbPx = sizePreset === 'small' ? 40 : 48;
+  let orbPx;
+  if (typeof sizePreset === 'number' && Number.isFinite(sizePreset)) {
+    orbPx = Math.max(24, Math.min(96, Math.round(sizePreset)));
+  } else if (sizePreset === 'small') {
+    orbPx = 40;
+  } else {
+    orbPx = 48;
+  }
   const winPx = orbPx + FLOATING_ORB_GLOW_PAD * 2;
   return { orbPx, winPx };
 }
@@ -773,31 +1290,268 @@ function refreshFloatingVisuals() {
   });
 }
 
-// ── Floating badges overlay (Phase 2) ────────────────────────────────
+// ── Save-As dialog companion popup ───────────────────────────────────
 //
-// A SINGLE transparent always-on-top BrowserWindow that spans the union of
-// all displays and hosts every pinned badge (space / node / deck). The
-// RAM-cheap alternative to spawning one BrowserWindow per badge.
+// A small frameless BrowserWindow that pops up above whichever Windows
+// file dialog (#32770) is in the foreground. Its UI is two-level:
+//   L1: chips per space (with folder-card count badges)
+//   L2: chips per folder card inside the picked space
+// Click a folder → reuse the existing jump-to-dialog-folder pipeline
+// (clipboard paste, Unicode-safe).
 //
-// Click-through: the window runs with `setIgnoreMouseEvents(true, {forward: true})`
-// so mouse events pass through empty regions. Renderer flips capture off while
-// the pointer hovers a badge rect (via `badges-set-capture` IPC) and flips it
-// back on when the pointer leaves.
+// Lifecycle is event-driven from main: a 600 ms detect-dialog poll spawns
+// the window when a dialog appears, repositions it as the dialog moves,
+// and destroys it when the dialog closes. The renderer never controls
+// its own visibility — it only handles "user clicked ✕" via dialog-popup-
+// dismiss IPC.
 
-/** Bounding box of the virtual desktop (union of all display bounds). */
-function getVirtualDesktopBounds() {
-  const displays = getScreen().getAllDisplays();
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const d of displays) {
-    const b = d.bounds;
-    if (b.x < minX) minX = b.x;
-    if (b.y < minY) minY = b.y;
-    if (b.x + b.width  > maxX) maxX = b.x + b.width;
-    if (b.y + b.height > maxY) maxY = b.y + b.height;
-  }
-  if (!isFinite(minX)) return { x: 0, y: 0, width: 1920, height: 1080 };
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+// The popup BrowserWindow is ALWAYS this tall. The visible chip strip
+// only occupies the top DIALOG_POPUP_STRIP_HEIGHT pixels — the rest is
+// transparent + click-through so the dropdown menu has room to open
+// without dynamic resize. Dynamic setBounds-based expansion was flaky
+// (some DPI configs and screen-edge clamps left the window at the
+// original 50 px even after a setBounds call), and a fixed-size window
+// with click-through is the same pattern badges use successfully.
+const DIALOG_POPUP_HEIGHT       = 220;  // total BrowserWindow height
+const DIALOG_POPUP_STRIP_HEIGHT = 50;   // visible chip-strip portion
+const DIALOG_POPUP_OFFSET       = 6;    // gap between strip bottom and dialog top
+const DIALOG_POLL_MS            = 600;  // detection poll cadence
+
+let dialogLastRect = null;
+
+function buildDialogPopupState() {
+  // We send ALL presets so the popup can offer in-popup preset switching
+  // ("프리셋 1·2·3") without mutating the global active preset. Each preset
+  // is reduced to just the spaces+folder-cards the popup needs to render.
+  //
+  // Note: the legacy "시스템" pseudo-space (Downloads/Desktop/Documents)
+  // was removed. It confused users — the popup is meant to surface their
+  // OWN spaces, and Windows itself already pins those folders in the
+  // dialog's left nav. `systemFolders: []` is preserved in the payload
+  // shape for backwards compat with any cached renderer build that still
+  // reads it.
+  const data = store.get('appData') || {};
+  const presets = Array.isArray(data.presets) ? data.presets : [];
+
+  const slimSpace = (s) => ({
+    id: s.id,
+    name: s.name || '이름 없음',
+    icon: s.icon,
+    color: s.color,
+    folders: (s.items || [])
+      .filter(i => i.type === 'folder' && i.value)
+      .map(i => ({ id: i.id, title: i.title || i.value, path: i.value })),
+  });
+
+  return {
+    systemFolders: [],
+    activePresetId: data.activePresetId,
+    presets: presets.map(p => ({
+      id: p.id,
+      label: p.label || `프리셋 ${p.id}`,
+      spaces: (p.spaces || []).map(slimSpace),
+    })),
+  };
 }
+
+function pushDialogPopupState(extra = {}) {
+  if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+  const base = buildDialogPopupState();
+  dialogPopupWin.webContents.send('dialog-popup-state', { ...base, ...extra });
+}
+
+function destroyDialogPopupWindow() {
+  if (dialogPopupWin && !dialogPopupWin.isDestroyed()) {
+    dialogPopupWin.destroy();
+  }
+  dialogPopupWin = null;
+}
+
+// Approximate Windows Save-As dialog title-bar height in DIP. The popup
+// strip is parked at the bottom of the title bar so it visually sits
+// "right above the address bar" — the title bar still drag-handles work
+// (we don't capture pointer events on the strip's transparent area), but
+// the chips no longer require the user to look up and away from where
+// they're typing the filename. Empirically 30 px is a tight fit at the
+// usual 100% scale; bumped slightly so high-contrast themes that
+// thicken the title bar still don't clip the navigation strip below.
+const DIALOG_POPUP_TITLEBAR_PX = 32;
+
+function positionDialogPopup(rect) {
+  if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
+  dialogLastRect = rect;
+  // Popup width — independent of dialog width.
+  //   - floor 720 px: a typical 520 px Save-As used to give us a 520 px
+  //     popup and chips clipped silently behind a hidden scrollbar
+  //   - ceiling 1100 px: anything wider feels disproportionate to the
+  //     dialog and visually competes with it for attention
+  //   - dialog.width + 240 in between gives a slight buffer so the
+  //     chip strip extends a little past the dialog right edge
+  //     (mirrors most macOS-style toolbar overhang patterns)
+  const width  = Math.max(720, Math.min(rect.width + 240, 1100));
+  // LEFT-ALIGN with the dialog — and ONLY that. Earlier design
+  // centred the popup inside the dialog, which created a visible
+  // gap on the popup's left when the dialog was wider than the
+  // popup. Left-aligning makes the chip strip share a hard edge
+  // with the dialog's left side, regardless of either's width.
+  //
+  // Deliberately NO horizontal work-area clamp: an earlier clamp
+  // tried to slide the popup left when it would overflow the right
+  // edge of the screen, but doing so reintroduces the exact
+  // misalignment we're trying to kill (popup moves; dialog
+  // doesn't → mis-anchored toolbar). If the popup truly extends
+  // past the screen edge, the inner chip row's own
+  // `overflowX: auto` handles horizontal scroll for the chips
+  // themselves. Robust left-anchor > clever clamp.
+  const x = Math.round(rect.x);
+  // Anchor the chip strip's bottom edge to just inside the dialog —
+  // overlapping the title bar (which is fixed chrome) by ~32 px so the
+  // strip sits directly above the navigation / address bar that lives
+  // immediately below the title. Earlier design placed the strip
+  // entirely above the dialog (rect.y - STRIP - 6) which left a large
+  // visual gap and made the user's eye dart up-and-back-down between
+  // chips and the address input.
+  const y = Math.round(rect.y + DIALOG_POPUP_TITLEBAR_PX - DIALOG_POPUP_STRIP_HEIGHT);
+  try {
+    dialogPopupWin.setBounds({ x, y, width, height: DIALOG_POPUP_HEIGHT });
+  } catch (_) { /* dialog moved off-screen mid-set; ignore */ }
+}
+
+function createDialogPopupWindow(rect, dialogTitle) {
+  if (dialogPopupWin && !dialogPopupWin.isDestroyed()) return dialogPopupWin;
+
+  // Memory-only session — the popup is short-lived per dialog and we don't
+  // want it polluting the default cache.
+  const dpSession = session.fromPartition('dialog-popup-memory');
+  try {
+    dpSession.clearCache();
+    dpSession.clearStorageData({ storages: ['cachestorage', 'cookies', 'localstorage'] }).catch(() => {});
+  } catch (_) {}
+
+  dialogPopupWin = new BrowserWindow({
+    width: Math.max(420, Math.min(rect?.width ?? 480, 900)),
+    height: DIALOG_POPUP_HEIGHT,
+    x: 0, y: 0,
+    frame: false, transparent: true, resizable: false,
+    alwaysOnTop: true, skipTaskbar: true, focusable: false,
+    hasShadow: false, show: false, useContentSize: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-dialog-popup.js'),
+      contextIsolation: true,
+      session: dpSession,
+    },
+  });
+  dialogPopupWin.setAlwaysOnTop(true, 'screen-saver');
+  dialogPopupWin.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+  // Click-through by default. The renderer flips this off (capture on)
+  // when the pointer moves over the chip strip or open dropdown menu,
+  // and back on when the pointer leaves — same pattern badges overlay
+  // uses. Without this the bottom 170 px (transparent area where the
+  // menu opens) would still capture clicks meant for the dialog.
+  dialogPopupWin.setIgnoreMouseEvents(true, { forward: true });
+
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
+  if (rendererUrl) {
+    dialogPopupWin.loadURL(`${rendererUrl}/dialog-popup.html`);
+  } else {
+    dialogPopupWin.loadFile(path.join(__dirname, 'frontend', 'dist', 'dialog-popup.html'));
+  }
+
+  dialogPopupWin.once('ready-to-show', () => {
+    if (rect) positionDialogPopup(rect);
+    pushDialogPopupState({ dialogTitle });
+    dialogPopupWin.show();
+  });
+
+  dialogPopupWin.on('closed', () => { dialogPopupWin = null; });
+  return dialogPopupWin;
+}
+
+/**
+ * Tick the dialog poll. Fired every DIALOG_POLL_MS. Decides whether to
+ * spawn / reposition / destroy the popup based on what's currently in the
+ * foreground.
+ */
+async function tickDialogPoll() {
+  // Native koffi-bound user32 call (~10-50 µs) replaces the PowerShell
+  // spawn (~50-200 ms). Falls back to the PS script ONLY if the native
+  // path failed to initialise (e.g. koffi load error on a weird OS).
+  let detected = foregroundWindow.detect();
+  if (!detected) {
+    try {
+      const { stdout } = await runPsAsync('detect-dialog.ps1', {}, { timeout: 4000 });
+      detected = JSON.parse(stdout.trim());
+    } catch {
+      return; // PS fallback also hiccupped — skip tick.
+    }
+  }
+
+  if (!detected || !detected.isDialog) {
+    // No dialog currently focused. Tear down if we had one up.
+    if (dialogPopupWin && !dialogPopupWin.isDestroyed()) {
+      destroyDialogPopupWindow();
+    }
+    dialogTrackedHwnd = 0;
+    // Reset dismiss flag once the user moves on — they get a fresh popup
+    // for the next dialog.
+    if (dialogDismissedHwnd) dialogDismissedHwnd = 0;
+    return;
+  }
+
+  // The #32770 class is shared by file dialogs AND non-file dialogs
+  // (Properties / Print / Font / Color etc.) — blacklist the latter
+  // rather than whitelist file ones, because file-dialog titles vary
+  // wildly across apps and locales (Save As, Open, Browse for Folder,
+  // Choose File, Upload, 폴더 선택, 첨부할 파일, 업로드할 파일,
+  // 가져오기, 내보내기, 파일 선택, etc.). A whitelist kept missing
+  // common dialogs the user actually wanted the popup for.
+  const t = (detected.title || '');
+  const looksLikeNonFileDialog = /속성|Properties|인쇄|Print|글꼴|Font|색|Color|페이지 설정|Page Setup|보안 경고|Security|확인|Confirm/i.test(t);
+  if (looksLikeNonFileDialog) {
+    if (dialogPopupWin && !dialogPopupWin.isDestroyed()) destroyDialogPopupWindow();
+    dialogTrackedHwnd = 0;
+    return;
+  }
+
+  // User dismissed THIS dialog's popup — don't reattach.
+  if (detected.hwnd && detected.hwnd === dialogDismissedHwnd) return;
+
+  if (!dialogPopupWin || dialogPopupWin.isDestroyed()) {
+    createDialogPopupWindow(detected.rect, t);
+    dialogTrackedHwnd = detected.hwnd || 0;
+  } else if (detected.hwnd !== dialogTrackedHwnd) {
+    // Different dialog became foreground — reuse the popup, just refresh.
+    dialogTrackedHwnd = detected.hwnd || 0;
+    pushDialogPopupState({ dialogTitle: t });
+    if (detected.rect) positionDialogPopup(detected.rect);
+  } else {
+    // Same dialog — keep position synced (dialog might have been moved).
+    if (detected.rect) positionDialogPopup(detected.rect);
+  }
+}
+
+function startDialogPoll() {
+  if (dialogPollTimer) return;
+  dialogPollTimer = setInterval(tickDialogPoll, DIALOG_POLL_MS);
+}
+
+// ── Floating badges overlay (Phase 2 → Phase 3 multi-display) ───────
+//
+// PER-DISPLAY transparent always-on-top BrowserWindows hosting pinned
+// badges (space / node / deck). The Phase 2 design used a SINGLE window
+// spanning the union of all displays — RAM-cheap but broken on
+// cross-DPI multi-monitor setups: Electron renders the window at the
+// home display's DPR, then the OS maps those pixels 1:1 onto the other
+// display, producing wrong physical sizes and visible clipping on
+// secondaries. Per-display windows trade a few MB of RAM for correct
+// rendering on every display regardless of DPI.
+//
+// Click-through: each window runs with setIgnoreMouseEvents(true,
+// {forward: true}) so mouse events pass through empty regions.
+// Renderer flips capture off while the pointer hovers a badge rect
+// (via badges-set-capture IPC) and flips it back on when the pointer
+// leaves. Capture toggles are routed by sender so each overlay tracks
+// its own pointer independently.
 
 /**
  * Resolve every FloatingBadge in the store to the display-ready BadgeData
@@ -836,7 +1590,17 @@ function buildBadgePayload(data) {
   for (const b of badges) {
     if (b.refType === 'space') {
       const s = spaces.find(x => x.id === b.refId);
-      if (!s) continue;
+      if (!s) {
+        // Silently filtering a badge here is the difference between
+        // "user pinned 4 badges, sees 3" and "user pinned 4 badges,
+        // sees 3 with no idea why one's gone." Log so future badge-
+        // disappear reports can be triaged from main.log instead of
+        // guesswork. The badge entry stays in store (lazy hide), so
+        // restoring the referenced space (e.g. via undo) automatically
+        // brings it back on the next sync.
+        log.warn(`[badges] dangling space ref — badgeId=${b.id} refId=${b.refId} (badge hidden, store entry kept)`);
+        continue;
+      }
       // Hide container-absorbed cards (hiddenInSpace) and sort pinned first
       // so the mini-window matches what the user sees in the main grid.
       const visible = (s.items ?? []).filter(i => !i.hiddenInSpace);
@@ -857,7 +1621,10 @@ function buildBadgePayload(data) {
       });
     } else if (b.refType === 'node') {
       const n = nodes.find(x => x.id === b.refId);
-      if (!n) continue;
+      if (!n) {
+        log.warn(`[badges] dangling node ref — badgeId=${b.id} refId=${b.refId}`);
+        continue;
+      }
       const items = (n.itemIds ?? [])
         .map(id => allItems.get(id))
         .filter(Boolean)
@@ -867,14 +1634,20 @@ function buildBadgePayload(data) {
         x: b.x, y: b.y,
         label: n.name,
         color: '#a78bfa',
-        icon: 'hub',
+        // User-picked Material Symbol (NodePanel header picker) wins;
+        // fall back to the historic 'hub' default when absent so badges
+        // for nodes created before the picker shipped still render.
+        icon: n.icon || 'hub',
         iconIsEmoji: false,
         count: items.length,
         items,
       });
     } else if (b.refType === 'deck') {
       const d = decks.find(x => x.id === b.refId);
-      if (!d) continue;
+      if (!d) {
+        log.warn(`[badges] dangling deck ref — badgeId=${b.id} refId=${b.refId}`);
+        continue;
+      }
       const items = (d.itemIds ?? [])
         .map(id => allItems.get(id))
         .filter(Boolean)
@@ -903,33 +1676,97 @@ function isEmojiLike(s) {
   return true;
 }
 
-function pushBadgeState() {
-  if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+// ── Per-display badge overlay machinery ────────────────────────────
+//
+// One BrowserWindow per display. Each window is sized and positioned
+// to its host display's bounds, so the rendering DPR matches that
+// display 1:1 — eliminating the cross-DPI "canvas wrongly set" bug
+// where badges on a secondary monitor were being rendered at the
+// primary's DPR and then mapped without scaling onto the secondary's
+// physical pixels (they appeared too big or got clipped).
+
+/** Find the display whose bounds contain the given screen coord, or null. */
+function findDisplayForPoint(x, y) {
+  const displays = getScreen().getAllDisplays();
+  for (const d of displays) {
+    const b = d.bounds;
+    if (x >= b.x && x < b.x + b.width && y >= b.y && y < b.y + b.height) return d;
+  }
+  return null;
+}
+
+/** Reanchor a badge's stored position if it's stranded (no longer on any
+ *  visible display — e.g. the user unplugged the monitor it was pinned to).
+ *  Falls back to the bottom-right of the primary display's work area. */
+function sanitizeBadgePosition(badge) {
+  if (findDisplayForPoint(badge.x, badge.y)) return badge;
+  const wa = getScreen().getPrimaryDisplay().workArea;
+  return { ...badge, x: wa.x + wa.width - 120, y: wa.y + wa.height - 120 };
+}
+
+/** Push state to ONE overlay, filtering badges to those on its display. */
+function pushBadgeStateForDisplay(display, win) {
+  if (!win || win.isDestroyed()) return;
   const data = store.get('appData') || {};
-  const bounds = getVirtualDesktopBounds();
-  const badges = buildBadgePayload(data);
-  badgeOverlay.webContents.send('badges-state', {
-    badges,
-    overlayOrigin: { x: bounds.x, y: bounds.y },
-    overlaySize:   { width: bounds.width, height: bounds.height },
+  const allBadges = buildBadgePayload(data);
+
+  // Membership rule:
+  //   - badge whose stored screen-coord lies inside this display → show here
+  //   - badge whose coord is off every display ("stranded") → show on primary
+  //     so the user can still see + drag it back to where they want.
+  const primaryId = getScreen().getPrimaryDisplay().id;
+  const myBadges = allBadges.filter(b => {
+    const home = findDisplayForPoint(b.x, b.y);
+    if (home) return home.id === display.id;
+    return display.id === primaryId;
+  });
+
+  // Settings.badgeSize is the user-controlled pixel size of every badge
+  // bubble. Falling back to 46 matches the historical hardcoded constant
+  // in Badge.tsx so freshly migrated stores render unchanged. Pushing it
+  // alongside the badge list (rather than via a separate IPC channel)
+  // keeps the overlay's hydration path single-shot — one `badges-state`
+  // message and the renderer has everything it needs to draw.
+  const badgeSize = (data?.settings?.badgeSize ?? 46);
+
+  win.webContents.send('badges-state', {
+    badges:        myBadges,
+    overlayOrigin: { x: display.bounds.x, y: display.bounds.y },
+    overlaySize:   { width: display.bounds.width, height: display.bounds.height },
+    badgeSize,
   });
 }
 
-/** Destroy the overlay if it exists (called when no badges remain). */
-function destroyBadgeOverlay() {
-  if (badgeOverlay && !badgeOverlay.isDestroyed()) {
-    badgeOverlay.destroy();
+/** Push state to every overlay. Called whenever the badges store mutates. */
+function pushBadgeStateAll() {
+  if (badgeOverlays.size === 0) return;
+  const displays = getScreen().getAllDisplays();
+  for (const [displayId, win] of badgeOverlays) {
+    const display = displays.find(d => d.id === displayId);
+    if (!display) continue;
+    pushBadgeStateForDisplay(display, win);
   }
-  badgeOverlay = null;
 }
 
-function createBadgeOverlay() {
-  if (badgeOverlay && !badgeOverlay.isDestroyed()) return badgeOverlay;
-  const bounds = getVirtualDesktopBounds();
+/** Re-export under the legacy name so the surrounding mutateBadges /
+ *  display-event hooks don't need to know about the multi-overlay split. */
+function pushBadgeState() { pushBadgeStateAll(); }
 
-  // Dedicated session so Chromium doesn't contend over cache with the main
-  // window (same lesson as floating orb).
-  const badgeSession = session.fromPartition('badge-overlay-memory');
+function destroyAllBadgeOverlays() {
+  for (const win of badgeOverlays.values()) {
+    if (win && !win.isDestroyed()) win.destroy();
+  }
+  badgeOverlays.clear();
+}
+
+function createBadgeOverlayForDisplay(display) {
+  if (badgeOverlays.has(display.id)) return badgeOverlays.get(display.id);
+
+  // Per-display session partition — same isolation rationale as the
+  // single-overlay design (avoid cache contention with mainWindow), but
+  // we also key by display.id so the few KB of overlay state doesn't
+  // collide across displays.
+  const badgeSession = session.fromPartition(`badge-overlay-${display.id}`);
   try {
     badgeSession.clearCache();
     badgeSession.clearStorageData({
@@ -937,15 +1774,20 @@ function createBadgeOverlay() {
     }).catch(() => {});
   } catch (_) {}
 
-  badgeOverlay = new BrowserWindow({
-    x: bounds.x, y: bounds.y,
-    width: bounds.width, height: bounds.height,
+  const win = new BrowserWindow({
+    x: display.bounds.x, y: display.bounds.y,
+    width: display.bounds.width, height: display.bounds.height,
     frame: false, transparent: true, resizable: false,
+    // Some Windows configurations briefly composite a solid window
+    // background before the transparent layer engages. backgroundColor
+    // 00 alpha forces the compositor to skip that solid pass.
+    backgroundColor: '#00000000',
     alwaysOnTop: true, skipTaskbar: true,
     hasShadow: false,
     focusable: false,   // never steal focus — badges are gestural only
     minimizable: false, maximizable: false, fullscreenable: false,
     show: false,
+    paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload-badges.js'),
       contextIsolation: true,
@@ -956,48 +1798,162 @@ function createBadgeOverlay() {
   });
 
   // Click-through by default; renderer flips off while hovering a badge.
-  badgeOverlay.setIgnoreMouseEvents(true, { forward: true });
-
-  // Stay above fullscreen apps on every workspace so badges act like a global HUD.
-  badgeOverlay.setAlwaysOnTop(true, 'screen-saver');
-  badgeOverlay.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+  win.setIgnoreMouseEvents(true, { forward: true });
+  win.setAlwaysOnTop(true, 'screen-saver');
+  win.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
   if (rendererUrl) {
-    badgeOverlay.loadURL(`${rendererUrl}/badges.html`);
+    win.loadURL(`${rendererUrl}/badges.html`);
   } else {
-    badgeOverlay.loadFile(path.join(__dirname, 'frontend', 'dist', 'badges.html'));
+    win.loadFile(path.join(__dirname, 'frontend', 'dist', 'badges.html'));
   }
 
-  badgeOverlay.once('ready-to-show', () => {
-    badgeOverlay.showInactive();  // show without stealing focus
-    pushBadgeState();
+  // Reveal pattern: push state in `ready-to-show`, then show after a tiny
+  // delay so React's first render commits with hydrated badge data — no
+  // flash of empty overlay. The previous "wait for renderer's
+  // requestState" handshake was a per-window event we can't easily route
+  // when there are N overlays (ipcMain.once would race the first sender),
+  // so a 250 ms timeout-based reveal is simpler and visually equivalent.
+  win.once('ready-to-show', () => {
+    pushBadgeStateForDisplay(display, win);
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.showInactive();
+    }, 250);
   });
 
-  badgeOverlay.on('closed', () => { badgeOverlay = null; });
-
-  return badgeOverlay;
+  win.on('closed', () => { badgeOverlays.delete(display.id); });
+  badgeOverlays.set(display.id, win);
+  return win;
 }
 
-/** Ensure the overlay reflects current state: alive iff any badges exist. */
+/** Ensure overlays reflect current state: one per display when any badge
+ *  exists, none when there are no badges. Also reanchors stranded badges
+ *  whose stored coords no longer fall on any visible display. */
 function syncBadgeOverlay() {
   const data = store.get('appData') || {};
   const has  = Array.isArray(data.floatingBadges) && data.floatingBadges.length > 0;
-  if (has) {
-    if (!badgeOverlay || badgeOverlay.isDestroyed()) {
-      createBadgeOverlay();
-    } else {
-      // Overlay dimensions may be stale if display config changed.
-      const b = getVirtualDesktopBounds();
-      const cur = badgeOverlay.getBounds();
-      if (cur.x !== b.x || cur.y !== b.y || cur.width !== b.width || cur.height !== b.height) {
-        badgeOverlay.setBounds(b);
-      }
-      pushBadgeState();
-    }
-  } else {
-    destroyBadgeOverlay();
+
+  if (!has) {
+    destroyAllBadgeOverlays();
+    return;
   }
+
+  // Rescue stranded badges before we do anything else, so the first
+  // state push has clean coords.
+  ensureBadgePositionsSane();
+
+  const displays = getScreen().getAllDisplays();
+  const wantedIds = new Set(displays.map(d => d.id));
+
+  // Remove overlays for displays that no longer exist (monitor unplugged).
+  for (const [id, win] of [...badgeOverlays]) {
+    if (!wantedIds.has(id)) {
+      if (!win.isDestroyed()) win.destroy();
+      badgeOverlays.delete(id);
+    }
+  }
+
+  // Create / reposition overlays for every current display.
+  for (const display of displays) {
+    const existing = badgeOverlays.get(display.id);
+    if (!existing || existing.isDestroyed()) {
+      createBadgeOverlayForDisplay(display);
+    } else {
+      const cur = existing.getBounds();
+      const b = display.bounds;
+      if (cur.x !== b.x || cur.y !== b.y || cur.width !== b.width || cur.height !== b.height) {
+        existing.setBounds(b);
+      }
+      pushBadgeStateForDisplay(display, existing);
+    }
+  }
+}
+
+/**
+ * Refresh per-display overlay windows that DWM may have de-prioritised.
+ *
+ * User-reported pattern (2026-05): "all badges disappear over time, and
+ * also after preset switch, but creating a new badge brings them back."
+ * That symptom matches Windows DWM treating idle transparent always-on-
+ * top windows as inactive and dropping them out of the active z-order
+ * — once we send a fresh paint event (state push) or call show() again
+ * on each window, DWM re-registers them.
+ *
+ * Three triggers call this:
+ *   - powerMonitor 'resume' / 'unlock-screen' (return from sleep)
+ *   - mainWindow 'show' / 'focus' (user came back to nost)
+ *   - 60 s periodic tick (catches the slow-creep "(d) just disappears
+ *     over time" case the user reported)
+ *
+ * Cheap: walks the existing overlay map. If the underlying window is
+ * gone or hidden, defers to the full syncBadgeOverlay path (which
+ * recreates as needed). Otherwise just re-asserts always-on-top + a
+ * fresh state push, which is enough to wake DWM.
+ */
+function reviveBadgeOverlays(reason) {
+  if (badgeOverlays.size === 0) return;
+  const data = store.get('appData') || {};
+  if (!Array.isArray(data.floatingBadges) || data.floatingBadges.length === 0) return;
+
+  let revived = 0, recreated = 0;
+  const displays = getScreen().getAllDisplays();
+  const displayById = new Map(displays.map(d => [d.id, d]));
+
+  for (const [id, win] of [...badgeOverlays]) {
+    if (!win || win.isDestroyed()) {
+      badgeOverlays.delete(id);
+      const d = displayById.get(id);
+      if (d) { createBadgeOverlayForDisplay(d); recreated++; }
+      continue;
+    }
+    try {
+      // Re-assert top-most level (DWM may have demoted it after long
+      // idle). showInactive is a no-op when already visible but emits
+      // the WM events DWM uses to refresh its z-order tracking.
+      win.setAlwaysOnTop(true, 'screen-saver');
+      if (!win.isVisible()) {
+        win.showInactive();
+        revived++;
+      }
+      const d = displayById.get(id);
+      if (d) pushBadgeStateForDisplay(d, win);
+    } catch (e) {
+      log.warn(`[badges] revive failed for display=${id}:`, e?.message);
+    }
+  }
+  if (revived || recreated) {
+    log.debug(`[badges] reviveBadgeOverlays(${reason}) revived=${revived} recreated=${recreated}`);
+  }
+}
+
+/** Walk the badges list, reanchor any whose coord is on no visible display.
+ *  Persists if anything changed so the next reload keeps the corrected
+ *  positions instead of stranding them again. */
+function ensureBadgePositionsSane() {
+  const data = store.get('appData') || {};
+  const list = Array.isArray(data.floatingBadges) ? data.floatingBadges : [];
+  if (list.length === 0) return;
+
+  let changed = false;
+  const next = list.map(b => {
+    const fixed = sanitizeBadgePosition(b);
+    if (fixed !== b) changed = true;
+    return fixed;
+  });
+  if (!changed) return;
+
+  data.floatingBadges = next;
+  // Also update the active preset's mirror — same dual-write pattern as
+  // mutateBadges (top-level data + presets[active].floatingBadges).
+  const activeId = data.activePresetId;
+  const presets = Array.isArray(data.presets) ? data.presets : [];
+  const activeIdx = presets.findIndex(p => p && p.id === activeId);
+  if (activeIdx >= 0) {
+    data.presets = presets.map((p, i) => i === activeIdx ? { ...p, floatingBadges: next } : p);
+  }
+  store.set('appData', data);
+  sendSafe('badges-updated', next);
 }
 
 /** Mutate the appData blob with a callback, persist, and refresh the overlay.
@@ -1030,16 +1986,26 @@ function mutateBadges(fn) {
 }
 
 function createWindow() {
-  // Restore saved bounds when valid; otherwise center at 75% — same logic as /75
+  // SSOT for cold-start window placement: ALWAYS recenter on the
+  // primary display's work area at app launch. Earlier we restored
+  // the last-session windowBounds verbatim, which felt fine within
+  // a session but meant a user who had ever dragged the window
+  // off-center stayed off-center for every subsequent launch — the
+  // user reported "consistently skewed down" because of this.
+  //
+  // We still honour the SAVED SIZE (so resize-during-session
+  // persists), but the position is computed fresh each launch
+  // from `centeredBounds`-style math against the primary work
+  // area. The /75 IPC and this code path now share the same
+  // center calculation; one place owns "where does it land".
   const saved = store.get('windowBounds');
-  const isValidSaved = saved
-    && saved.width > 0 && saved.height > 0
-    && saved.x != null && saved.y != null
-    && isBoundsOnScreen(saved.x, saved.y, saved.width, saved.height);
-
-  const { x: initX, y: initY, width: initW, height: initH } = isValidSaved
-    ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height }
-    : centeredBounds(75);
+  const default75 = centeredBounds(75);
+  const savedSizeOk = saved && saved.width > 0 && saved.height > 0;
+  const initW = savedSizeOk ? saved.width  : default75.width;
+  const initH = savedSizeOk ? saved.height : default75.height;
+  const wa = getScreen().getPrimaryDisplay().workArea;
+  const initX = wa.x + Math.round((wa.width  - initW) / 2);
+  const initY = wa.y + Math.round((wa.height - initH) / 2);
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
 
@@ -1049,6 +2015,11 @@ function createWindow() {
     minWidth: 400, minHeight: 400,
     show: false, frame: false, transparent: true,
     resizable: true, alwaysOnTop: true, skipTaskbar: false,
+    // Higher z-order level than default 'floating'. Default level
+    // can be pushed below another topmost window when an external
+    // app launch triggers SetForegroundWindow. 'screen-saver' sits
+    // above other topmost apps so launching Chrome/IDE/etc doesn't
+    // demote nost. Floating overlays already use this same level.
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload:        path.join(__dirname, 'preload.js'),
@@ -1074,7 +2045,24 @@ function createWindow() {
   wc.on('dom-ready', () => rdbg('webContents: dom-ready'));
   wc.on('did-finish-load', () => rdbg('webContents: did-finish-load'));
   wc.on('did-fail-load', (_e, code, desc, url) => rdbg(`webContents: did-fail-load code=${code} desc=${desc} url=${url}`));
-  wc.on('render-process-gone', (_e, details) => rdbg('webContents: render-process-gone', details));
+  wc.on('render-process-gone', (_e, details) => {
+    rdbg('webContents: render-process-gone', details);
+    // Renderer is dead — any suppress-autohide registrations it owned
+    // (clean-mode, tutorial, busy:* from useBusyMark) will never get
+    // a cleanup IPC. Without this clear, the Set would leak forever
+    // and autoHide would silently stay disabled across the next
+    // renderer life. See `plans/focus-state-audit.md` Issue 3.
+    if (suppressAutoHideSources.size > 0) {
+      log.warn(`[suppress-autohide] clearing ${suppressAutoHideSources.size} stale source(s) after render-process-gone: [${Array.from(suppressAutoHideSources).join(',')}]`);
+      suppressAutoHideSources.clear();
+    }
+  });
+  wc.on('destroyed', () => {
+    if (suppressAutoHideSources.size > 0) {
+      log.warn(`[suppress-autohide] clearing ${suppressAutoHideSources.size} stale source(s) after webContents destroyed`);
+      suppressAutoHideSources.clear();
+    }
+  });
   wc.on('unresponsive', () => rdbg('webContents: unresponsive'));
   wc.on('responsive', () => rdbg('webContents: responsive'));
   wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -1091,27 +2079,76 @@ function createWindow() {
   mainWindow.on('show', () => rdbg('window: show'));
   mainWindow.on('hide', () => rdbg('window: hide'));
 
+  // Lock window to screen-saver z-order so external app launches
+  // (which trigger SetForegroundWindow on Windows) can't demote us.
+  // Constructor's alwaysOnTop:true defaults to 'floating' level —
+  // not enough.
+  mainWindow.setAlwaysOnTop(true, 'screen-saver');
+
   if (rendererUrl) {
     mainWindow.loadURL(rendererUrl);
   } else {
     mainWindow.loadFile(path.join(__dirname, 'frontend', 'dist', 'index.html'));
   }
 
-  // Show only after renderer signals it's fully loaded; 5 s safety fallback
+  // Unified loading flow: mainWindow is shown as soon as Electron tells
+  // us the frame is composited (`ready-to-show`, ~250 ms cold-start),
+  // and the in-window `#ql-loading` overlay (defined in
+  // frontend/index.html) carries the visual until the renderer finishes
+  // hydrating + storeLoad resolves. The previous "wait for
+  // renderer-ready IPC" gate is gone — it was the source of stuck-on-
+  // loading reports, because if useAppData mounted but storeLoad never
+  // resolved, no IPC fired and the app stalled behind the splash.
+  //
+  // Two safety nets remain:
+  //   - 5 s fallback: shows mainWindow even if `ready-to-show` never
+  //     fires (very rare on Windows; defensive only).
+  //   - 8 s force-error: if the renderer is still showing `#ql-loading`
+  //     8 s in, push an IPC asking it to swap to the error panel
+  //     (restart + open-logs buttons). DevTools is opened concurrently
+  //     so the underlying exception is visible.
   let windowShown = false;
   const showMainWindow = (reason) => {
     if (windowShown) { rdbg(`showMainWindow skipped (already shown) reason=${reason}`); return; }
     windowShown = true;
     rdbg(`showMainWindow firing. reason=${reason}`);
-    if (loadingWindow && !loadingWindow.isDestroyed()) {
-      loadingWindow.close();
-      loadingWindow = null;
-    }
     mainWindow.show();
     mainWindow.focus();
   };
-  ipcMain.once('renderer-ready', () => { rdbg('IPC: renderer-ready received'); showMainWindow('renderer-ready'); });
+
+  mainWindow.once('ready-to-show', () => showMainWindow('ready-to-show'));
+
+  // Recovery actions — invoked from the in-window `#ql-loading` error
+  // panel. Channel names retained from the old external splash so the
+  // preload script (preload-splash.js, no longer used by a splash
+  // window but still semantically the same surface) and any frontend
+  // listeners don't need renaming.
+  ipcMain.on('splash:restart', () => {
+    log.info('[splash] user clicked restart');
+    app.relaunch();
+    app.exit(0);
+  });
+  ipcMain.on('splash:open-logs', () => {
+    try { shell.showItemInFolder(log.transports.file.getFile().path); } catch (e) { log.warn('[splash] open-logs failed', e?.message); }
+  });
+
+  // Defensive: ensure the user never stares at a hidden window. If
+  // ready-to-show somehow never fires, force a show at 5 s.
   setTimeout(() => showMainWindow('5s-fallback'), 5000);
+
+  // Force-error path. After 8 s, if the renderer hasn't called
+  // signalReady() (which fires `renderer-ready` from
+  // dismissLoadingScreen), assume mount stalled and tell it to
+  // surface the recovery UI inside `#ql-loading`.
+  let rendererReady = false;
+  ipcMain.once('renderer-ready', () => { rendererReady = true; rdbg('IPC: renderer-ready received'); });
+  setTimeout(() => {
+    if (rendererReady) return;
+    log.warn('[boot-stuck] renderer-ready not received in 8s — opening devtools + asking renderer to show error state');
+    try { mainWindow.webContents.openDevTools({ mode: 'detach' }); } catch (e) { log.warn('[boot-stuck] devtools open failed', e?.message); }
+    try { mainWindow.webContents.send('boot:show-error'); } catch (e) { log.warn('[boot-stuck] in-window error signal failed', e?.message); }
+    showMainWindow('boot-stuck');
+  }, 8000);
 
   // Accept renderer-side logs (explicit, typed level)
   ipcMain.on('nost-log', (_e, level, msg, extra) => {
@@ -1126,28 +2163,62 @@ function createWindow() {
     shell.showItemInFolder(logFile);
   });
 
-  // Relay loading-status messages from renderer to the splash window
-  ipcMain.on('set-loading-status', (_, msg) => {
-    if (!loadingWindow || loadingWindow.isDestroyed()) return;
-    const safe = JSON.stringify(String(msg));
-    loadingWindow.webContents
-      .executeJavaScript(`var el=document.querySelector('#ql-status');if(el)el.textContent=${safe};`)
-      .catch(() => {});
+  // Relay loading-status messages from renderer (no-op now). The
+  // external splash that consumed these is gone; the in-window
+  // `#ql-loading` overlay updates its own text directly via DOM, so
+  // this IPC is purely vestigial. Kept as a swallow to avoid
+  // breaking the renderer's `electronAPI.setLoadingStatus()` call.
+  ipcMain.on('set-loading-status', () => { /* no-op */ });
+
+  // Initialise the autoHide cache from disk so the very first blur
+  // (before the renderer has had a chance to push) reads a sane value.
+  cachedAutoHide = !!store.get('appData')?.settings?.autoHide;
+  // Same for the window-open-at strategy. 'cursor' is the historic
+  // default so any pre-1.3.31 store reads as cursor mode.
+  const savedOpenAt = store.get('appData')?.settings?.windowOpenAt;
+  cachedWindowOpenAt = (savedOpenAt === 'last' ? 'last' : 'cursor');
+
+  // Same for the saved launcher size %. Apply BEFORE the window's
+  // first show so the user never sees a 100% → snap-to-saved flash.
+  const savedPct = Number(store.get('appData')?.settings?.windowSizePct);
+  if (Number.isFinite(savedPct) && savedPct >= 25 && savedPct <= 100) {
+    cachedWindowSizePct = Math.round(savedPct);
+    applyWindowSizePct(mainWindow, cachedWindowSizePct);
+  }
+
+  // Force webContents zoom back to 1.0 on every load. The previous
+  // build briefly used `webContents.setZoomFactor()` for "창 크기"
+  // before we switched to physical setBounds (which is the correct
+  // semantic — see settings.windowSizePct). Chromium persists zoom
+  // factor per-origin in its own storage, so users who ran the bad
+  // build still have e.g. 2.0× content zoom stuck on file:// — text
+  // appears huge in SignInScreen / settings until explicitly reset.
+  // setZoomLevel(0) === setZoomFactor(1.0); we use both setters for
+  // belt-and-suspenders since some Electron versions only honour one.
+  mainWindow.webContents.on('did-finish-load', () => {
+    try {
+      mainWindow.webContents.setZoomLevel(0);
+      mainWindow.webContents.setZoomFactor(1.0);
+    } catch (e) { log.warn('[zoom-reset] failed', e?.message); }
   });
 
-  // Auto-hide on focus loss when the user has enabled it in settings
-  mainWindow.on('blur', () => {
-    const settings = store.get('appData')?.settings ?? {};
-    if (settings.autoHide) mainWindow.hide();
-  });
+  // Auto-hide on focus loss. Funnel through the single dismissal
+  // policy — same place blur, closeAfter, and any future automatic
+  // dismissal share. Suppression sources + autoHide setting checked
+  // inside tryDismissWindow.
+  mainWindow.on('blur', () => tryDismissWindow('blur'));
 
-  // Debounced bounds save — avoids thrashing electron-store on every pixel drag
+  // Debounced bounds save — avoids thrashing electron-store on every pixel drag.
+  // Position is intentionally NOT persisted (SSOT: cold start always centers
+  // on the primary work area). We keep just width/height so the user's
+  // resize-during-session preference survives across launches.
   let boundsTimer = null;
   const saveBounds = () => {
     clearTimeout(boundsTimer);
     boundsTimer = setTimeout(() => {
       if (mainWindow && !mainWindow.isMaximized()) {
-        store.set('windowBounds', mainWindow.getBounds());
+        const b = mainWindow.getBounds();
+        store.set('windowBounds', { width: b.width, height: b.height });
       }
     }, 500);
   };
@@ -1162,73 +2233,75 @@ function createWindow() {
 
 // ── 10. Tile Launch Helpers ───────────────────────────────────────────
 //
-// These PS snippets run as inline encoded commands (non-blocking / fire-and-forget)
-// so tiling can begin immediately without waiting for a process to fully launch.
-// Each runs in a separate PS process, so the class names (QL1/QL2/QL3) don't clash.
-
-const _PS_FOCUS_APP = `
-$t = $env:QL_PATH
-if ($t -match '\\.lnk$') {
-  try {
-    $wsh = New-Object -ComObject WScript.Shell; $lnk = $wsh.CreateShortcut($t)
-    if ($lnk.TargetPath -match 'explorer\\.exe$' -and $lnk.Arguments -match 'shell:AppsFolder\\\\(.+)') {
-      Start-Process explorer.exe "shell:AppsFolder\\$($Matches[1])"; exit
-    } elseif ($lnk.TargetPath) { $t = $lnk.TargetPath }
-  } catch {}
-}
-$exeName = [System.IO.Path]::GetFileNameWithoutExtension($t)
-$p = Get-Process | Where-Object { try { $_.MainModule.FileName -eq $t } catch { $false } } | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
-if (-not $p) { $p = Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1 }
-if ($p) {
-  $h = $p.MainWindowHandle
-  Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class QL1 { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
-"@
-  [QL1]::ShowWindow($h,9); [QL1]::SetForegroundWindow($h)
-} else { Start-Process $t }`.trim();
-
-const _PS_FOCUS_FOLDER = `
-$shell=$null; try{$shell=New-Object -ComObject Shell.Application}catch{}
-$found=$false; $tp=$env:QL_PATH.TrimEnd('\\')
-if($shell){foreach($w in $shell.Windows()){try{if($w.Document-ne$null-and$w.Document.Folder.Self.Path.TrimEnd('\\')-eq$tp){Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class QL2 { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
-"@
-$hw=[IntPtr][long]$w.HWND;[QL2]::ShowWindow($hw,9);[QL2]::SetForegroundWindow($hw);$found=$true;break}}catch{}}}
-if(-not $found){Start-Process explorer.exe $env:QL_PATH}`.trim();
-
-const _PS_FOCUS_WINDOW = `
-$p = Get-Process | Where-Object { $_.MainWindowTitle -eq $env:QL_TITLE } | Select-Object -First 1
-if (-not $p) {
-  $s = $env:QL_TITLE
-  $p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "*$s*" } | Select-Object -First 1
-}
-if ($p) {
-  Add-Type @"
-using System; using System.Runtime.InteropServices;
-public class QL3 { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }
-"@
-  [QL3]::ShowWindow($p.MainWindowHandle,9); [QL3]::SetForegroundWindow($p.MainWindowHandle)
-}`.trim();
+// fireLaunchItem (below) is the single fire-and-forget entry point for
+// the tile-launch path (node groups + deck sequence start). It routes
+// through the SAME dedicated PS scripts as the single-card click path
+// — see the comment above fireLaunchItem for the full rationale. The
+// minimal inline _PS_FOCUS_* templates that used to live here were
+// removed because they were silently divergent from the dedicated
+// scripts (missing versioned-browser rebase, AUMID Get-AppxPackage
+// fallback, .lnk Arguments/WorkingDirectory carry-through) and that
+// divergence caused the "card works but node doesn't" bug for Store /
+// PWA apps after browser auto-updates.
 
 /**
  * Fire-and-forget: focus or launch an app/folder/window before tiling.
  * URL/browser types are handled separately by the caller.
+ *
+ * SSOT — uses the SAME PowerShell scripts as the single-card launch
+ * path (`launch-or-focus-app.ps1`, `open-path.ps1`, `focus-window.ps1`).
+ * Earlier versions inlined a minimal `_PS_FOCUS_APP` script here for
+ * speed, but the inline version was missing the robust fallbacks the
+ * dedicated `.ps1` carries:
+ *
+ *   - Chromium versioned-path rebase (Chrome / Edge / Whale auto-update
+ *     deletes the old `\Application\<version>\` dir; .lnk targets go
+ *     stale). The dedicated script falls back to the highest-numbered
+ *     sibling under the same Application root.
+ *   - WindowsApps / MSIX Store apps launched via Get-AppxPackage
+ *     + shell:AppsFolder\<AUMID> when the saved exe path is gone.
+ *   - Classic .lnk Arguments + WorkingDirectory carry-through
+ *     (Adobe / Creative Cloud / JetBrains launchers fail silently
+ *     without the cwd).
+ *
+ * Symptom of the old divergence: users reported "GPT/Claude cards
+ * work from the main grid but the same cards inside a node group
+ * don't launch after a Whale/Chrome auto-update." Routing through
+ * the same script removes that divergence — node-launched apps now
+ * benefit from the same fallback ladder as a direct card click.
+ *
+ * runPsAsync returns a Promise; we deliberately do NOT await — the
+ * caller (launchItemsForTile) needs to return quickly so the tile
+ * polling phase can start while the app is still spinning up.
+ * Failures are surfaced via the log channel below for diagnosis.
  */
 function fireLaunchItem(item) {
-  let script;
-  const env = { ...process.env };
+  let scriptName;
+  const env = {};
 
   switch (item.type) {
-    case 'app':    script = _PS_FOCUS_APP;    env.QL_PATH  = item.value; break;
-    case 'folder': script = _PS_FOCUS_FOLDER; env.QL_PATH  = item.value; break;
-    case 'window': script = _PS_FOCUS_WINDOW; env.QL_TITLE = item.value || item.title; break;
+    case 'app':    scriptName = 'launch-or-focus-app.ps1'; env.QL_PATH  = item.value; break;
+    case 'folder': scriptName = 'open-path.ps1';           env.QL_PATH  = item.value; break;
+    case 'window': scriptName = 'focus-window.ps1';        env.QL_TITLE = item.value || item.title; break;
     default: return;
   }
 
-  const b64 = Buffer.from(script, 'utf16le').toString('base64');
-  exec(`powershell.exe -NoProfile -EncodedCommand ${b64}`, { env });
+  // Fire-and-forget. The 10s timeout matches the single-card path's
+  // launch-or-focus-app IPC handler — long enough for Defender scan
+  // on a freshly-installed Store app, short enough to avoid wedging
+  // tile polling if the script genuinely hangs.
+  runPsAsync(scriptName, env, { timeout: 10000 })
+    .then(({ stdout }) => {
+      const out = String(stdout ?? '').trim();
+      if (out.toUpperCase().startsWith('ERROR')) {
+        log.warn(`[fire-launch] ${item.type} ${item.value} → ${out}`);
+      } else if (out) {
+        log.debug(`[fire-launch] ${item.type} ${item.value} → ${out}`);
+      }
+    })
+    .catch(err => {
+      log.warn(`[fire-launch] ${item.type} ${item.value} PS threw: ${err?.message}`);
+    });
 }
 
 // ── 11. Update Helper ─────────────────────────────────────────────────
@@ -1412,6 +2485,15 @@ function registerIpcHandlers() {
   /** Hide the launcher window (e.g. after a card action). */
   ipcMain.on('hide-app', () => mainWindow.hide());
 
+  // Renderer-side close-after request — runs through the SSOT funnel
+  // so suppression (clean mode, tutorial, busy modals) is honored.
+  // Distinct from `hide-app`, which is the explicit user-intent path
+  // (Esc / X button / global toggle) that intentionally bypasses
+  // policy. See `plans/focus-state-audit.md` Issue 2.
+  ipcMain.on('request-close-after', () => {
+    tryDismissWindow('close-after', { closeAfter: true });
+  });
+
   /**
    * Move the window to an absolute screen position (right-click drag).
    *
@@ -1438,7 +2520,158 @@ function registerIpcHandlers() {
 
   ipcMain.handle('get-window-position', () => mainWindow?.getPosition() ?? [0, 0]);
 
+  // Resource snapshot for the status bar's CPU / RAM monitor. Aggregates
+  // every Electron process (main, renderer, GPU, utility) via
+  // `app.getAppMetrics()`. Returning a single rollup keeps the status
+  // bar simple — users don't care which sub-process owns which slice,
+  // only "is the launcher heavy right now".
+  //
+  //   - cpuPct: % of TOTAL system CPU (0..100). Electron's
+  //     `percentCPUUsage` is per-core (100 == one full core), so a
+  //     naive sum can hit 800+ on an 8-core CPU during a render
+  //     burst, which reads to users as "the launcher is eating my
+  //     PC". We normalize against `os.cpus().length` so the number
+  //     is comparable to Task Manager's overall CPU column.
+  //   - memMB:  resident RAM in megabytes. Sum across procs.
+  //     workingSet is the closest analogue to what Task Manager
+  //     shows on Windows.
+  //   - procs:  process count, useful for spotting GPU/utility leaks.
+  //   - perProc: optional list of {type, cpuPct, memMB} for the
+  //     status-bar tooltip. Lets curious users see who's using what
+  //     without forcing the always-visible label to look noisy.
+  const os = require('os');
+  ipcMain.handle('get-resource-stats', () => {
+    try {
+      const metrics = app.getAppMetrics();
+      const cores = Math.max(1, os.cpus()?.length || 1);
+      let cpuRawSum = 0;     // sum of per-core percentages (0..cores*100)
+      let memKB = 0;
+      const perProc = metrics.map(m => {
+        const c = m.cpu?.percentCPUUsage ?? 0;
+        const k = m.memory?.workingSetSize ?? 0;
+        cpuRawSum += c;
+        memKB     += k;
+        return {
+          type:   m.type || 'unknown',
+          cpuPct: Math.round((c / cores) * 10) / 10,
+          memMB:  Math.round(k / 1024),
+        };
+      });
+      const cpuPctNormalized = Math.min(100, cpuRawSum / cores);
+      return {
+        cpuPct: Math.round(cpuPctNormalized * 10) / 10,    // % of total system CPU
+        memMB:  Math.round(memKB / 1024),                  // KB → MB
+        procs:  metrics.length,
+        cores,
+        perProc,
+      };
+    } catch (e) {
+      log.warn('[resource-stats] failed', e?.message);
+      return { cpuPct: 0, memMB: 0, procs: 0, cores: 1, perProc: [] };
+    }
+  });
+
   ipcMain.on('set-opacity', (_, opacity) => mainWindow?.setOpacity(opacity));
+
+  // Launcher size as % of the active monitor's work area. SSOT for
+  // every resize code path (/N slash, slider, preset, settings). The
+  // handler clamps to the valid range, persists into electron-store,
+  // updates the in-memory cache, and applies setBounds. Persistence
+  // is done from main rather than relying on the renderer's
+  // updateSettings round-trip so /N (which originates in the
+  // renderer's command bar but lands here via resize-active-window
+  // too) and settings stay perfectly in sync.
+  ipcMain.on('set-window-size-pct', (_, pct) => {
+    const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
+    cachedWindowSizePct = clamped;
+    persistWindowSizePct(clamped);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      applyWindowSizePct(mainWindow, clamped);
+    }
+  });
+  ipcMain.on('set-suppress-autohide', (_, suppress, source = 'default') => {
+    if (suppress) suppressAutoHideSources.add(source);
+    else suppressAutoHideSources.delete(source);
+  });
+  ipcMain.on('set-auto-hide', (_, autoHide) => {
+    cachedAutoHide = !!autoHide;
+  });
+  ipcMain.on('set-window-open-at', (_, mode) => {
+    cachedWindowOpenAt = (mode === 'last' ? 'last' : 'cursor');
+  });
+
+  // ── Auth: safeStorage-backed token persistence ─────────────────
+  // Tokens (Supabase access/refresh) live in OS-encrypted storage
+  // (DPAPI on Windows, Keychain on macOS) via Electron's safeStorage.
+  // We store as a single JSON blob keyed under appData.authSession so
+  // the renderer reads/writes the whole session atomically.
+  ipcMain.handle('auth:get-session', () => {
+    try {
+      const enc = store.get('authSessionEnc');
+      if (!enc || !safeStorage.isEncryptionAvailable()) return null;
+      const raw = safeStorage.decryptString(Buffer.from(enc, 'base64'));
+      return JSON.parse(raw);
+    } catch (err) {
+      log.warn('[auth] get-session failed:', err.message);
+      return null;
+    }
+  });
+  ipcMain.handle('auth:set-session', (_, session) => {
+    try {
+      if (!safeStorage.isEncryptionAvailable()) {
+        log.error('[auth] safeStorage unavailable — refusing to persist session in plain text');
+        return false;
+      }
+      if (!session) {
+        store.delete('authSessionEnc');
+        return true;
+      }
+      const enc = safeStorage.encryptString(JSON.stringify(session));
+      store.set('authSessionEnc', enc.toString('base64'));
+      return true;
+    } catch (err) {
+      log.warn('[auth] set-session failed:', err.message);
+      return false;
+    }
+  });
+  ipcMain.handle('auth:open-oauth-url', (_, url) => {
+    // Open the Supabase-issued OAuth URL in the user's default browser.
+    // The browser does the provider dance and the OS hands the
+    // nost://auth-callback#tokens redirect back to us via the deep
+    // link handler at the top of this file.
+    return shell.openExternal(url);
+  });
+  // Renderer asks for the deep link captured before mainWindow was ready
+  ipcMain.handle('auth:consume-pending-deep-link', () => {
+    const url = pendingDeepLink;
+    pendingDeepLink = null;
+    return url;
+  });
+
+  // Read a small text file from disk for the memo drag-drop flow.
+  // Cap at 1 MB — anything bigger probably isn't a note and shouldn't
+  // live inside a memo card. Detect BOM-marked UTF-16/8 first; for
+  // bare bytes try UTF-8 strict, fall back to EUC-KR (cp949) which
+  // covers the common Korean Windows .txt case.
+  ipcMain.handle('read-text-file', async (_, filePath, maxBytes = 1024 * 1024) => {
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (stat.size > maxBytes) return { ok: false, reason: 'too-large', size: stat.size };
+      const buf = await fs.promises.readFile(filePath);
+      let enc = 'utf-8';
+      if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) enc = 'utf-16le';
+      else if (buf.length >= 2 && buf[0] === 0xFE && buf[1] === 0xFF) enc = 'utf-16be';
+      else if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) enc = 'utf-8';
+      else {
+        try { new TextDecoder('utf-8', { fatal: true }).decode(buf); enc = 'utf-8'; }
+        catch { enc = 'euc-kr'; }
+      }
+      const text = new TextDecoder(enc, { fatal: false }).decode(buf);
+      return { ok: true, text, encoding: enc };
+    } catch (err) {
+      return { ok: false, reason: 'read-error', error: String(err?.message ?? err) };
+    }
+  });
 
   /** Re-register the global shortcut with a new key combo from settings. */
   ipcMain.on('update-shortcut', (_, newShortcut) => registerShortcut(newShortcut));
@@ -1448,10 +2681,23 @@ function registerIpcHandlers() {
   ipcMain.handle('store-load', () => store.get('appData', null));
 
   ipcMain.handle('store-save', (_, data) => {
+    // Diff badgeSize BEFORE we overwrite the store so we can detect a
+    // change and live-push it to the overlays. Without this, settings
+    // dialog edits to the badge size slider would only take visual
+    // effect after the next badge mutation (pin/unpin/move) or app
+    // restart — both of which feel broken from the user's perspective.
+    const prevBadgeSize = (store.get('appData') || {})?.settings?.badgeSize ?? 46;
     store.set('appData', data);
     // Keep the Windows startup entry in sync with the autoLaunch toggle
     if (data?.settings) {
       app.setLoginItemSettings({ openAtLogin: !!data.settings.autoLaunch });
+    }
+    const nextBadgeSize = data?.settings?.badgeSize ?? 46;
+    if (nextBadgeSize !== prevBadgeSize) {
+      // Re-push to every existing overlay so the new size lands
+      // immediately. pushBadgeStateAll is a no-op when no overlays
+      // exist (e.g. user has zero badges pinned).
+      pushBadgeStateAll();
     }
     return true;
   });
@@ -1499,38 +2745,380 @@ function registerIpcHandlers() {
     } catch { return null; }
   });
 
+  /**
+   * Fetch a website's favicon, normalize it, and return a data URL.
+   *
+   * Why main process and not the renderer:
+   *   The renderer's CSP locks img-src to 'self', data:, and Google's favicon
+   *   service. That made the existing tryLoadImage() loop in the renderer
+   *   silently fail on every other candidate (apple-touch-icon / origin
+   *   /favicon.ico / DuckDuckGo) — only the Google s2 hit ever loaded, and
+   *   when Google returned a 1x1 placeholder for unknown domains the loop
+   *   accepted it as "success" and saved a blank icon. Doing the fetch from
+   *   main bypasses CSP entirely, lets us try every candidate, and lets us
+   *   reject the 1x1 placeholder by inspecting the decoded image size.
+   *
+   * Returns: data URL string on first acceptable candidate, null if none.
+   * The data URL is what gets persisted on the LauncherItem, so once a
+   * favicon has been resolved it works offline forever (no re-fetch).
+   */
+  ipcMain.handle('download-favicon', async (_e, candidates) => {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+    for (const url of candidates) {
+      if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) continue;
+
+      try {
+        // 6s per-candidate timeout. Net.fetch follows redirects by default.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 6000);
+        let res;
+        try {
+          res = await net.fetch(url, { signal: controller.signal, redirect: 'follow' });
+        } finally { clearTimeout(timer); }
+
+        if (!res.ok) continue;
+        const ab = await res.arrayBuffer();
+        const buf = Buffer.from(ab);
+
+        // Sanity bounds: smaller than 100B is almost certainly an HTML 404
+        // page or empty body; larger than 1MB is a misconfigured server
+        // sending a high-res asset we don't want to embed in a JSON store.
+        if (buf.length < 100 || buf.length > 1_000_000) continue;
+
+        // Decode and check actual image dimensions. Google's s2 service
+        // returns a 16x16 grey placeholder when it doesn't know the domain
+        // — that's the bug the renderer-side loop kept accepting. Anything
+        // <= 4px is definitely placeholder; reject it and try the next
+        // candidate. Note: nativeImage cannot decode SVG, so SVG favicons
+        // come back empty here — we skip those for now (they're rare for
+        // /favicon.ico anyway).
+        const img = nativeImage.createFromBuffer(buf);
+        if (img.isEmpty()) continue;
+        const { width, height } = img.getSize();
+        if (width <= 4 || height <= 4) continue;
+
+        // Downsample anything over 128px to keep the persisted data URL
+        // small. 64-128px is the sweet spot for our 36px card icons on
+        // both DPI=1 and DPI=1.5 displays.
+        const finalImg = (width > 128 || height > 128)
+          ? img.resize({ width: 128, quality: 'best' })
+          : img;
+        return finalImg.toDataURL();
+      } catch (e) {
+        // AbortError on timeout, network errors, DNS failures — all just
+        // mean "try the next candidate". Logged at debug to avoid spam.
+        log.debug('[favicon] candidate failed', url, e?.message || e);
+      }
+    }
+    return null;
+  });
+
   ipcMain.handle('check-file-exists', (_, filePath) => {
     try { return fs.existsSync(filePath); } catch { return false; }
   });
 
+  /**
+   * Export the full AppData to a .nost file. JSON-encoded with a small
+   * envelope (`format: 'nost'`, `formatVersion`) so future readers can
+   * detect and migrate older shapes if we change the schema.
+   *
+   * The `.nost` extension is just for branding — internally it's UTF-8 JSON.
+   * Legacy `.json` files written by pre-v1.3 builds are still accepted on
+   * import.
+   */
   ipcMain.handle('export-data', async () => {
     const data = store.get('appData', null);
     if (!data) return { success: false, reason: 'no-data' };
     const { filePath, canceled } = await dialog.showSaveDialog(mainWindow, {
-      title: '데이터 백업',
-      defaultPath: `nost-backup-${new Date().toISOString().slice(0, 10)}.json`,
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+      title: 'nost 백업',
+      defaultPath: `nost-${new Date().toISOString().slice(0, 10)}.nost`,
+      filters: [
+        { name: 'nost backup', extensions: ['nost'] },
+        { name: 'JSON',         extensions: ['json'] },
+      ],
     });
     if (canceled || !filePath) return { success: false, reason: 'canceled' };
     try {
-      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+      const payload = {
+        format: 'nost',
+        formatVersion: 1,
+        exportedAt: new Date().toISOString(),
+        appVersion: app.getVersion(),
+        data,
+      };
+      fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
       return { success: true, filePath };
     } catch (e) { return { success: false, reason: String(e) }; }
   });
 
+  /**
+   * Import a backup. Accepts both the new envelope format and legacy raw
+   * AppData (pre-v1.3 .json files). Returns the parsed AppData; the
+   * renderer is responsible for deciding whether to REPLACE or MERGE.
+   */
   ipcMain.handle('import-data', async () => {
     const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
-      title: '데이터 복원',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
+      title: 'nost 백업 복원',
+      filters: [
+        { name: 'nost backup', extensions: ['nost', 'json'] },
+      ],
       properties: ['openFile'],
     });
     if (canceled || !filePaths[0]) return { success: false, reason: 'canceled' };
     try {
-      const parsed = JSON.parse(fs.readFileSync(filePaths[0], 'utf-8'));
-      if (!parsed.spaces || !parsed.settings) return { success: false, reason: 'invalid-format' };
-      store.set('appData', parsed);
-      return { success: true, data: parsed };
+      const raw = fs.readFileSync(filePaths[0], 'utf-8');
+      const parsed = JSON.parse(raw);
+      // Envelope format (v1.3+)
+      if (parsed && parsed.format === 'nost' && parsed.data) {
+        return { success: true, data: parsed.data, formatVersion: parsed.formatVersion ?? 1 };
+      }
+      // Legacy raw AppData — accept if it has either presets[] (post-1.2)
+      // or spaces[] (pre-1.2 flat shape; renderer's migrateData handles it).
+      if (parsed && (parsed.presets || parsed.spaces) && parsed.settings) {
+        return { success: true, data: parsed, formatVersion: 0 };
+      }
+      return { success: false, reason: 'invalid-format' };
     } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  /**
+   * Silent auto-backup. Used by the tutorial sandbox before it swaps the
+   * live AppData with seed content — the user reported losing their real
+   * cards once when an experimental flow wiped state, so we now write a
+   * timestamped .nost file to userData/tutorial-backups/ BEFORE the swap.
+   * No dialog, no user friction. Returns { success, filePath } so the
+   * renderer can show a toast pointing the user at the file if they want
+   * to restore manually.
+   *
+   * Reason is a short tag ("tutorial", future "schema-migration") embedded
+   * into the filename so users can tell backups apart at a glance.
+   */
+  ipcMain.handle('auto-backup-data', async (_e, reason = 'auto') => {
+    const data = store.get('appData', null);
+    if (!data) return { success: false, reason: 'no-data' };
+    try {
+      const dir = path.join(app.getPath('userData'), 'tutorial-backups');
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp    = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const safeTag  = String(reason).replace(/[^a-z0-9-]/gi, '').slice(0, 24) || 'auto';
+      const filePath = path.join(dir, `nost-${safeTag}-${stamp}.nost`);
+      const payload = {
+        format: 'nost',
+        formatVersion: 1,
+        exportedAt: new Date().toISOString(),
+        appVersion: app.getVersion(),
+        backupReason: safeTag,
+        data,
+      };
+      fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+      return { success: true, filePath };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  /**
+   * Open the user-data folder (or a subfolder) in the OS file explorer.
+   * Used by the tutorial-backup toast so users can grab the .nost file
+   * directly without spelunking through %APPDATA%.
+   */
+  ipcMain.handle('open-userdata-folder', async (_e, sub) => {
+    try {
+      const target = sub
+        ? path.join(app.getPath('userData'), String(sub))
+        : app.getPath('userData');
+      shell.openPath(target);
+      return { success: true };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  /**
+   * Pick + read a file as raw text. Used by the import wizard to ingest
+   * Chrome bookmarks HTML and Markdown without giving the renderer
+   * filesystem access. Returns { text, fileName } on success.
+   */
+  ipcMain.handle('pick-and-read-text', async (_e, kind) => {
+    const filters = kind === 'bookmarks-html'
+      ? [{ name: '브라우저 북마크 HTML', extensions: ['html', 'htm'] }]
+      : kind === 'markdown'
+      ? [{ name: '마크다운', extensions: ['md', 'markdown', 'txt'] }]
+      : [{ name: 'All', extensions: ['*'] }];
+    const { filePaths, canceled } = await dialog.showOpenDialog(mainWindow, {
+      title: '가져올 파일 선택',
+      filters,
+      properties: ['openFile'],
+    });
+    if (canceled || !filePaths[0]) return { success: false, reason: 'canceled' };
+    try {
+      const text = fs.readFileSync(filePaths[0], 'utf-8');
+      return { success: true, text, fileName: path.basename(filePaths[0]) };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  // ── 12c-bis. Memo (사라지는 메모) — txt export ───────────────────
+  //
+  // Renderer hands us {body, slug, customFolder?}; we write a UTF-8
+  // text file to either the user's chosen folder or the default
+  // %APPDATA%/nost/memos/. Shell-opens the file so it lands in the OS
+  // default editor (notepad / VSCode / whatever the user picked for
+  // .txt). Returns the absolute path so the renderer can also turn
+  // the memo card into a file card pointing at it.
+  //
+  // Filename: ${slug}_${YYYYMMDD}.txt — collisions get a numeric suffix.
+  // Why we don't trust the renderer's filename: NTFS forbidden chars
+  // and length limits are easier to enforce here in one place.
+  ipcMain.handle('memo-export-txt', async (_e, args) => {
+    try {
+      const { body, slug, customFolder, openAfter } = (args && typeof args === 'object') ? args : {};
+      if (typeof body !== 'string') return { success: false, reason: 'invalid-body' };
+      const baseSlug = (typeof slug === 'string' && slug.trim()) ? slug.trim() : '메모';
+
+      // Pick the destination folder. Renderer can override via
+      // customFolder (validated for existence), default = userData/memos.
+      let folder = path.join(app.getPath('userData'), 'memos');
+      if (typeof customFolder === 'string' && customFolder.trim()) {
+        try {
+          const stat = fs.statSync(customFolder);
+          if (stat.isDirectory()) folder = customFolder;
+        } catch { /* fall back to default */ }
+      }
+      try { fs.mkdirSync(folder, { recursive: true }); }
+      catch (e) { return { success: false, reason: `mkdir: ${String(e)}` }; }
+
+      // Date suffix in local time.
+      const d = new Date();
+      const ymd = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+
+      // Sanitize slug for NTFS — defence-in-depth (renderer slugifies too).
+      const safeSlug = baseSlug.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 40) || '메모';
+
+      // Find a non-colliding filename.
+      let filename = `${safeSlug}_${ymd}.txt`;
+      let candidate = path.join(folder, filename);
+      let n = 2;
+      while (fs.existsSync(candidate) && n < 100) {
+        filename = `${safeSlug}_${ymd}_${n}.txt`;
+        candidate = path.join(folder, filename);
+        n++;
+      }
+
+      // Write with UTF-8 BOM so legacy Notepad on Win10 still detects
+      // Korean correctly. Newer Notepad (Win11) is fine without it,
+      // but BOM is harmless either way.
+      const BOM = '﻿';
+      fs.writeFileSync(candidate, BOM + body, 'utf-8');
+
+      if (openAfter) {
+        // Don't await; we want the response back immediately.
+        shell.openPath(candidate).catch(() => {});
+      }
+      return { success: true, filePath: candidate };
+    } catch (e) {
+      return { success: false, reason: String(e) };
+    }
+  });
+
+  // Open the memos folder (or the user's custom folder) in Explorer.
+  // Used by the settings page "변경" / "폴더 열기" affordance.
+  ipcMain.handle('memo-open-folder', async (_e, customFolder) => {
+    try {
+      let folder = path.join(app.getPath('userData'), 'memos');
+      if (typeof customFolder === 'string' && customFolder.trim()) {
+        try {
+          const stat = fs.statSync(customFolder);
+          if (stat.isDirectory()) folder = customFolder;
+        } catch { /* fall back */ }
+      }
+      try { fs.mkdirSync(folder, { recursive: true }); } catch { /* no-op */ }
+      shell.openPath(folder);
+      return { success: true, filePath: folder };
+    } catch (e) { return { success: false, reason: String(e) }; }
+  });
+
+  // Resolve the default memo folder (used when settings.memo.exportFolder is unset).
+  // Renderer shows this in the settings UI as a placeholder/preview.
+  ipcMain.handle('memo-default-folder', () => {
+    return path.join(app.getPath('userData'), 'memos');
+  });
+
+  /**
+   * Save-as dialog flow — pop the OS file picker, write the body to
+   * the chosen path, return the path. This replaces the previous
+   * "write to fixed folder + open external + delete card" behaviour
+   * for both the card 💾 button and the editor 내보내기 button.
+   * "다른 이름으로 저장" is a SNAPSHOT — caller does NOT delete the
+   * memo, we do NOT shell-open the file. User explicitly flagged
+   * the previous flow as wrong.
+   */
+  ipcMain.handle('memo-save-as', async (_e, args) => {
+    try {
+      const { body, slug, format } = (args && typeof args === 'object') ? args : {};
+      if (typeof body !== 'string') return { success: false, reason: 'invalid-body' };
+      const baseSlug = (typeof slug === 'string' && slug.trim()) ? slug.trim() : '메모';
+      const safeSlug = baseSlug.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 60) || '메모';
+      const isMarkdown = format === 'md';
+      const ext = isMarkdown ? 'md' : 'txt';
+      // Filter order matters: the FIRST filter is the default selection
+      // in the dialog. Reorder by `format` so the user's chosen
+      // tool drives both the default extension and the filter list.
+      const filters = isMarkdown
+        ? [
+            { name: '마크다운',     extensions: ['md', 'markdown'] },
+            { name: '텍스트 파일', extensions: ['txt'] },
+            { name: '모든 파일',    extensions: ['*'] },
+          ]
+        : [
+            { name: '텍스트 파일', extensions: ['txt'] },
+            { name: '마크다운',     extensions: ['md', 'markdown'] },
+            { name: '모든 파일',    extensions: ['*'] },
+          ];
+      const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+        title: '메모 저장',
+        defaultPath: `${safeSlug}.${ext}`,
+        filters,
+      });
+      if (canceled || !filePath) return { success: false, reason: 'canceled' };
+      // BOM keeps Win10 Notepad happy on Korean .txt; harmless for .md.
+      const BOM = '﻿';
+      fs.writeFileSync(filePath, BOM + body, 'utf-8');
+      return { success: true, filePath };
+    } catch (e) {
+      return { success: false, reason: String(e) };
+    }
+  });
+
+  /**
+   * Open the body in the user's default text editor — writes a
+   * temp file (userData/memos with collision-safe suffix) and
+   * shell-opens. Separate button from save-as; the user wanted
+   * "메모장에서 열기" as a distinct affordance. Doesn't delete the
+   * memo either — external open is a view, not a move.
+   */
+  ipcMain.handle('memo-open-external', async (_e, args) => {
+    try {
+      const { body, slug } = (args && typeof args === 'object') ? args : {};
+      if (typeof body !== 'string') return { success: false, reason: 'invalid-body' };
+      const baseSlug = (typeof slug === 'string' && slug.trim()) ? slug.trim() : '메모';
+      const safeSlug = baseSlug.replace(/[<>:"/\\|?*\x00-\x1f]/g, '').trim().slice(0, 40) || '메모';
+      const folder = path.join(app.getPath('userData'), 'memos');
+      try { fs.mkdirSync(folder, { recursive: true }); }
+      catch (e) { return { success: false, reason: `mkdir: ${String(e)}` }; }
+      const d = new Date();
+      const ymd = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+      let filename = `${safeSlug}_${ymd}.txt`;
+      let candidate = path.join(folder, filename);
+      let n = 2;
+      while (fs.existsSync(candidate) && n < 100) {
+        filename = `${safeSlug}_${ymd}_${n}.txt`;
+        candidate = path.join(folder, filename);
+        n++;
+      }
+      const BOM = '﻿';
+      fs.writeFileSync(candidate, BOM + body, 'utf-8');
+      shell.openPath(candidate).catch(() => {});
+      return { success: true, filePath: candidate };
+    } catch (e) {
+      return { success: false, reason: String(e) };
+    }
   });
 
   // ── 12d. Clipboard ───────────────────────────────────────────────
@@ -1544,6 +3132,13 @@ function registerIpcHandlers() {
     let text = clipboard.readText().trim();
     if (!text) text = await readClipboardFileDrop();
     if (!text) return { type: 'none' };
+    // The HTML payload (when present) is what gives the renderer
+    // a chance to faithfully reconstruct markdown structure for
+    // pasted GPT/Notion content. We pass it through unchanged
+    // alongside the plain twin; the renderer decides whether to
+    // use it. Empty string when the clipboard has no HTML format.
+    let html = '';
+    try { html = clipboard.readHTML() || ''; } catch { /* some formats throw */ }
 
     // URL
     if (/^https?:\/\//i.test(text)) {
@@ -1553,12 +3148,83 @@ function registerIpcHandlers() {
       } catch { /* fall through */ }
     }
 
-    // Windows absolute path
+    // Windows absolute path. Resolution order:
+    //   1. Filesystem stat — most reliable when the path actually
+    //      exists. Distinguishes folder vs file deterministically.
+    //   2. Heuristic fallback — when the path doesn't exist (yet)
+    //      OR fs throws (permission, network share offline). Includes
+    //      a dotfile-name carve-out: `D:\.claude` style paths used
+    //      to fail because `\.claude` matched the file-extension
+    //      regex (`.claude` looks like 6-char extension).
     if (/^[A-Za-z]:\\/.test(text) || text.startsWith('\\\\')) {
-      const name   = text.split(/[/\\]/).filter(Boolean).pop() || text;
-      const hasExt = /\.[a-zA-Z0-9]{1,6}$/.test(name);
-      if (/\.exe$/i.test(text)) return { type: 'app',    value: text, label: name.replace(/\.exe$/i, '') };
+      const name = text.split(/[/\\]/).filter(Boolean).pop() || text;
+
+      // (1) Filesystem stat — sync is fine; this handler is async
+      //     and clipboard analysis runs at most every 1.5 s.
+      try {
+        const stat = fs.statSync(text);
+        if (stat.isDirectory()) {
+          return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
+        }
+        if (stat.isFile()) {
+          if (/\.exe$/i.test(text)) return { type: 'app', value: text, label: name.replace(/\.exe$/i, '') };
+          // Other file types — surface as 'app' so the dialog
+          // routes to the launcher (Windows shell-execute handles
+          // documents via their default association).
+          return { type: 'app', value: text, label: name.replace(/\.[a-zA-Z0-9]+$/, '') };
+        }
+      } catch { /* path doesn't exist or no permission — fall through */ }
+
+      // (2) Heuristic. dotfile-style names (`.claude`, `.config`,
+      //     `.git`) are conventionally folders, NOT files with a
+      //     ".claude" extension. Detect by leading dot + no further
+      //     dot in the basename.
+      const isDotName = name.startsWith('.') && !name.slice(1).includes('.');
+      const hasExt = !isDotName && /\.[a-zA-Z0-9]{1,6}$/.test(name);
+      if (/\.exe$/i.test(text)) return { type: 'app', value: text, label: name.replace(/\.exe$/i, '') };
       if (!hasExt || /[/\\]$/.test(text)) return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
+    }
+
+    // Hex colour code — match `#abc`, `#abcdef`, `#AABBCC`, also bare
+    // `abcdef` if surrounded by nothing else (people often copy from
+    // dev tools without the `#`). Normalise to canonical `#RRGGBB`
+    // uppercase so the renderer doesn't have to repeat the work.
+    {
+      const hexMatch = /^#?([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.exec(text);
+      if (hexMatch) {
+        const raw = hexMatch[1];
+        const full = raw.length === 3
+          ? raw.split('').map(c => c + c).join('')
+          : raw;
+        const norm = '#' + full.toUpperCase();
+        return { type: 'hex', value: norm, label: norm };
+      }
+    }
+
+    // Plain text fallback — accepts both single-line snippets AND
+    // multiline blobs. The renderer offers two destinations
+    // (clipboard text card OR memo) so multiline content is not
+    // only welcome but expected (memo is the natural home for
+    // pasted prose / GPT output).
+    //
+    //   - min length: 2 chars (drops accidental 1-char selects)
+    //   - max length: 50_000 chars (defends against the
+    //     occasional binary-blob accident; legitimate memos are
+    //     well under this)
+    //   - newlines allowed (was previously rejected — that's
+    //     exactly the case the user reported as broken)
+    //
+    // Label = first non-empty line, capped at 40 chars + ellipsis.
+    // This reads better than "first 40 chars including the heading
+    // hash and bullets" since the actual title of a pasted memo is
+    // almost always its first content line.
+    {
+      if (text.length >= 2 && text.length <= 50_000) {
+        const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) ?? text;
+        const trimmed = firstLine.trim();
+        const label = trimmed.length > 40 ? trimmed.slice(0, 40) + '…' : trimmed;
+        return { type: 'text', value: text, label, html };
+      }
     }
 
     return { type: 'none' };
@@ -1571,7 +3237,9 @@ function registerIpcHandlers() {
     const tab = findChromeTabByHost(url);
     if (tab) sendSse({ action: 'focus', tabId: tab.id, windowId: tab.windowId });
     else     shell.openExternal(url);
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
   });
 
   ipcMain.on('open-path', (_, folderPath, closeAfter) => {
@@ -1579,7 +3247,9 @@ function registerIpcHandlers() {
     exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('open-path.ps1')}"`, {
       env: { ...process.env, QL_PATH: folderPath },
     });
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
   });
 
   ipcMain.on('run-cmd', (_, command, closeAfter) => {
@@ -1587,13 +3257,16 @@ function registerIpcHandlers() {
     exec(`cmd /c ${command}`, { windowsHide: false }, (err) => {
       if (err) console.error('[run-cmd]', err.message);
     });
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
   });
 
   ipcMain.on('copy-text', (_, text, closeAfter) => {
     clipboard.writeText(text);
     // Brief delay so React can finish rendering the "복사됨" toast before hiding
-    if (closeAfter) setTimeout(() => mainWindow.hide(), 700);
+    maybeCloseAfter(closeAfter, 700);
+    // copy doesn't launch external app — no top reassert needed
   });
 
   ipcMain.on('open-guide', () => {
@@ -1607,7 +3280,9 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('launch-or-focus-app', async (_, exePath, closeAfter, _monitor) => {
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
     try {
       const { stdout } = await runPsAsync('launch-or-focus-app.ps1', { QL_PATH: exePath }, { timeout: 10000 });
       // Defensive: even if runPsAsync's encoding guard fails for any reason,
@@ -1633,7 +3308,9 @@ function registerIpcHandlers() {
   });
 
   ipcMain.handle('focus-window', async (_, title, closeAfter) => {
-    if (closeAfter) mainWindow.hide();
+    maybeCloseAfter(closeAfter);
+    armLaunchGrace(closeAfter);
+    reassertTopAfterLaunch(closeAfter);
     try {
       const { stdout } = await runPsAsync('focus-window.ps1', { QL_TITLE: title }, { timeout: 5000 });
       return { success: stdout.trim().toUpperCase().includes('FOUND') };
@@ -1709,18 +3386,15 @@ function registerIpcHandlers() {
   ipcMain.handle('resize-active-window', async (event, { pct }) => {
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win) return { success: false };
-    const wa = getScreen().getDisplayMatching(win.getBounds()).workArea;
-    if (pct >= 100) {
-      win.setBounds({ x: wa.x, y: wa.y, width: wa.width, height: wa.height }, true);
-    } else {
-      const w = Math.round(wa.width  * pct / 100);
-      const h = Math.round(wa.height * pct / 100);
-      win.setBounds({
-        x: wa.x + Math.round((wa.width  - w) / 2),
-        y: wa.y + Math.round((wa.height - h) / 2),
-        width: w, height: h,
-      }, true);
-    }
+    // Funnel through the SSOT resize helper so `/N` matches the slider
+    // and preset paths byte-for-byte. Persist the new pct into
+    // settings so subsequent invocations (cold start, show after
+    // hide, hidden→show settings change) reuse it — the user's
+    // "code policy unification" requirement.
+    const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
+    applyWindowSizePct(win, clamped);
+    cachedWindowSizePct = clamped;
+    persistWindowSizePct(clamped);
     return { success: true };
   });
 
@@ -1873,8 +3547,30 @@ function registerIpcHandlers() {
     const flagged    = identifiers.map(item => ({
       ...item, isBrowser: item.type === 'url' || item.type === 'browser',
     }));
+
+    // Fast path env: when we have a cached PS-unaware work area for this
+    // monitor, hand it to PS so the script can skip Add-Type
+    // System.Windows.Forms (~250-400 ms first-time) and the monitor
+    // enumeration loop. Cache invalidates on every Electron display
+    // event, so a stale value can only persist within a single tile
+    // invocation — not across configuration changes.
+    const cachedWA = psWorkAreaCache.get(monitor);
+    const cacheEnv = cachedWA ? {
+      QL_PS_WA_X: String(cachedWA.X),
+      QL_PS_WA_Y: String(cachedWA.Y),
+      QL_PS_WA_W: String(cachedWA.W),
+      QL_PS_WA_H: String(cachedWA.H),
+      QL_SKIP_MONITOR_DIAG: '1',
+    } : {};
+    if (cachedWA) {
+      log.debug(`[tile-cache] using cached PS-WA for monitor=${monitor}: (${cachedWA.X},${cachedWA.Y},${cachedWA.W}x${cachedWA.H})`);
+    } else {
+      log.debug(`[tile-cache] miss for monitor=${monitor} — PS will enumerate, capturing for next call`);
+    }
+
     const psPromise  = runPsAsync('run-tile-ps.ps1', {
       ...monitorEnvFor(monitor),
+      ...cacheEnv,
       QL_ITEMS: JSON.stringify(flagged),
     }, {
       timeout: 60000,  // PS's internal deadline is 45s + settle passes; breathing room
@@ -1883,7 +3579,22 @@ function registerIpcHandlers() {
       // — e.g. waiting for Office splash window — this lets us distinguish
       // "still searching" from "hung" in real time instead of staring at a
       // silent log for 45 s and assuming tiling failed.
-      onLine: (line) => log.debug(`[tile/ps] ${line}`),
+      // While we're at it, sniff for the "[diag] picked PS-enum mon#K"
+      // line so we can populate `psWorkAreaCache` from the first run's
+      // enumeration result. The regex is the only piece of this that's
+      // tightly coupled to PS output format — _Position.ps1's
+      // Get-NativeWorkArea owns that line, so changes to its format
+      // need to update both sides.
+      onLine: (line) => {
+        log.debug(`[tile/ps] ${line}`);
+        if (cachedWA) return;  // already cached this run
+        const m = /\[diag\] picked PS-enum mon#(\d+).*work=\((-?\d+),(-?\d+),(\d+)x(\d+)\)/.exec(line);
+        if (m && Number(m[1]) === Number(monitor)) {
+          const wa = { X: Number(m[2]), Y: Number(m[3]), W: Number(m[4]), H: Number(m[5]) };
+          psWorkAreaCache.set(monitor, wa);
+          log.debug(`[tile-cache] captured PS-WA for monitor=${monitor}: (${wa.X},${wa.Y},${wa.W}x${wa.H})`);
+        }
+      },
     })
       .then(() => ({ success: true, error: '' }))
       .catch(err => ({ success: false, error: err.message }));
@@ -1953,18 +3664,104 @@ function registerIpcHandlers() {
     const displays = screen.getAllDisplays();
     const primary  = screen.getPrimaryDisplay();
 
-    // Briefly show a numbered overlay on each display
+    // Per-monitor overlay window sized as a fraction of each monitor's
+    // OWN work area — not a hardcoded 200×200. Earlier versions used
+    // a fixed size that:
+    //   - looked tiny on a 4K screen (the "1" was barely readable)
+    //   - drifted off-centre on portrait or oddly-sized monitors
+    //   - landed under the taskbar on the primary (display.bounds
+    //     includes the taskbar; workArea excludes it)
+    // We now scale to the shorter edge of workArea and re-centre on
+    // workArea (not bounds), which fixes the clamping/positioning
+    // complaints. Sizing math respects display.scaleFactor implicitly
+    // because workArea is in DIP — Electron's BrowserWindow setBounds
+    // takes the same coord space.
+    const accentHex = (() => {
+      try {
+        const a = store.get('appData')?.settings?.accentColor;
+        return typeof a === 'string' && /^#[0-9a-f]{6}$/i.test(a) ? a : '#6366f1';
+      } catch { return '#6366f1'; }
+    })();
+    // RGB triple for use in rgba() — keeps the glow tinted by the
+    // user's chosen accent without baking a constant.
+    const accentRgb = (() => {
+      const n = parseInt(accentHex.slice(1), 16);
+      return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+    })();
+    const theme = store.get('appData')?.settings?.theme;
+    const isLight = theme === 'light';
+    const surface = isLight ? 'rgba(255, 255, 255, 0.92)' : 'rgba(12, 12, 22, 0.78)';
+    const textColor = isLight ? '#0f172a' : '#f8fafc';
+    const subText = isLight ? 'rgba(15, 23, 42, 0.6)' : 'rgba(248, 250, 252, 0.55)';
+
     const wins = displays.map((display, i) => {
-      const { x, y, width, height } = display.bounds;
+      const wa = display.workArea;
+      const minEdge = Math.min(wa.width, wa.height);
+      // Card is 30% of the shorter work-area edge, clamped to a
+      // readable range so it doesn't disappear on a tiny secondary
+      // monitor and doesn't dominate an ultrawide.
+      const cardSize = Math.max(160, Math.min(320, Math.round(minEdge * 0.3)));
+      const winSize  = cardSize + 40; // outer window has glow room beyond the card
+      const winX = wa.x + Math.round((wa.width  - winSize) / 2);
+      const winY = wa.y + Math.round((wa.height - winSize) / 2);
+
       const win = new BrowserWindow({
-        x: x + Math.floor(width / 2) - 100, y: y + Math.floor(height / 2) - 100,
-        width: 200, height: 200,
+        x: winX, y: winY,
+        width: winSize, height: winSize,
         frame: false, transparent: true, alwaysOnTop: true,
         skipTaskbar: true, focusable: false,
         webPreferences: { nodeIntegration: false, contextIsolation: true },
       });
-      const label = display.id === primary.id ? '주 모니터' : '보조 모니터';
-      const html  = `<!DOCTYPE html><html style="margin:0;background:transparent"><body style="margin:0;display:flex;align-items:center;justify-content:center;width:200px;height:200px"><div style="background:rgba(12,12,22,0.72);backdrop-filter:blur(32px) saturate(160%);-webkit-backdrop-filter:blur(32px) saturate(160%);border-radius:22px;width:172px;height:172px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;border:2px solid rgba(99,102,241,0.65);box-shadow:0 0 0 1px rgba(99,102,241,0.15),0 0 48px rgba(99,102,241,0.45),0 16px 48px rgba(0,0,0,0.65)"><div style="color:#fff;font-size:78px;font-weight:900;font-family:system-ui;line-height:1;text-shadow:0 0 24px rgba(99,102,241,0.7)">${i + 1}</div><div style="color:rgba(255,255,255,0.5);font-size:11px;font-family:system-ui;letter-spacing:0.04em">${label}</div></div></body></html>`;
+      try { win.setAlwaysOnTop(true, 'screen-saver'); } catch {}
+
+      // Sub-label: index + (주) when primary + dimensions for context.
+      // Earlier the label was just "주 모니터" / "보조 모니터" which
+      // (a) didn't show the number on non-primary displays and (b)
+      // labelled every secondary identically when there were 3+.
+      const sub = `${display.bounds.width}×${display.bounds.height}` +
+                  `${display.id === primary.id ? ' · 주' : ''}`;
+
+      // Sizes scale with the card so a 320 card has a larger digit
+      // than a 160 card. Card numerals dominate (50% of card edge).
+      const numSize  = Math.round(cardSize * 0.5);
+      const subSize  = Math.max(11, Math.round(cardSize * 0.07));
+      const radius   = Math.round(cardSize * 0.13);
+
+      const html = `<!DOCTYPE html><html style="margin:0;background:transparent;-webkit-font-smoothing:antialiased"><body style="margin:0;display:flex;align-items:center;justify-content:center;width:${winSize}px;height:${winSize}px;overflow:hidden">
+        <div style="
+          background:${surface};
+          backdrop-filter:blur(32px) saturate(160%);
+          -webkit-backdrop-filter:blur(32px) saturate(160%);
+          border-radius:${radius}px;
+          width:${cardSize}px;height:${cardSize}px;
+          display:flex;align-items:center;justify-content:center;flex-direction:column;
+          gap:${Math.round(cardSize * 0.04)}px;
+          border:2px solid rgba(${accentRgb}, 0.55);
+          box-shadow:
+            0 0 0 1px rgba(${accentRgb}, 0.12),
+            0 0 ${Math.round(cardSize * 0.3)}px rgba(${accentRgb}, 0.42),
+            0 ${Math.round(cardSize * 0.06)}px ${Math.round(cardSize * 0.18)}px rgba(0,0,0,0.55);
+          animation:nostMonIn 220ms cubic-bezier(0.22, 1, 0.36, 1);
+        ">
+          <div style="
+            color:${textColor};
+            font-size:${numSize}px;
+            font-weight:900;
+            font-family:system-ui,-apple-system,'Pretendard Variable',sans-serif;
+            line-height:1;
+            letter-spacing:-0.04em;
+            text-shadow:0 0 ${Math.round(cardSize * 0.14)}px rgba(${accentRgb}, 0.6);
+          ">${i + 1}</div>
+          <div style="
+            color:${subText};
+            font-size:${subSize}px;
+            font-family:system-ui,-apple-system,'Pretendard Variable',sans-serif;
+            letter-spacing:0.04em;
+            font-weight:500;
+          ">${sub}</div>
+        </div>
+        <style>@keyframes nostMonIn{from{opacity:0;transform:scale(0.86)}to{opacity:1;transform:scale(1)}}</style>
+      </body></html>`;
       win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
       return win;
     });
@@ -1984,12 +3781,52 @@ function registerIpcHandlers() {
     } catch { return { isDialog: false }; }
   });
 
-  /** Navigate the active file dialog to a specific folder path. */
+  /** Navigate the active file dialog to a specific folder path.
+   *
+   *  -STA is required: the PS script uses [System.Windows.Forms.Clipboard]
+   *  to ferry the Unicode-safe path through the clipboard (replacing the
+   *  old SendKeys-typing approach that mangled Korean characters). The
+   *  managed Clipboard API needs STA threading; without -STA you get a
+   *  "Current thread must be set to single thread apartment (STA) mode"
+   *  exception and nothing pastes. */
   ipcMain.on('jump-to-dialog-folder', (_, folderPath) => {
-    exec(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps('jump-to-dialog-folder.ps1')}"`, {
-      env: { ...process.env, QL_PATH: folderPath },
+    // Hand the dialog HWND through too — the PS script SetForegroundWindows
+    // it before the keystroke sequence, so a user who clicked the popup (or
+    // another app) since opening the dialog still gets the paste delivered
+    // to the right place instead of whatever happens to be foreground.
+    exec(`powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File "${ps('jump-to-dialog-folder.ps1')}"`, {
+      env: {
+        ...process.env,
+        QL_PATH: folderPath,
+        QL_DIALOG_HWND: String(dialogTrackedHwnd || 0),
+      },
     });
   });
+
+  // ── Dialog companion popup IPC ───────────────────────────────────
+  ipcMain.on('dialog-popup-request-state', () => pushDialogPopupState());
+  ipcMain.on('dialog-popup-dismiss', () => {
+    // Mark THIS dialog as dismissed so the poll doesn't reattach.
+    dialogDismissedHwnd = dialogTrackedHwnd;
+    destroyDialogPopupWindow();
+  });
+  /** Renderer signals "pointer is over the chip strip / open menu — let
+   *  clicks reach me" or "pointer is in transparent area — make me
+   *  click-through so the dialog gets the click". Same protocol the
+   *  badges overlay uses for its forward-mouse-events click-through. */
+  ipcMain.on('dialog-popup-set-capture', (_, capture) => {
+    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+    if (capture) {
+      dialogPopupWin.setIgnoreMouseEvents(false);
+    } else {
+      dialogPopupWin.setIgnoreMouseEvents(true, { forward: true });
+    }
+  });
+
+  // Start the dialog detection poll. Runs for the app lifetime — cheap
+  // (one PS invocation every 600ms with a tiny payload). When no dialog
+  // is in foreground the tick is essentially a no-op.
+  startDialogPoll();
 
   // ── 12j. Auto-Updater ────────────────────────────────────────────
 
@@ -2145,6 +3982,191 @@ function registerIpcHandlers() {
     return { success: true, id };
   });
 
+  // ── Screen-capture color picker ─────────────────────────────────
+  // Replaces the in-renderer EyeDropper API which can only sample
+  // pixels inside the launcher's own window. The flow:
+  //   1) hide the launcher so it's not in the screenshot
+  //   2) capture the primary display via desktopCapturer
+  //   3) open a fullscreen frameless window that renders the shot
+  //   4) user moves cursor (magnifier follows), clicks to commit,
+  //      Esc / OS-close to cancel
+  //   5) always restore the launcher and resolve the renderer's invoke
+  //
+  // TODO(multi-display): v1 captures only the primary display. To
+  // support multi-monitor we'd need either one picker window per
+  // display each fed its own screenshot, or a single virtual-desktop-
+  // sized window that stitches all sources — both require coordinate
+  // translation (Electron screen DIPs ↔ thumbnail pixels) per display.
+  let pickerInFlight = false;
+  ipcMain.handle('eyedropper-pick', async () => {
+    if (pickerInFlight) return { success: false, reason: 'busy' };
+    pickerInFlight = true;
+
+    const wasVisible = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+    const restoreLauncher = () => {
+      try {
+        if (wasVisible && mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+        }
+      } catch (e) { log.warn('[picker] restore main failed', e); }
+    };
+
+    try {
+      // 1. Hide the launcher so it doesn't appear in the screenshot.
+      if (wasVisible && mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.hide(); } catch {}
+      }
+      // Wait one frame for the OS compositor to actually drop the window.
+      await new Promise(r => setTimeout(r, 180));
+
+      // 2. Capture the monitor under the cursor — not the primary.
+      //    Earlier versions always captured the primary which surfaced
+      //    "왜 다른 모니터 화면이 떠?" when the user opened the picker
+      //    from the launcher running on a secondary display. Cursor-
+      //    nearest matches user intent for global-shortcut and click-
+      //    triggered invocations alike.
+      const screen   = getScreen();
+      const cursorPt = screen.getCursorScreenPoint();
+      const target   = screen.getDisplayNearestPoint(cursorPt);
+      const allDisplays = screen.getAllDisplays();
+      const targetIndex = allDisplays.findIndex(d => d.id === target.id);
+      const bounds   = target.bounds; // DIP
+      const sf       = target.scaleFactor || 1;
+      const physW    = Math.round(bounds.width  * sf);
+      const physH    = Math.round(bounds.height * sf);
+      log.info(`[picker] target display id=${target.id} index=${targetIndex + 1} bounds=(${bounds.x},${bounds.y},${bounds.width}x${bounds.height}) scale=${sf} physical=${physW}x${physH}`);
+
+      let sources;
+      try {
+        sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: physW, height: physH },
+        });
+      } catch (e) {
+        log.warn('[picker] desktopCapturer failed', e);
+        restoreLauncher();
+        pickerInFlight = false;
+        return { success: false, reason: 'capture-failed' };
+      }
+      log.info(`[picker] desktopCapturer returned ${sources.length} source(s): ${sources.map(s => `id=${s.id} name="${s.name}" display_id=${s.display_id}`).join(' | ')}`);
+
+      // Match the source by display_id; fall back to source-index = monitor-index.
+      let src = null;
+      const wantId = String(target.id);
+      for (const s of sources) {
+        if (s.display_id && String(s.display_id) === wantId) { src = s; break; }
+      }
+      // Fallback: Electron occasionally returns display_id="" on Windows.
+      // The sources are ordered to match getAllDisplays() in that case,
+      // so try the same index as our target display.
+      if (!src && targetIndex >= 0 && sources[targetIndex]) src = sources[targetIndex];
+      if (!src) src = sources[0];
+      if (!src) {
+        restoreLauncher();
+        pickerInFlight = false;
+        return { success: false, reason: 'no-source' };
+      }
+      const thumbSize = src.thumbnail.getSize();
+      const isEmpty   = src.thumbnail.isEmpty();
+      log.info(`[picker] selected source id=${src.id} name="${src.name}" thumbSize=${thumbSize.width}x${thumbSize.height} isEmpty=${isEmpty}`);
+      if (isEmpty || thumbSize.width === 0 || thumbSize.height === 0) {
+        log.warn('[picker] thumbnail is empty — capture returned blank (HDR / DRM / GPU acceleration off?)');
+        restoreLauncher();
+        pickerInFlight = false;
+        return { success: false, reason: 'capture-blank' };
+      }
+
+      const dataUrl = src.thumbnail.toDataURL();
+
+      // 3. Open the picker window over the TARGET display (cursor monitor).
+      const win = new BrowserWindow({
+        x: bounds.x, y: bounds.y,
+        width:  bounds.width, height: bounds.height,
+        frame: false,
+        transparent: false,
+        backgroundColor: '#000000',
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        resizable: false,
+        movable: false,
+        fullscreenable: false,
+        hasShadow: false,
+        show: false,
+        webPreferences: {
+          preload: path.join(__dirname, 'preload-picker.js'),
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: false,
+        },
+      });
+
+      // Lift above OS chrome / taskbar.
+      try { win.setAlwaysOnTop(true, 'screen-saver'); } catch {}
+
+      // 4. Wire result / cancel / close.
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        try { if (!win.isDestroyed()) win.close(); } catch {}
+        restoreLauncher();
+        pickerInFlight = false;
+        resolveOuter(value);
+      };
+
+      let resolveOuter;
+      const promise = new Promise(r => { resolveOuter = r; });
+
+      const onResult = (e, hex) => {
+        if (e.sender !== win.webContents) return;
+        finish({ success: true, hex: String(hex || '').toUpperCase() });
+      };
+      const onCancel = (e) => {
+        if (e.sender !== win.webContents) return;
+        finish({ success: false, reason: 'canceled' });
+      };
+      ipcMain.on('picker-result', onResult);
+      ipcMain.on('picker-cancel', onCancel);
+
+      win.on('closed', () => {
+        ipcMain.removeListener('picker-result', onResult);
+        ipcMain.removeListener('picker-cancel', onCancel);
+        finish({ success: false, reason: 'canceled' });
+      });
+
+      win.webContents.on('did-finish-load', () => {
+        try {
+          // Forward the monitor identity to the renderer so the picker
+          // can show "모니터 N" in its hint chrome. That makes it
+          // immediately obvious which screen the user is sampling
+          // from — same diagnostic the user complained was missing.
+          win.webContents.send('picker-init', {
+            dataUrl,
+            monitorIndex: targetIndex + 1,
+            isPrimary: target.id === screen.getPrimaryDisplay().id,
+            monitorCount: allDisplays.length,
+          });
+          win.show();
+          win.focus();
+        } catch (e) { log.warn('[picker] init send failed', e); }
+      });
+
+      try {
+        await win.loadFile(path.join(__dirname, 'picker.html'));
+      } catch (e) {
+        log.warn('[picker] loadFile failed', e);
+        finish({ success: false, reason: 'load-failed' });
+      }
+
+      return promise;
+    } catch (e) {
+      log.warn('[picker] unexpected', e);
+      restoreLauncher();
+      pickerInFlight = false;
+      return { success: false, reason: 'error' };
+    }
+  });
+
   /** Mini-window → launch a single item. Forwards to the main renderer so
    *  the full launch pipeline (polling, positioning, slow-notice toast) runs
    *  exactly as if the user clicked the card in the main grid. */
@@ -2163,6 +4185,20 @@ function registerIpcHandlers() {
     sendSafe('badges-launch-ref', payload);
   });
 
+  /** Main renderer says the badge-fired group launch finished — relay
+   *  to every overlay so the spinner ring on the originating badge
+   *  can clear immediately (rather than waiting for the safety
+   *  timeout). The overlay matches by refType+refId, not badge.id,
+   *  since the badge may live in multiple presets/overlays. */
+  ipcMain.on('badges-launch-done', (_e, payload) => {
+    if (!payload || !payload.refType || !payload.refId) return;
+    for (const win of badgeOverlays.values()) {
+      if (win && !win.isDestroyed()) {
+        try { win.webContents.send('badges-launch-done', payload); } catch {}
+      }
+    }
+  });
+
   /** Overlay sends this when the user drops a badge back inside the main
    *  window OR right-clicks → unpin. */
   ipcMain.on('badges-unpin', (_e, badgeId) => {
@@ -2176,13 +4212,40 @@ function registerIpcHandlers() {
     ));
   });
 
-  /** Overlay flips its click-through mode as the pointer enters/leaves badges. */
-  ipcMain.on('badges-set-capture', (_e, capture) => {
-    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
-    if (capture) {
-      badgeOverlay.setIgnoreMouseEvents(false);
-    } else {
-      badgeOverlay.setIgnoreMouseEvents(true, { forward: true });
+  /**
+   * Overlay's React tree finished mounting — re-push state so it
+   * gets seen even if our `ready-to-show` push fired before the
+   * React `useEffect` registered its listener. (Bug we hit: first
+   * promote-to-badge didn't render because of that race; second
+   * promote re-pushed and both became visible at once.)
+   *
+   * Cheap to handle multiple times if the renderer over-asks.
+   */
+  /** Renderer's mount effect calls this; respond with state for THAT
+   *  overlay's display only. (Each overlay sees only its share of the
+   *  badges — see pushBadgeStateForDisplay.) */
+  ipcMain.on('badges-request-state', (e) => {
+    const displays = getScreen().getAllDisplays();
+    for (const [displayId, win] of badgeOverlays) {
+      if (win.webContents === e.sender) {
+        const display = displays.find(d => d.id === displayId);
+        if (display) pushBadgeStateForDisplay(display, win);
+        return;
+      }
+    }
+  });
+
+  /** Overlay flips its click-through mode as the pointer enters/leaves
+   *  badges. Routed by sender so each overlay's capture toggle is
+   *  independent — we don't enable clicks across all displays just
+   *  because the user is hovering a badge on one of them. */
+  ipcMain.on('badges-set-capture', (e, capture) => {
+    for (const win of badgeOverlays.values()) {
+      if (win.webContents === e.sender) {
+        if (capture) win.setIgnoreMouseEvents(false);
+        else win.setIgnoreMouseEvents(true, { forward: true });
+        return;
+      }
     }
   });
 
@@ -2194,9 +4257,15 @@ function registerIpcHandlers() {
     return x >= b.x && x <= b.x + b.width && y >= b.y && y <= b.y + b.height;
   });
 
-  /** Overlay right-click → show a native context menu anchored at cursor. */
-  ipcMain.on('badges-context-menu', (_e, badgeId) => {
-    if (!badgeOverlay || badgeOverlay.isDestroyed()) return;
+  /** Overlay right-click → show a native context menu anchored at cursor.
+   *  Pop the menu on the sending overlay (i.e. the display the badge is
+   *  on) — `menu.popup({ window })` requires a real BrowserWindow ref. */
+  ipcMain.on('badges-context-menu', (e, badgeId) => {
+    let senderWin = null;
+    for (const win of badgeOverlays.values()) {
+      if (win.webContents === e.sender) { senderWin = win; break; }
+    }
+    if (!senderWin) return;
     const menu = Menu.buildFromTemplate([
       {
         label: '실행',
@@ -2225,7 +4294,7 @@ function registerIpcHandlers() {
         click: () => mutateBadges(() => []),
       },
     ]);
-    menu.popup({ window: badgeOverlay });
+    menu.popup({ window: senderWin });
   });
 
   // ── 12k. Extension Bridge ────────────────────────────────────────
@@ -2253,6 +4322,102 @@ function registerIpcHandlers() {
       browserExePath: result.exePath,
     };
   });
+
+  // Chrome Web Store 직링크. 2026-04 승인된 nost-bridge 페이지로 보내서
+  // 사용자는 "Chrome에 추가" 한 번이면 끝 — 개발자 모드 / 폴더 로드
+  // 안내가 더이상 기본 경로가 아니다. Whale도 Chrome Web Store 호환이라
+  // 같은 URL에서 설치 가능.
+  const NOST_BRIDGE_EXTENSION_ID = 'fjehpjoninofepdoiakibjaokakihilo';
+
+  ipcMain.handle('open-extension-store', async () => {
+    const STORE_URL = `https://chromewebstore.google.com/detail/nost-bridge/${NOST_BRIDGE_EXTENSION_ID}`;
+    try {
+      await shell.openExternal(STORE_URL);
+      return { success: true, url: STORE_URL };
+    } catch (err) {
+      return { success: false, reason: 'open-failed', error: String(err && err.message || err) };
+    }
+  });
+
+  // Chrome ExternalExtensions 메커니즘. HKCU\Software\Google\Chrome\Extensions
+  // 아래 확장 ID 키를 만들고 update_url을 박아두면, Chrome이 다음 실행
+  // 시점에 "이 확장이 추가되었습니다" 알림을 띄우고 사용자가 한 번만
+  // "활성화"를 눌러주면 끝. 스토어 페이지에서 "Chrome에 추가" → 권한
+  // 다이얼로그 → 확인의 2-클릭 흐름이 1-클릭으로 줄어든다.
+  //
+  // 실패해도 치명적이지 않다 — 호출 측은 이걸 silent best-effort로
+  // 쏘고 항상 스토어 URL을 폴백으로 같이 연다.
+  ipcMain.handle('register-extension-external', async () => {
+    if (process.platform !== 'win32') {
+      return { success: false, reason: 'not-windows' };
+    }
+
+    const KEY = `HKCU\\Software\\Google\\Chrome\\Extensions\\${NOST_BRIDGE_EXTENSION_ID}`;
+    const UPDATE_URL = 'https://clients2.google.com/service/update2/crx';
+    const { execFile } = require('child_process');
+
+    return await new Promise(resolve => {
+      execFile(
+        'reg.exe',
+        ['add', KEY, '/v', 'update_url', '/t', 'REG_SZ', '/d', UPDATE_URL, '/f'],
+        { windowsHide: true },
+        (err) => {
+          if (err) {
+            resolve({ success: false, reason: 'reg-failed', error: String(err.message || err) });
+          } else {
+            resolve({ success: true });
+          }
+        }
+      );
+    });
+  });
+
+  // ── 12k. Media widget — write side ──────────────────────────────────
+  //
+  // The widget is a control surface: media keys go out (play/pause,
+  // next, prev, vol +/-, mute) and that's it. The read side
+  // (NowPlaying via SMTC) was dropped after a freeze regression —
+  // see media-controller.js for the longer note. We keep the module
+  // loaded so init() binds koffi to user32.dll once, then commands
+  // route through `media.command(action)` synchronously.
+  const media = require('./media-controller');
+  media.init();
+
+  // Initialise the native foreground-window detector so the dialog poll
+  // can use the koffi-bound user32 path instead of PS-spawning every
+  // 600 ms. Failure here is non-fatal — the poll falls back to the PS
+  // script automatically.
+  foregroundWindow.init();
+
+  ipcMain.on('media-command', (_e, action) => {
+    if (typeof action !== 'string') return;
+    media.command(action);
+  });
+
+  /**
+   * "Click the media widget" → focus whatever browser tab is
+   * currently making sound. We use the nost-bridge extension's
+   * tab list (already pushed to global.chromeTabs on every tab
+   * event in the browser). Tabs marked `audible: true` and not
+   * `muted: true` are candidates; first match wins.
+   *
+   * Returns the focused tab descriptor when we were able to dispatch
+   * a focus action, or null otherwise (no audible tab found, or
+   * the extension isn't connected so SSE has nowhere to land).
+   *
+   * Limitation: only covers Chromium-based browsers with the
+   * extension installed. Native media apps (Spotify desktop, etc.)
+   * aren't visible to us — that path needs SMTC / WASAPI which we
+   * deliberately punted on after the freeze regression.
+   */
+  ipcMain.handle('media-focus-source', () => {
+    const tabs = global.chromeTabs || [];
+    const audible = tabs.find(t => t.audible && !t.muted);
+    if (!audible) return null;
+    if (!sseConnection) return null; // extension not connected
+    sendSse({ action: 'focus', tabId: audible.id, windowId: audible.windowId });
+    return { tabId: audible.id, title: audible.title, url: audible.url };
+  });
 }
 
 // ── 13. App Lifecycle ─────────────────────────────────────────────────
@@ -2261,6 +4426,10 @@ app.whenReady().then(() => {
   // Show splash immediately to provide visual feedback during cold start
   createLoadingWindow();
   startExtServer();
+  // Listen for monitor add/remove/metrics changes so the PS work-area
+  // cache invalidates whenever the display layout changes. Without
+  // this, a tile after unplugging a monitor would land on a phantom.
+  bindMonitorChangeInvalidator();
 
   // Apply Content Security Policy to all renderer page loads.
   // In dev mode (Vite dev server), allow inline scripts + ws:// connections so
@@ -2288,12 +4457,133 @@ app.whenReady().then(() => {
 
   createWindow();
 
-  // Spawn the floating orb if the user has it enabled. Delayed a tick so
-  // the main window initializes first — avoids a perceived double-flash.
-  setTimeout(() => syncFloatingWindow(), 200);
+  // ── Badge revival triggers ────────────────────────────────────────
+  //
+  // Watch for the events that empirically correlate with badge
+  // overlays "disappearing": power state changes, main window getting
+  // focus back, and slow-creep idle. Each fires reviveBadgeOverlays()
+  // which re-asserts always-on-top + sends a fresh paint event,
+  // enough to nudge DWM to re-register the windows in its z-order.
+  try {
+    const { powerMonitor } = require('electron');
+    powerMonitor.on('resume',         () => reviveBadgeOverlays('power-resume'));
+    powerMonitor.on('unlock-screen',  () => reviveBadgeOverlays('screen-unlock'));
+    // 'on-ac' / 'on-battery' are noisy and don't correlate with the
+    // bug — skipped intentionally.
+  } catch (e) {
+    log.warn('[badges] powerMonitor hook failed:', e?.message);
+  }
+  // mainWindow events: when user comes back to the launcher (or even
+  // just opens it via shortcut), refresh overlays. show + focus both
+  // because focus alone can miss the case where the launcher is
+  // already focused but badges have rotted in the meantime.
+  if (mainWindow) {
+    mainWindow.on('show',  () => reviveBadgeOverlays('main-show'));
+    mainWindow.on('focus', () => reviveBadgeOverlays('main-focus'));
+  }
+  // Periodic safety net for the "(d) just disappears over time" case.
+  // 60 s is long enough not to cost anything, short enough that the
+  // user notices recovery within a minute.
+  setInterval(() => reviveBadgeOverlays('periodic'), 60_000);
 
-  // Restore floating badges if any were pinned in a previous session.
-  setTimeout(() => syncBadgeOverlay(), 300);
+  // Floating orb + pinned-badge BrowserWindow spawn is DEFERRED to
+  // after the renderer signals boot complete (`renderer-ready`).
+  // Reason: each BrowserWindow allocation hits Chromium's GPU disk
+  // cache + GL context init, and cold-start collisions between the
+  // main window, the orb, and N pinned badges all racing each
+  // other was the cause of the desktop-wide mouse stutter the user
+  // reported. The IPC handler below stages them with 150 ms gaps so
+  // the GPU compositor can settle between allocations.
+  let deferredWindowsSpawned = false;
+  const spawnDeferredWindows = () => {
+    if (deferredWindowsSpawned) return;
+    deferredWindowsSpawned = true;
+    log.debug('[boot] spawning deferred windows (orb + badges) with stagger');
+    // Orb first — solo, lightweight.
+    setTimeout(() => { try { syncFloatingWindow(); } catch (e) { log.warn('[boot] syncFloatingWindow failed', e?.message); } }, 0);
+    // Badges next — may be many, but they batch internally; one extra
+    // tick of breathing room is plenty.
+    setTimeout(() => { try { syncBadgeOverlay(); } catch (e) { log.warn('[boot] syncBadgeOverlay failed', e?.message); } }, 150);
+  };
+  ipcMain.once('renderer-ready', spawnDeferredWindows);
+  // Safety net: if renderer-ready never lands (boot-stuck path), still
+  // spawn deferred windows after 6 s so the user doesn't lose their
+  // pinned badges/orb forever.
+  setTimeout(spawnDeferredWindows, 6000);
+
+  // ── Extension warmup: nudge the Chrome extension at startup ──
+  // The MV3 service worker may be asleep when nost finishes loading,
+  // which leaves chromeTabs empty for the first few seconds — every
+  // URL card opens a new browser window instead of focusing an
+  // existing tab. We retry every 1.5 s up to 8 attempts (~12 s) and
+  // bail as soon as we see a fresh tabs push from the extension.
+  // The retry has two effects:
+  //   (1) If SSE is already connected, sendSse('refreshTabs') asks
+  //       the extension to call sendTabs() again, picking up tabs
+  //       opened between extension wake and nost ready.
+  //   (2) If SSE is not yet connected, the call no-ops. We just keep
+  //       polling — once the extension's SW reconnects it'll send
+  //       its initial sendTabs() and our `lastTabsUpdateAt` updates.
+  // Helper: push a status string into the renderer's #ql-loading
+  // overlay. No-op once the overlay is gone (the renderer's
+  // __bootStatus guards that). Wrapped for safety; if mainWindow's
+  // webContents is mid-teardown we just swallow.
+  const sendBootStatus = (text) => {
+    try { mainWindow?.webContents?.send('boot:status', text); }
+    catch { /* webContents gone — boot finished or destroyed */ }
+  };
+
+  // Granular cold-start breadcrumbs. Each timer is short enough that
+  // even on a fast machine (overlay dismissed in ~1 s) the user sees
+  // at least the first 2-3 messages cycle. On a slow first-launch
+  // (Defender scan + GPU cache create) the sequence stretches and
+  // every phase becomes visible — Adobe's loading dialog plays the
+  // same trick. Order roughly mirrors the real cold-start work
+  // happening in main + renderer.
+  setTimeout(() => sendBootStatus('Electron 런타임 준비 중...'),       150);
+  setTimeout(() => sendBootStatus('네이티브 바인딩 로드 중...'),       500);
+  setTimeout(() => sendBootStatus('데이터 폴더 확인 중...'),           900);
+  setTimeout(() => sendBootStatus('브라우저 확장 연결 확인 중...'),   1400);
+  setTimeout(() => sendBootStatus('글꼴 캐시 워밍업 중...'),          1900);
+  setTimeout(() => sendBootStatus('UI 그리는 중...'),                  2500);
+  setTimeout(() => sendBootStatus('단축키 등록 중...'),                3100);
+  setTimeout(() => sendBootStatus('마지막 점검 중...'),                3700);
+  setTimeout(() => sendBootStatus('곧 시작합니다...'),                 4300);
+
+  // ext-warmup is DEFERRED until after the renderer signals it's
+  // mounted. Reasons:
+  //   - The setInterval ticks themselves are cheap, but they overlap
+  //     with the heaviest cold-start window (GPU cache build +
+  //     Defender scan + font parse). Pushing them past renderer-ready
+  //     keeps the first 1-2 s of system resources entirely on the
+  //     critical path.
+  //   - The "extension not detected" toast that fires on warmup
+  //     failure is what the user perceives as "lag end" — but warmup
+  //     polling running early means that toast can't fire until 12 s
+  //     in. Starting later lets the toast appear sooner relative to
+  //     the user's interaction time.
+  ipcMain.once('renderer-ready', () => {
+    let extWarmupAttempts = 0;
+    const extWarmupTimer = setInterval(() => {
+      extWarmupAttempts += 1;
+      const haveTabs = lastTabsUpdateAt > 0 && global.chromeTabs?.length > 0;
+      if (haveTabs || extWarmupAttempts >= 8) {
+        clearInterval(extWarmupTimer);
+        log.debug(`[ext-warmup] done after ${extWarmupAttempts} attempt(s) · tabs=${global.chromeTabs?.length ?? 0}`);
+        return;
+      }
+      if (sseConnection) {
+        const sent = sendSse({ action: 'refreshTabs' });
+        log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: refreshTabs sent=${sent}`);
+      } else {
+        log.debug(`[ext-warmup] attempt ${extWarmupAttempts}: no SSE conn yet`);
+      }
+    }, 1500);
+  });
+
+  // (deferred — see spawnDeferredWindows above. Pinned badges restore
+  // after renderer signals boot complete to avoid cold-start GPU
+  // contention.)
 
   // Notify renderer whenever monitor configuration changes
   const screen = getScreen();
@@ -2309,9 +4599,42 @@ app.whenReady().then(() => {
   screen.on('display-removed',         sendMonitorChange);
   screen.on('display-metrics-changed', sendMonitorChange);
   // Badge overlay spans the virtual desktop — resize it when displays change.
-  screen.on('display-added',           () => syncBadgeOverlay());
-  screen.on('display-removed',         () => syncBadgeOverlay());
-  screen.on('display-metrics-changed', () => syncBadgeOverlay());
+  // ── Display event handlers ─────────────────────────────────
+  // `display-metrics-changed` is noisy on Windows: it fires not only on
+  // monitor add/remove or DPI/resolution change, but every time a window
+  // crosses a DPI boundary or even momentarily during taskbar
+  // auto-hide/show. Without de-bouncing, dragging Chrome tabs between
+  // windows on a cross-DPI multi-monitor setup triggered a full
+  // syncBadgeOverlay() (and its setBounds + pushBadgeState) several times
+  // per second — visually, the floating badges appeared to "fly".
+  //
+  // Two-layer guard:
+  //   1. trailing-edge debounce so a burst collapses to one sync.
+  //   2. skip the sync entirely when the virtual desktop bounds didn't
+  //      actually change (most spurious metrics-changed events).
+  let _displaySyncTimer = null;
+  let _lastDisplaysSig = '';
+  const computeDisplaysSig = () => {
+    // Per-display signature: id + bounds + scale. The previous union-only
+    // check missed cases where two displays swapped positions or one
+    // changed DPI without moving — both relevant to per-display overlays
+    // because each window needs to track its own display's bounds.
+    const ds = getScreen().getAllDisplays();
+    return ds.map(d => `${d.id}|${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}|${d.scaleFactor}`).join(';');
+  };
+  const scheduleDisplaySync = () => {
+    if (_displaySyncTimer) clearTimeout(_displaySyncTimer);
+    _displaySyncTimer = setTimeout(() => {
+      _displaySyncTimer = null;
+      const sig = computeDisplaysSig();
+      if (sig === _lastDisplaysSig) return;
+      _lastDisplaysSig = sig;
+      syncBadgeOverlay();
+    }, 250);
+  };
+  screen.on('display-added',           () => { _lastDisplaysSig = ''; scheduleDisplaySync(); });
+  screen.on('display-removed',         () => { _lastDisplaysSig = ''; scheduleDisplaySync(); });
+  screen.on('display-metrics-changed', scheduleDisplaySync);
 
   // ── Auto-updater (packaged builds only) ──────────────────────────
   if (app.isPackaged) {
@@ -2413,4 +4736,9 @@ app.on('will-quit', () => {
   // linger as a zombie tray item.
   endFloatingDrag(/* persist */ false);
   if (floatingWindow && !floatingWindow.isDestroyed()) floatingWindow.destroy();
+
+  // Drop SMTC subscriptions — without this the native binding can hold
+  // its event source alive past process exit, occasionally producing
+  // an "object accessed after destroy" log on shutdown.
+  try { require('./media-controller').destroy(); } catch (_) {}
 });
