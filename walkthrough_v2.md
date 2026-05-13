@@ -590,11 +590,21 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 
 ---
 
-## 10. 현재 WIP 상태 (v1.3.34, 미커밋)
+## 10. 현재 WIP 상태 (v1.3.34 출시 완료 — 다음 라운드 비어있음)
 
 > 매 세션마다 갱신 — `git status --short`로 직접 확인하세요.
+> v1.3.34 의 모든 작업은 2026-05-14 에 commit `68b9d0a` + GitHub Release 발행됨.
+> 다음 라운드 (Phase 2 sync 본격 구현) 시작 시 여기 새 항목 추가.
 
-### 이번 라운드 작업 (테스트 후 사용자 허락 시 커밋)
+### 다음 라운드 작업 후보 (Phase 2 sync 구현)
+
+- `lib/sync.ts` — push/pull 외부 store + LWW per-field 머지
+- `useAppData.save()` 에 sync 트리거 hook (cohort A 만)
+- Realtime channel 구독 (memos + app_data_snapshots)
+- AccountTab 에 sync 토글 + 디바이스 목록 UI
+- 첫 sync 시 cohort C 자동 강등 + 안내 토스트 (`plans/sync-and-auth.md` §14 #3)
+
+### v1.3.34 출시분 (참고용 — 자세히는 §0 변경 요약 + §11 해결됨)
 
 1. **환경설정 Option C 재구조화** — 8 flat tabs → 4 그룹 × 2-3 sub-tabs
    - "나의 nost": 계정 · 데이터
@@ -688,8 +698,15 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 - ✅ 충돌 회피 정책 정착 (v1.3.31 — `canPerform()` SSOT)
 - ✅ 확장 끊김 알림 false-positive (v1.3.33 — `extensionEverConnected` latch)
 - ✅ Stale "설치 준비 완료" 알림 (v1.3.33 — boot sweep)
-- ✅ 튜토리얼 nudge 알림센터 누락 (v1.3.34 미커밋 — 3 경로 모두 미러링)
-- ✅ 문서 코호트 분류 분산 (v1.3.34 미커밋 — `'doc'` first-class)
+- ✅ 튜토리얼 nudge 알림센터 누락 (v1.3.34 — 3 경로 모두 미러링)
+- ✅ 문서 코호트 분류 분산 (v1.3.34 — `'doc'` first-class)
+- ✅ 환경설정 8-flat-tab → 4 그룹 × 2-3 sub-tabs (v1.3.34 Option C)
+- ✅ 다이얼로그 푸터 버튼 좌우 padding 부족 8군데 (v1.3.34)
+- ✅ Whale 분기 이중관리 (v1.3.34 — 단일 Chrome 확장으로 통합)
+- ✅ Auth 일반 자물쇠/꺾쇠 아이콘 → 공식 Google·GitHub 브랜드 마크 (v1.3.34)
+- ✅ Auth CSP 차단 — supabase 도메인 누락 (v1.3.34 — connect-src/img-src allowlist)
+- ✅ PKCE verifier 인스턴스 분리 시 손실 (v1.3.34 — `auth:kv-*` IPC + 모든 키 영속화)
+- ✅ Phase 2 sync 범위 결정 (v1.3.34 — `plans/sync-and-auth.md` §15 + `lib/cohort.ts` SSOT)
 
 ### 진행 중
 - 🔄 **인증 Phase 1 E2E** — `plans/auth-status.md` §3·§4 (외부 console 작업)
