@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId, MemoData, AppNotification } from '../types';
-import { DEFAULT_MEMO_SETTINGS, NOTIFICATION_MAX_AGE_MS } from '../types';
+import { DEFAULT_MEMO_SETTINGS, NOTIFICATION_MAX_AGE_MS, DEFAULT_DOC_COHORT_SETTINGS } from '../types';
 import { newTrialLicense } from './useEntitlement';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
@@ -87,10 +87,40 @@ export function enforcePairInvariant(spaces: Space[]): Space[] {
 }
 
 /**
+ * v1.3.34 migration helper — reclassify legacy 'app'-typed items whose
+ * value is a document path. Previously every non-.exe/.lnk file was
+ * stored as 'app'; the new 'doc' type lets the cohort feature and the
+ * UI render documents distinctly. Only flips items where the extension
+ * is definitively a document; non-matching '.app' items stay as-is so
+ * we don't accidentally relabel legitimate executables we don't know
+ * about. Idempotent — already-'doc' items pass through untouched.
+ *
+ * docExts is the user's customised list when present, otherwise the
+ * conservative default — same source of truth as inferItemFromPath /
+ * main.js analyze-clipboard.
+ */
+const DEFAULT_DOC_EXTS_FOR_MIGRATION = [
+  'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+  'hwp', 'hwpx', 'hwt',
+  'pdf', 'txt', 'md', 'csv',
+  'odt', 'ods', 'odp',
+];
+function maybeReclassifyAsDoc(item: LauncherItem, docExts: string[]): LauncherItem {
+  if (item.type !== 'app') return item;
+  const v = item.value ?? '';
+  if (!v) return item;
+  const m = v.match(/\.([a-zA-Z0-9]+)$/);
+  if (!m) return item;
+  const ext = m[1].toLowerCase();
+  if (!docExts.includes(ext)) return item;
+  return { ...item, type: 'doc' };
+}
+
+/**
  * Normalise one space's shape (pairing / pins / item defaults). Extracted so
  * migrateData() can apply it inside every preset uniformly.
  */
-function normaliseSpace(s: Space): Space {
+function normaliseSpace(s: Space, docExts: string[]): Space {
   const { columnSpan: _cs, widthWeight: _ww, ...rest } = s;
   return {
     ...rest,
@@ -98,15 +128,18 @@ function normaliseSpace(s: Space): Space {
     pinnedIds: s.pinnedIds ?? [],
     pairedWithNext: s.pairedWithNext ?? false,
     splitRatio: s.pairedWithNext ? (s.splitRatio ?? 0.5) : undefined,
-    items: s.items.map(i => ({ ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false })),
+    items: s.items.map(i => maybeReclassifyAsDoc(
+      { ...i, clickCount: i.clickCount ?? 0, pinned: i.pinned ?? false },
+      docExts,
+    )),
   };
 }
 
-function normalisePreset(p: Preset): Preset {
+function normalisePreset(p: Preset, docExts: string[]): Preset {
   return {
     ...p,
     label: p.label ?? `프리셋 ${p.id}`,
-    spaces: enforcePairInvariant((p.spaces ?? []).map(normaliseSpace)),
+    spaces: enforcePairInvariant((p.spaces ?? []).map(s => normaliseSpace(s, docExts))),
     nodeGroups: p.nodeGroups ?? [],
     decks: p.decks ?? [],
     collapsedSpaceIds: p.collapsedSpaceIds ?? [],
@@ -136,6 +169,7 @@ function migrateData(parsed: AppData): AppData {
     // its user has been seeing for months.
     badgeSize: parsed.settings.badgeSize ?? 46,
     memo: parsed.settings.memo ?? { ...DEFAULT_MEMO_SETTINGS },
+    docCohort: parsed.settings.docCohort ?? { ...DEFAULT_DOC_COHORT_SETTINGS },
   };
 
   // ── Preset shape migration ──────────────────────────────────
@@ -161,8 +195,13 @@ function migrateData(parsed: AppData): AppData {
   }
 
   // Ensure exactly 3 presets in the '1','2','3' id order.
+  // v1.3.34: doc reclassification needs the user's documentExtensions list;
+  // empty list ([]) means "user hasn't customised", fall back to defaults.
+  const docExtsForMigration = (parsed.settings.documentExtensions && parsed.settings.documentExtensions.length > 0)
+    ? parsed.settings.documentExtensions
+    : DEFAULT_DOC_EXTS_FOR_MIGRATION;
   const byId = new Map<PresetId, Preset>();
-  for (const p of parsed.presets) byId.set(p.id, normalisePreset(p));
+  for (const p of parsed.presets) byId.set(p.id, normalisePreset(p, docExtsForMigration));
   parsed.presets = (['1', '2', '3'] as PresetId[]).map(id =>
     byId.get(id) ?? buildDefaultPreset(id, false)
   );

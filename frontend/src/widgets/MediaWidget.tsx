@@ -491,7 +491,7 @@ function PlayPauseGesturePill({ accent, onPlayPause, onPrev, onNext }: {
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onContextMenu={(e) => e.stopPropagation()}
-      title={'짧게 : 재생 / 일시정지\n왼쪽으로 : 이전 트랙\n오른쪽으로 : 다음 트랙'}
+      title={'클릭 : 재생 / 일시정지\n왼쪽으로 스와이프 : 이전 트랙\n오른쪽으로 스와이프 : 다음 트랙'}
       style={{
         // Fills the inside-card area (= WIDGET.insideHeight tall,
         // 100% wide within the wrapper's insideMarginX padding) so

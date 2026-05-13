@@ -24,9 +24,13 @@ export const isSupabaseConfigured = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 
 /** supabase-js storage adapter that proxies to safeStorage IPC.
  *  supabase-js calls these synchronously in some paths but the IPC
- *  is async — we resolve the get path by caching the session in
- *  memory after the first read on app boot. Set/remove are fire-
- *  and-forget (the IPC handles persistence). */
+ *  is async — we resolve the get path by caching every key in memory
+ *  after `hydrateSession` runs at boot. Set persists EVERY key (not
+ *  just the session) so that PKCE code-verifiers and any other side
+ *  keys survive a fresh-instance handoff during the OAuth round-trip
+ *  — Windows dev-mode `nost://` callbacks can spawn a new electron.exe
+ *  whose renderer memory is born empty, and the verifier MUST be
+ *  available when exchangeCodeForSession asks for it. */
 let memCache: Record<string, string | null> = {};
 
 const safeStorageAdapter = {
@@ -35,9 +39,11 @@ const safeStorageAdapter = {
   },
   setItem: (key: string, value: string): void => {
     memCache[key] = value;
-    // Forward to safeStorage. Only the session key matters; supabase-js
-    // also writes some side keys like the PKCE code-verifier — those
-    // we keep in memCache only, since they're short-lived.
+    // Persist every key (PKCE verifier, session token, anything supabase
+    // decides to add later). The session also goes through the legacy
+    // dedicated IPC for back-compat with installs that pre-date the kv
+    // store; both writes are idempotent.
+    electronAPI.authKvSet(key, value).catch(() => undefined);
     if (key.endsWith('-auth-token')) {
       try {
         const session = JSON.parse(value);
@@ -47,6 +53,7 @@ const safeStorageAdapter = {
   },
   removeItem: (key: string): void => {
     delete memCache[key];
+    electronAPI.authKvSet(key, null).catch(() => undefined);
     if (key.endsWith('-auth-token')) {
       electronAPI.authSetSession(null);
     }
@@ -54,18 +61,27 @@ const safeStorageAdapter = {
 };
 
 /** Hydrate memCache from safeStorage at module init so supabase-js's
- *  initial getSession call sees the persisted token. Awaited by the
- *  AuthProvider before the app renders sign-in/signed-in branches. */
+ *  initial getSession call AND a post-callback exchangeCodeForSession
+ *  call both see the persisted state. Awaited by the AuthProvider
+ *  before the app renders sign-in/signed-in branches. */
 export async function hydrateSession(): Promise<void> {
   if (!isSupabaseConfigured) return;
   try {
-    const session = await electronAPI.authGetSession();
-    if (session) {
-      // supabase-js stores under `sb-<project-ref>-auth-token`. We don't
-      // know the exact key shape across versions, so write to a couple
-      // of likely candidates — supabase-js looks them up on init.
-      const key = `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`;
-      memCache[key] = JSON.stringify(session);
+    // Pull every persisted auth key into memCache. This is what lets
+    // PKCE survive an OAuth callback that lands on a fresh Electron
+    // instance — the verifier was written to safeStorage by the first
+    // instance and we restore it here before exchangeCodeForSession runs.
+    const kv = await electronAPI.authKvList();
+    for (const [k, v] of Object.entries(kv)) {
+      if (typeof v === 'string') memCache[k] = v;
+    }
+    // Back-compat: legacy installs only wrote the session under the
+    // dedicated IPC, not the generic kv store. Fall back to that if
+    // the kv hydrate didn't pick up the canonical session key.
+    const canonicalKey = `sb-${new URL(SUPABASE_URL).hostname.split('.')[0]}-auth-token`;
+    if (!memCache[canonicalKey]) {
+      const session = await electronAPI.authGetSession();
+      if (session) memCache[canonicalKey] = JSON.stringify(session);
     }
   } catch (err) {
     console.warn('[supabase] hydrateSession failed', err);

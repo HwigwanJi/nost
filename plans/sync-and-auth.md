@@ -446,9 +446,44 @@ mergePerField(local, server) {
 
 1. **Pro 가격 / 결제 모델** — Stripe? 아니면 한국 결제(토스/카카오페이)? 월/연/평생?
 2. **Free 디바이스 1개의 의미** — 첫 등록 디바이스 fix? 아니면 매번 1개만 활성?
-3. **Cohort C 이전 — 기존 폴더 카드는 어떻게 처리** — 기존 사용자가 PC1에서만 쓰던 폴더 카드들을 첫 sync 시 어떻게 분류? (자동 cohort C로 강등 + 안내)
+3. **Cohort C 이전 — 기존 폴더 카드는 어떻게 처리** — 기존 사용자가 PC1에서만 쓰던 폴더 카드들을 첫 sync 시 어떻게 분류? (자동 cohort C로 강등 + 안내) → **[2026-05-14 결정] 자동 cohort C 로 강등 + 첫 sync 시 "이 카드들은 이 PC 에만 보관됩니다" 토스트 1회. 사용자가 명시적으로 sync 원하면 우클릭으로 cohort A 승격 가능 (단 다른 PC 에선 미해결 회색 카드로 보임).**
 4. **Realtime 폴백** — Supabase 무료 티어 동시연결 한도 도달 시 polling으로?
 5. **언어 / 지역화** — 영어 UI도 동시 출시 vs 한국 우선
 6. **분석 / 텔레메트리** — 익명 사용 패턴 수집 여부 (opt-in 권장)
 
-이 6개는 Phase 1 시작 전 확정 필요.
+1·2·4·5·6 은 Phase 1 검증 끝나고 Phase 2 시작 전 확정 필요.
+
+---
+
+## §15. Sync 범위 — 카드 타입별 분류 (2026-05-14 사용자 합의)
+
+§13 의 4-cohort 정책을 카드 타입에 매핑한 최종 표. Phase 2 구현 시 이 표대로 분기.
+
+| 카드 타입 | Cohort | Sync? | 비고 |
+|---|---|---|---|
+| `url` | A | ✅ | URL 그대로 보내면 어디서나 동일하게 작동 |
+| `memo` | A | ✅ | body·TTL·trashedAt 까지 함께 sync (Supabase `memos` 테이블 별도) |
+| `widget` | A | ✅ | media-control / color-swatch 둘 다. 옵션도 함께 |
+| `text` | A | ✅ | 짧은 스니펫 — sync 자연스러움 |
+| `browser` | A | ✅ | URL 기반 — sync OK |
+| `app` | C | ❌ | exe 경로가 PC 마다 다름. PC-local 전용 |
+| `folder` | C | ❌ | 파일시스템 경로 — PC-local |
+| `doc` | C | ❌ | 문서 절대경로 — PC-local. 단 doc cohort 패턴 자체(`AppSettings.docCohort`)는 Cohort D 로 sync |
+| `window` | C | ❌ | 창 제목 + exePath 모두 PC 의존 |
+| `cmd` | C | ❌ | 명령어가 PC 환경 의존 (PATH·설치 도구) |
+
+**메타데이터** (모든 타입 공통, Cohort A 와 함께 sync):
+- 카드 위치 (어느 space 의 몇 번째 슬롯, 색·아이콘 오버라이드)
+- pinned / hiddenInSpace
+- container slots 구조 (slot 자리에 들어간 카드 id 들)
+- node / deck 묶음 (itemIds 배열)
+- floatingBadges (refType + refId)
+- preset 구조 (label · spaces 배열)
+
+**Cohort D (디바이스별 설정, 절대 sync 안 함)**:
+- shortcut · autoLaunch · autoHide · windowSizePct · windowOpenAt · floatingButton · monitorDirections · badgeSize
+
+**Cohort D-but-shared (디바이스별인데 default 는 sync — 사용자가 명시 변경 시만 분기)**:
+- theme · accentColor · documentExtensions · docCohort · memo 설정
+
+**License** 은 Cohort 외 — 서버 verify 가 SSOT.

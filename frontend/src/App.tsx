@@ -21,6 +21,7 @@ import { FirstCardCelebration, fireFirstCardCelebration } from './onboarding/Fir
 import { ImportWizard } from './onboarding/ImportWizard';
 import type { Template } from './onboarding/templates';
 import { ItemDialog } from './components/ItemDialog';
+import { DocCohortDialog } from './components/DocCohortDialog';
 import { ItemWizard } from './components/ItemWizard';
 import { MemoEditor } from './components/MemoEditor';
 import { MemoTrashDialog } from './components/MemoTrashDialog';
@@ -58,6 +59,7 @@ import { useNodeDeckMode } from './hooks/useNodeDeckMode';
 import { electronAPI } from './electronBridge';
 import Fuse from 'fuse.js';
 import { generateId } from './lib/utils';
+import { getDocumentExtensions } from './lib/documentExtensions';
 import { createLogger } from './lib/logger';
 import type { LauncherItem, Space } from './types';
 import { DEFAULT_WINDOW_SIZE_PCT } from './types';
@@ -511,15 +513,29 @@ function flattenRows(rows: SpaceRow[]): Space[] {
 }
 
 // ── File drag-and-drop helper ──────────────────────────────────────────────
-// Infers item type + display title from a file-system path using extension heuristic.
-// .exe / .lnk → app  |  .url → url  |  no extension → folder  |  else → file
-function inferItemFromPath(filePath: string): { type: LauncherItem['type']; title: string } {
+// Infers item type + display title from a file-system path using extension
+// heuristic. v1.3.34: `'doc'` is now a first-class type — files whose
+// extension matches the user's documentExtensions setting get tagged as
+// docs instead of being collapsed into 'app'. `docExtensions` is passed
+// in from the caller's settings (single source of truth — same list
+// drives the cohort feature, ghost-card recommendations, clipboard
+// classification, container slot picker).
+//
+// Resolution order:
+//   .exe / .lnk     → app (executable)
+//   .url            → url
+//   no extension    → folder
+//   docExtensions[] → doc
+//   anything else   → app (default for unknown binaries)
+function inferItemFromPath(filePath: string, docExtensions: string[]): { type: LauncherItem['type']; title: string } {
   const filename = filePath.replace(/\//g, '\\').split('\\').pop() ?? filePath;
   const ext = filename.match(/\.([^.]+)$/)?.[1]?.toLowerCase() ?? '';
   const type: LauncherItem['type'] =
     ext === 'exe' || ext === 'lnk' ? 'app' :
     ext === 'url'                  ? 'url' :
-    !ext                           ? 'folder' : 'app';
+    !ext                           ? 'folder' :
+    docExtensions.includes(ext)    ? 'doc' :
+                                     'app';
   const title = ext
     ? filename.replace(new RegExp(`\\.${ext}$`, 'i'), '')
     : filename;
@@ -967,7 +983,9 @@ export default function App() {
   // banners, ItemDialog auto-detects, openQuickAdd hex specialcase,
   // etc. Now there's a single SSOT.
   type ClipPrompt = {
-    type: 'url' | 'app' | 'folder' | 'hex' | 'text';
+    // v1.3.34 — `'doc'` is a first-class kind; banner gets its own
+    // copy/icon for it (see meta switch below).
+    type: 'url' | 'app' | 'folder' | 'doc' | 'hex' | 'text';
     value: string;
     label: string;
     html?: string;
@@ -1371,7 +1389,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
-      const r = await electronAPI.analyzeClipboard();
+      const r = await electronAPI.analyzeClipboard(getDocumentExtensions(data.settings.documentExtensions));
       if (cancelled) return;
       if (r.type === 'none' || !r.value) return;
       if (r.value === lastClipValueRef.current) return;
@@ -1634,8 +1652,18 @@ export default function App() {
   }, [extState, everConnected, store]);
 
   // ── Settings initial tab ──────────────────────────────────
-  const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | 'account' | undefined>(undefined);
-  const openSettingsTab = (tab: 'general' | 'monitor' | 'docs' | 'extension' | 'data' | 'account') => {
+  // v1.3.34: SettingsDialog reorganised into 4 groups × 2–3 sub-tabs
+  // (Option C). New tab ids are appearance/behavior/surfaces/memo/docs/
+  // tutorial/extension/account/data. Legacy callers using 'general' or
+  // 'monitor' still work — SettingsDialog's remapLegacyTab() funnels them
+  // to the right new home — so this union accepts BOTH old and new names.
+  type SettingsTab =
+    | 'general' | 'monitor'                        // legacy aliases
+    | 'appearance' | 'behavior' | 'surfaces'
+    | 'memo' | 'docs' | 'tutorial'
+    | 'extension' | 'account' | 'data';
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>(undefined);
+  const openSettingsTab = (tab: SettingsTab) => {
     setSettingsInitialTab(tab);
     setDialog('settings');
   };
@@ -2199,7 +2227,10 @@ export default function App() {
         break;
       }
       case 'open-settings': {
-        const tab = (n.action.payload as 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | undefined) ?? 'general';
+        // Notification payloads may carry either new (v1.3.34+) or legacy
+        // tab ids. SettingsDialog's remapLegacyTab handles the conversion;
+        // we just pass through whatever the producer set.
+        const tab = (n.action.payload as SettingsTab | undefined) ?? 'appearance';
         setSettingsInitialTab(tab);
         setDialog('settings');
         break;
@@ -2231,7 +2262,7 @@ export default function App() {
   const openQuickAdd = useCallback(async (spaceId?: string) => {
     const target = spaceId ?? data.spaces[0]?.id ?? '';
     try {
-      const r = await electronAPI.analyzeClipboard();
+      const r = await electronAPI.analyzeClipboard(getDocumentExtensions(data.settings.documentExtensions));
       if (r.type === 'hex' && r.value && target) {
         // Add the swatch and immediately open the edit dialog
         // pre-targeted at it — the user explicitly wanted "labelling
@@ -2532,6 +2563,50 @@ export default function App() {
     setDialog('container-slots');
   }, []);
 
+  // ── Doc cohort ("최신 버전 확인") ─────────────────────────────────
+  // Right-click menu on doc-like cards routes here. We stash the target
+  // (spaceId + itemId) and flip the dialog; DocCohortDialog does the
+  // scan + ranking via the SSOT functions in lib/docCohort.ts.
+  // Commit path updates BOTH item.value (the picked file) AND
+  // item.docCohort (the binding so subsequent "최신 확인" skips detection).
+  const [cohortTarget, setCohortTarget] = useState<{ spaceId: string; itemId: string } | null>(null);
+  const handleCheckDocCohort = useCallback((spaceId: string, itemId: string) => {
+    const space = data.spaces.find(s => s.id === spaceId);
+    const item  = space?.items.find(i => i.id === itemId);
+    // Cards without a path-shaped value (text / cmd / url / window) wouldn't
+    // produce useful scan results — bail with a gentle toast.
+    const v = item?.value ?? '';
+    const looksLikePath = /^[A-Za-z]:\\/.test(v) || v.startsWith('\\\\');
+    if (!looksLikePath) {
+      showToast('이 카드는 파일 경로가 아니에요');
+      return;
+    }
+    setCohortTarget({ spaceId, itemId });
+  }, [data.spaces, showToast]);
+
+  const handleCohortCommit = useCallback((args: {
+    value: string;
+    pattern: string;
+    tokenType: import('./types').TokenPreset;
+    directory: string;
+  }) => {
+    if (!cohortTarget) return;
+    const { spaceId, itemId } = cohortTarget;
+    const space = data.spaces.find(s => s.id === spaceId);
+    const item  = space?.items.find(i => i.id === itemId);
+    if (!item) return;
+    store.updateItem(spaceId, {
+      ...item,
+      value: args.value,
+      docCohort: {
+        directory: args.directory,
+        pattern:   args.pattern,
+        tokenType: args.tokenType,
+      },
+    });
+    showToast('최신 파일로 갱신했어요');
+  }, [cohortTarget, data.spaces, store, showToast]);
+
   const handleSaveSlots = useCallback((
     slots: import('./types').ContainerSlots,
     removals: PendingRemoval[],
@@ -2694,9 +2769,10 @@ export default function App() {
       if (legacy) return legacy;
       return electronAPI.getFilePath(file) ?? file.name;
     };
+    const docExts = getDocumentExtensions(data.settings.documentExtensions);
     if (files.length === 1) {
       const filePath = resolvePath(files[0]);
-      const { type, title } = inferItemFromPath(filePath);
+      const { type, title } = inferItemFromPath(filePath, docExts);
 
       // .txt / .md / .markdown → open ItemDialog at the TYPE phase with
       // memo as the recommended choice. We read the file contents up
@@ -2734,7 +2810,7 @@ export default function App() {
       // before committing. This replaces the previous silent bulk-add.
       const pending: PendingDrop[] = files.map((file, idx) => {
         const filePath = resolvePath(file);
-        const { type, title } = inferItemFromPath(filePath);
+        const { type, title } = inferItemFromPath(filePath, docExts);
         return {
           tempId: `drop-${Date.now()}-${idx}`,
           title,
@@ -2757,7 +2833,7 @@ export default function App() {
     const inferredType  = isUrl ? 'url' : isPath ? 'folder' : 'text';
     const inferredTitle = isUrl
       ? (raw.replace(/^https?:\/\/(www\.)?/, '').split('/')[0] ?? raw)
-      : inferItemFromPath(raw).title;
+      : inferItemFromPath(raw, docExts).title;
     setPrefilledItem({ type: inferredType as LauncherItem['type'], title: inferredTitle, value: raw });
     setEditItem(null);
     setEditSpaceId(targetSpaceId);
@@ -3949,6 +4025,7 @@ export default function App() {
               switch (clipPrompt.type) {
                 case 'url':    return { icon: 'link',         summary: 'URL이 복사되어 있어요',     primaryLabel: 'URL 카드로',    primaryIcon: 'language' };
                 case 'app':    return { icon: 'apps',         summary: '앱 경로가 복사되어 있어요', primaryLabel: '앱 카드로',     primaryIcon: 'apps' };
+                case 'doc':    return { icon: 'description',  summary: '문서 경로가 복사되어 있어요', primaryLabel: '문서 카드로',  primaryIcon: 'description' };
                 case 'folder': return { icon: 'folder_open',  summary: '폴더 경로가 복사되어 있어요', primaryLabel: '폴더 카드로',  primaryIcon: 'folder' };
                 case 'hex':    return { icon: 'palette',      summary: '컬러 코드가 복사되어 있어요', primaryLabel: '컬러 위젯으로', primaryIcon: 'palette' };
                 case 'text':   return { icon: 'content_paste', summary: '텍스트가 복사되어 있어요',  primaryLabel: '클립보드 카드', primaryIcon: 'content_paste' };
@@ -3985,7 +4062,7 @@ export default function App() {
                     fontSize: 11, fontWeight: 600, color: 'var(--text-color)',
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     maxWidth: 340,
-                    fontFamily: (clipPrompt.type === 'url' || clipPrompt.type === 'folder' || clipPrompt.type === 'app' || clipPrompt.type === 'hex')
+                    fontFamily: (clipPrompt.type === 'url' || clipPrompt.type === 'folder' || clipPrompt.type === 'app' || clipPrompt.type === 'doc' || clipPrompt.type === 'hex')
                       ? 'ui-monospace, monospace'
                       : 'inherit',
                   }}>
@@ -4263,6 +4340,7 @@ export default function App() {
                             onConvertToContainer={itemId => { if (quotaChecks.container()) handleConvertToContainer(space.id, itemId); }}
                             onConvertFromContainer={itemId => handleConvertFromContainer(space.id, itemId)}
                             onEditSlots={(itemId, dir) => handleEditSlots(space.id, itemId, dir)}
+                            onCheckDocCohort={(itemId) => handleCheckDocCohort(space.id, itemId)}
                             ghostItems={ghostCards.ghostsForSpace(space.id)}
                             onGhostAccept={(ghost) => {
                               if (!quotaChecks.card()) return;
@@ -4693,6 +4771,28 @@ export default function App() {
         docExtensions={data.settings.documentExtensions}
         onClose={() => setDialog('none')}
         onSave={(spaceId, item) => { handleSaveItem(spaceId, item); setDialog('none'); }}
+        // SSOT parity with the top gateway banner — clipboard text gets
+        // two commit destinations (card or memo) everywhere. Same toast
+        // chrome + undo handle as handleClipPromptToMemo.
+        onSaveAsMemo={(spaceId, body) => {
+          const newItem = store.addMemo(spaceId, body);
+          if (!newItem) return;
+          const space = data.spaces.find(s => s.id === spaceId);
+          tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId, fromClipboard: true });
+          pushUndo({
+            description: '메모 추가 (클립보드)',
+            undo: () => store.deleteItem(spaceId, newItem.id),
+            redo: () => store.restoreItem(spaceId, newItem),
+          });
+          showToast(`메모로 저장됨${space ? ` · ${space.name}` : ''}`, {
+            actions: [{
+              label: '열기',
+              icon: 'open_in_new',
+              onClick: () => setEditingMemoId({ spaceId, itemId: newItem.id }),
+            }],
+            duration: 4000,
+          });
+        }}
       />
       <ItemWizard
         open={dialog === 'wizard'}
@@ -4742,6 +4842,28 @@ export default function App() {
           onSave={handleSaveSlots}
         />
       )}
+
+      {/* Doc cohort quick-action dialog — only mounted while target is set
+          so the scan effect runs exactly once per open + binding lookups
+          read fresh from data.spaces (the user might have edited the card
+          between right-click and dialog flush). */}
+      {cohortTarget && (() => {
+        const space = data.spaces.find(s => s.id === cohortTarget.spaceId);
+        const item  = space?.items.find(i => i.id === cohortTarget.itemId);
+        if (!item) return null;
+        const cohortSettings = data.settings.docCohort
+          ?? { enabledPresets: [], labelOrder: [] };
+        return (
+          <DocCohortDialog
+            open={true}
+            item={item}
+            enabledPresets={cohortSettings.enabledPresets}
+            labelOrder={cohortSettings.labelOrder}
+            onCommit={handleCohortCommit}
+            onClose={() => setCohortTarget(null)}
+          />
+        );
+      })()}
 
       {/* ── Command Bar (Spotlight-style) ──────────── */}
       <CommandBar

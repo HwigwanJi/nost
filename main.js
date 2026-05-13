@@ -2648,6 +2648,64 @@ function registerIpcHandlers() {
     return url;
   });
 
+  // ── Auth: generic encrypted KV for supabase-js short-lived keys ──
+  // PKCE flow stores a `*-code-verifier` alongside the session token.
+  // The verifier lives in renderer memory by default, which loses it
+  // any time a fresh Electron instance handles the OAuth callback —
+  // exactly what happens in dev-mode when Windows spawns a new
+  // electron.exe to honour the `nost://` protocol click instead of
+  // routing it through the single-instance lock. Persisting every
+  // supabase-js storage key under safeStorage means the verifier
+  // survives that hand-off, so `exchangeCodeForSession` finds what it
+  // needs regardless of which instance receives the callback.
+  ipcMain.handle('auth:kv-get', (_, key) => {
+    try {
+      const map = store.get('authKv');
+      const enc = map && map[key];
+      if (!enc || !safeStorage.isEncryptionAvailable()) return null;
+      return safeStorage.decryptString(Buffer.from(enc, 'base64'));
+    } catch (err) {
+      log.warn('[auth] kv-get failed:', key, err.message);
+      return null;
+    }
+  });
+  ipcMain.handle('auth:kv-set', (_, key, value) => {
+    try {
+      const map = store.get('authKv') || {};
+      if (value == null) {
+        delete map[key];
+        store.set('authKv', map);
+        return true;
+      }
+      if (!safeStorage.isEncryptionAvailable()) return false;
+      const enc = safeStorage.encryptString(String(value));
+      map[key] = enc.toString('base64');
+      store.set('authKv', map);
+      return true;
+    } catch (err) {
+      log.warn('[auth] kv-set failed:', key, err.message);
+      return false;
+    }
+  });
+  ipcMain.handle('auth:kv-list', () => {
+    // Bulk hydrate: renderer pulls every persisted supabase key into
+    // its sync memCache on boot so getItem() sees the verifier the
+    // moment exchangeCodeForSession asks for it.
+    try {
+      const map = store.get('authKv');
+      if (!map || !safeStorage.isEncryptionAvailable()) return {};
+      const out = {};
+      for (const k of Object.keys(map)) {
+        try { out[k] = safeStorage.decryptString(Buffer.from(map[k], 'base64')); }
+        catch { /* skip corrupt entry */ }
+      }
+      return out;
+    } catch (err) {
+      log.warn('[auth] kv-list failed:', err.message);
+      return {};
+    }
+  });
+
   // Read a small text file from disk for the memo drag-drop flow.
   // Cap at 1 MB — anything bigger probably isn't a note and shouldn't
   // live inside a memo card. Detect BOM-marked UTF-16/8 first; for
@@ -3128,10 +3186,89 @@ function registerIpcHandlers() {
     return clipboard.readText() || await readClipboardFileDrop();
   });
 
-  ipcMain.handle('analyze-clipboard', async () => {
+  // ── Document cohort scan (v1.3.34+) ────────────────────────────
+  //
+  // Lists files in `directory` whose basename matches a renderer-provided
+  // glob `mask` (e.g. "기획서_v{token}.docx"). The `{token}` placeholder
+  // is converted to a permissive `.*?` here so the renderer's regex-based
+  // comparator can do precise ranking on the returned set.
+  //
+  // SECURITY: directory MUST be a valid absolute Windows path. We refuse
+  // to scan UNC roots and bare drive letters to keep accidental wide-net
+  // scans bounded; the renderer always passes the dirname of an existing
+  // file, so this never bites in practice.
+  ipcMain.handle('list-doc-cohort', async (_event, directory, mask) => {
+    try {
+      if (typeof directory !== 'string' || typeof mask !== 'string') {
+        return { ok: false, error: 'invalid-args', items: [] };
+      }
+      // Path safety. Allow `C:\subdir\...` and `\\server\share\subdir\...`,
+      // refuse `C:\`, `\\server\`, or anything with traversal markers.
+      const norm = directory.replace(/[\\/]+$/, '');
+      if (!/^[A-Za-z]:\\.+/.test(norm) && !/^\\\\.+\\.+/.test(norm)) {
+        return { ok: false, error: 'unsafe-path', items: [] };
+      }
+      if (norm.includes('..')) {
+        return { ok: false, error: 'traversal', items: [] };
+      }
+
+      // Build matching regex from the mask. {token} → `.*?` (non-greedy).
+      // Escape every other regex metachar in the literal portion.
+      const escaped = mask
+        .replace(/[-\\/\\^$*+?.()|[\]{}]/g, '\\$&')
+        .replace(/\\\{token\\\}/g, '.*?');
+      const re = new RegExp(`^${escaped}$`, 'i');
+
+      let entries;
+      try {
+        entries = fs.readdirSync(norm, { withFileTypes: true });
+      } catch (e) {
+        return { ok: false, error: 'readdir-failed', message: String(e && e.message), items: [] };
+      }
+
+      const items = [];
+      for (const ent of entries) {
+        if (!ent.isFile()) continue;
+        if (!re.test(ent.name)) continue;
+        const full = path.join(norm, ent.name);
+        try {
+          const st = fs.statSync(full);
+          items.push({
+            basename: ent.name,
+            path:     full,
+            mtime:    st.mtimeMs,
+            size:     st.size,
+          });
+        } catch { /* skip files we can't stat */ }
+      }
+      // Cap the result at 200 — we never expect users to have more
+      // versions than that, and an unbounded directory (e.g. user picked
+      // their downloads root by mistake) shouldn't choke the renderer.
+      return { ok: true, items: items.slice(0, 200) };
+    } catch (e) {
+      return { ok: false, error: 'unexpected', message: String(e && e.message), items: [] };
+    }
+  });
+
+  // SSOT clipboard classification.
+  // v1.3.34 — 'doc' is now a real return type. Renderer's
+  // `documentExtensions` setting drives detection: any path whose
+  // extension matches gets `'doc'` instead of being lumped into 'app'.
+  // The arg is optional for back-compat; absent → conservative default
+  // list (same shape as lib/documentExtensions.ts::DEFAULT_DOCUMENT_EXTENSIONS).
+  ipcMain.handle('analyze-clipboard', async (_event, docExtensions) => {
     let text = clipboard.readText().trim();
     if (!text) text = await readClipboardFileDrop();
     if (!text) return { type: 'none' };
+    const DEFAULT_DOC_EXTS = [
+      'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+      'hwp', 'hwpx', 'hwt',
+      'pdf', 'txt', 'md', 'csv',
+      'odt', 'ods', 'odp',
+    ];
+    const docExts = Array.isArray(docExtensions) && docExtensions.length > 0
+      ? docExtensions.map(e => String(e).toLowerCase().replace(/^\./, ''))
+      : DEFAULT_DOC_EXTS;
     // The HTML payload (when present) is what gives the renderer
     // a chance to faithfully reconstruct markdown structure for
     // pasted GPT/Notion content. We pass it through unchanged
@@ -3156,6 +3293,18 @@ function registerIpcHandlers() {
     //      a dotfile-name carve-out: `D:\.claude` style paths used
     //      to fail because `\.claude` matched the file-extension
     //      regex (`.claude` looks like 6-char extension).
+    // Classify an existing file by its extension. Mirrors
+    // inferItemFromPath in App.tsx; keep the two logically in sync.
+    const classifyFile = (filePath, basename) => {
+      const m = basename.match(/\.([a-zA-Z0-9]+)$/);
+      const ext = m ? m[1].toLowerCase() : '';
+      if (ext === 'exe') return { type: 'app', value: filePath, label: basename.replace(/\.exe$/i, '') };
+      if (ext && docExts.includes(ext)) return { type: 'doc', value: filePath, label: basename.replace(/\.[a-zA-Z0-9]+$/, '') };
+      // Other / unknown — fall back to app so the launcher still works
+      // (shell-execute routes via Windows default associations).
+      return { type: 'app', value: filePath, label: basename.replace(/\.[a-zA-Z0-9]+$/, '') };
+    };
+
     if (/^[A-Za-z]:\\/.test(text) || text.startsWith('\\\\')) {
       const name = text.split(/[/\\]/).filter(Boolean).pop() || text;
 
@@ -3167,11 +3316,7 @@ function registerIpcHandlers() {
           return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
         }
         if (stat.isFile()) {
-          if (/\.exe$/i.test(text)) return { type: 'app', value: text, label: name.replace(/\.exe$/i, '') };
-          // Other file types — surface as 'app' so the dialog
-          // routes to the launcher (Windows shell-execute handles
-          // documents via their default association).
-          return { type: 'app', value: text, label: name.replace(/\.[a-zA-Z0-9]+$/, '') };
+          return classifyFile(text, name);
         }
       } catch { /* path doesn't exist or no permission — fall through */ }
 
@@ -3180,9 +3325,15 @@ function registerIpcHandlers() {
       //     ".claude" extension. Detect by leading dot + no further
       //     dot in the basename.
       const isDotName = name.startsWith('.') && !name.slice(1).includes('.');
-      const hasExt = !isDotName && /\.[a-zA-Z0-9]{1,6}$/.test(name);
-      if (/\.exe$/i.test(text)) return { type: 'app', value: text, label: name.replace(/\.exe$/i, '') };
-      if (!hasExt || /[/\\]$/.test(text)) return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
+      const extMatch = !isDotName && name.match(/\.([a-zA-Z0-9]{1,6})$/);
+      if (extMatch) {
+        // Heuristic match: file with recognisable extension → same
+        // classifier as the on-disk branch.
+        return classifyFile(text, name);
+      }
+      if (!extMatch || /[/\\]$/.test(text)) {
+        return { type: 'folder', value: text.replace(/[/\\]+$/, ''), label: name };
+      }
     }
 
     // Hex colour code — match `#abc`, `#abcdef`, `#AABBCC`, also bare
@@ -4436,9 +4587,15 @@ app.whenReady().then(() => {
   // React Refresh preamble and HMR work. Production stays strict.
   const isDev = !!process.env.ELECTRON_RENDERER_URL?.trim();
   const scriptSrc = isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:5173" : "script-src 'self'";
+  // Supabase token exchange (PKCE), session refresh, and Phase 2 Realtime
+  // (wss://) all hit the project's *.supabase.co host. OAuth avatars come
+  // from Google's lh3.googleusercontent.com and GitHub's avatars.github-
+  // usercontent.com — add to img-src so AccountTab's profile picture
+  // doesn't fall back to the placeholder. supabase.co is also added to
+  // img-src for self-hosted avatars (Phase 2+).
   const connectSrc = isDev
-    ? "connect-src 'self' http://127.0.0.1:14502 http://127.0.0.1:5173 ws://127.0.0.1:5173"
-    : "connect-src 'self' http://127.0.0.1:14502";
+    ? "connect-src 'self' http://127.0.0.1:14502 http://127.0.0.1:5173 ws://127.0.0.1:5173 https://*.supabase.co wss://*.supabase.co"
+    : "connect-src 'self' http://127.0.0.1:14502 https://*.supabase.co wss://*.supabase.co";
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -4447,7 +4604,7 @@ app.whenReady().then(() => {
           "default-src 'self'; " +
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; " +
           "font-src 'self' https://fonts.gstatic.com; " +
-          "img-src 'self' data: https://www.google.com; " +
+          "img-src 'self' data: https://www.google.com https://lh3.googleusercontent.com https://avatars.githubusercontent.com https://*.supabase.co; " +
           scriptSrc + "; " +
           connectSrc,
         ],

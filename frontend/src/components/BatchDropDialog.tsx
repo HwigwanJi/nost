@@ -33,6 +33,7 @@ interface BatchDropDialogProps {
 const TYPE_META: Record<LauncherItem['type'], { icon: string; label: string; color: string }> = {
   url:     { icon: 'language',     label: 'URL',     color: '#3b82f6' },
   app:     { icon: 'apps',         label: '앱',      color: '#8b5cf6' },
+  doc:     { icon: 'description',  label: '문서',    color: '#10b981' },
   folder:  { icon: 'folder_open',  label: '폴더',    color: '#f59e0b' },
   text:    { icon: 'content_paste',label: '텍스트',  color: '#6366f1' },
   cmd:     { icon: 'terminal',     label: '명령어',  color: '#64748b' },

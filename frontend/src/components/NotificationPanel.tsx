@@ -39,6 +39,25 @@ const KIND_META: Record<AppNotification['kind'], { icon: string; tokenCSS: strin
   tip:       { icon: 'tips_and_updates',  tokenCSS: 'var(--text-muted)',        label: '팁' },
 };
 
+// Category badge — derived from the notification's action intent (or
+// dedupKey pattern as a fallback). `kind` alone (tip/system/update) is
+// too coarse to tell at a glance what a tip is FOR; this small chip on
+// the title row says "[튜토리얼]" / "[확장]" so the user reads purpose
+// before content. SSOT: any future tutorial nudge that sets the
+// `open-tour` intent gets the chip automatically, no extra wiring.
+//
+// Returns null when the kind label already says enough on its own (e.g.
+// install-update → kind=update, badge would be redundant).
+function deriveCategory(n: AppNotification): { label: string; color: string } | null {
+  if (n.action?.intent === 'open-tour') return { label: '튜토리얼', color: 'var(--accent)' };
+  // Dedup-key prefix fallback for notifications without an action
+  // (defensive; current tutorial sources always set open-tour).
+  if (n.dedupKey?.startsWith('tutorial-')) return { label: '튜토리얼', color: 'var(--accent)' };
+  if (n.dedupKey === 'ext-install-nudge' || n.dedupKey === 'ext-needed-now' || n.dedupKey === 'ext-disconnected')
+    return { label: '확장', color: 'var(--text-muted)' };
+  return null;
+}
+
 function relativeTime(ms: number): string {
   const diff = Date.now() - ms;
   const mins = Math.floor(diff / (60 * 1000));
@@ -191,19 +210,47 @@ function Row({
 
       {/* Body */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: 12,
-            fontWeight: 600,
-            color: 'var(--text-color)',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            lineHeight: 1.35,
-          }}
-        >
-          {n.title}
-        </div>
+        {(() => {
+          const cat = deriveCategory(n);
+          return (
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: 'var(--text-color)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                lineHeight: 1.35,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                minWidth: 0,
+              }}
+            >
+              {cat && (
+                <span
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: '0.04em',
+                    padding: '1px 6px',
+                    borderRadius: 4,
+                    background: `color-mix(in srgb, ${cat.color} 14%, transparent)`,
+                    color: cat.color,
+                    border: `1px solid color-mix(in srgb, ${cat.color} 28%, transparent)`,
+                  }}
+                >
+                  {cat.label}
+                </span>
+              )}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                {n.title}
+              </span>
+            </div>
+          );
+        })()}
         {n.body && (
           <div
             style={{

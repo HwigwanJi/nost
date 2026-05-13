@@ -18,8 +18,10 @@ import { MediaWidget } from '../widgets/MediaWidget';
 import { ColorSwatchWidget } from '../widgets/ColorSwatchWidget';
 import { MemoCard } from './MemoCard';
 import { MonitorPicker } from './MonitorPicker';
-import { ContainerSlotGhosts } from './ContainerSlotGhosts';
-import { isUserBusy } from '../lib/userBusy';
+// ContainerSlotGhosts import removed in v1.3.34 — see commit message.
+// isUserBusy import was used by the now-retired ContainerSlotGhosts
+// hover; no remaining consumer in this file. Reintroduce if a future
+// hover surface needs to defer to modal-class UI.
 import { canPerform } from '../lib/conflictPolicy';
 import { shakeElement } from '../lib/conflictFeedback';
 
@@ -35,6 +37,13 @@ interface ItemCardProps {
   onConvertToContainer?: () => void;
   onConvertFromContainer?: () => void;
   onEditSlots?: (dir?: SlotDir) => void;
+  /**
+   * "최신 버전 확인" — opens DocCohortDialog for path-like cards.
+   * Caller (App.tsx) gates on item.value being a real file path; we
+   * expose the menu item only when this callback is defined so older
+   * call sites stay compiling without touching every wire-up.
+   */
+  onCheckDocCohort?: () => void;
   // ── Memo (사라지는 메모) ────────────────────────────────────────
   // Plumbed in for type === 'memo' items only. Optional so existing
   // call sites that don't render memo yet stay compiling.
@@ -107,7 +116,7 @@ function HighlightText({ text, query }: { text: string; query: string }) {
 function getTypeColor(_type: LauncherItem['type']) { return 'var(--text-muted)'; }
 function getTypeIcon(type: LauncherItem['type']) {
   const map: Record<string, string> = {
-    url: 'language', folder: 'folder_open', app: 'apps',
+    url: 'language', folder: 'folder_open', app: 'apps', doc: 'description',
     window: 'window', browser: 'public', text: 'content_copy', cmd: 'terminal',
   };
   return map[type] ?? 'link';
@@ -117,6 +126,7 @@ export function ItemCard({
   item, space, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, onSetMonitor,
   onConvertToContainer, onConvertFromContainer, onEditSlots,
+  onCheckDocCohort,
   onOpenMemoEditor, onCopyMemoBody, onCopyMemoMarkdown, onExtendMemoTtl, onExportMemoTxt,
 }: ItemCardProps) {
   const [loading, setLoading] = useState(false);
@@ -765,23 +775,13 @@ export function ItemCard({
         />
       ) : null}
 
-      {/* ── Empty-slot ghost rectangles ──────────────────────────────
-           Show on container hover (after the 350ms hint dwell, same as
-           regular cards' direction arrows) so users discover that the
-           container has 4 slot positions. Click on a ghost = open the
-           slot picker pre-targeted to that direction. Suppressed during
-           drag (the ContainerBloom overlay takes over for that case)
-           and during hold popup or non-normal app modes. */}
-      {item.isContainer && hintVisible && !holdOpen && !isInactive && !isDragging
-        && activeMode === 'normal' && !isUserBusy() && cardRef.current
-        && filledSlots.length < 4 && (
-        <ContainerSlotGhosts
-          anchor={cardRef.current}
-          emptyDirs={(['up','down','left','right'] as SlotDir[]).filter(d => !slotItems?.[d])}
-          accent={item.color}
-          onClickGhost={(dir) => onEditSlots?.(dir)}
-        />
-      )}
+      {/* Container slot direction ghost rectangles on hover were removed in
+          v1.3.34 — they were visually faint AND redundant with the hold
+          gesture's 4-way picker (which already covers the same intent
+          with stronger affordance). Empty slot positions are still
+          conveyed by the 4 corner dots below. ContainerSlotGhosts file
+          kept dormant for the time being — purge when no other call site
+          references it. */}
 
       {/* ── Container slot dots (4 edges) ────────────────────────── */}
       {item.isContainer && (['up','down','left','right'] as SlotDir[]).map(d => {
@@ -1248,6 +1248,22 @@ export function ItemCard({
             {pinned ? '핀 해제' : '위치 고정'}
           </ContextMenuItem>
 
+          {/* 최신 버전 확인 — only meaningful for file-path-ish cards.
+              The dispatcher (App.tsx) further gates by value shape, so
+              we surface the menu item whenever the callback is wired.
+              Hidden for widgets, memos, and the obviously-non-file
+              types (url / text / cmd / window) where a directory scan
+              has nothing to find. */}
+          {onCheckDocCohort && !isWidget && !isMemo
+            && item.type !== 'url' && item.type !== 'text' && item.type !== 'cmd' && item.type !== 'window' && (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem onClick={onCheckDocCohort} className="gap-2 cursor-pointer">
+                <Icon name="schedule" className="text-sm" />최신 버전 확인
+              </ContextMenuItem>
+            </>
+          )}
+
           {/* Container-related items don't apply to widget or memo cards
               — neither is launchable, so wrapping them in a 4-slot
               container has no meaning. */}
@@ -1309,17 +1325,20 @@ function CardHoverHint({
 }) {
   // Two-column ledger format — `라벨 : 동작`. Same vocabulary
   // across every interactive surface in the launcher (see
-  // widgets/widgetTokens.ts → HOVER_HINT). The user explicitly
-  // called out the inconsistency between "짧게:" and "길게 누르고
-  // 어쩌구" — this is the canonical answer.
+  // widgets/widgetTokens.ts → HOVER_HINT).
+  //
+  // Wording note (v1.3.34): casual verbs like "발사" were toned down to
+  // a more neutral register that reads consistently across types. The
+  // pattern is now `클릭 : <동사>` / `길게 누르기 : <설명>` rather than
+  // "짧게/길게" with playful verbs.
   if (isContainer) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.5 }}>
         <div style={{ fontWeight: 600, marginBottom: 2 }}>
           컨테이너 · {filledSlots}/{totalSlots} 슬롯
         </div>
-        <div>짧게 : 슬롯 카드 발사</div>
-        <div>길게 : 슬롯 편집</div>
+        <div>클릭 : 슬롯 카드 실행</div>
+        <div>길게 누르기 : 슬롯 편집</div>
       </div>
     );
   }
@@ -1328,6 +1347,7 @@ function CardHoverHint({
     type === 'url' || type === 'browser' ? 'URL 열기' :
     type === 'folder' ? '폴더 열기' :
     type === 'app' ? '앱 실행' :
+    type === 'doc' ? '문서 열기' :
     type === 'window' ? '창 전환' :
     type === 'cmd' ? '명령어 실행' :
     type === 'text' ? '텍스트 복사' :
@@ -1335,8 +1355,8 @@ function CardHoverHint({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.5 }}>
-      <div>짧게 : {shortVerb}</div>
-      <div>길게 : ↑수정 ↓모니터 ←새창 →복사</div>
+      <div>클릭 : {shortVerb}</div>
+      <div>길게 누르기 : ↑ 수정 ↓ 모니터 ← 새 창 → 복사</div>
     </div>
   );
 }

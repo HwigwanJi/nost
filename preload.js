@@ -64,6 +64,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('auth:deep-link', handler);
     return () => ipcRenderer.removeListener('auth:deep-link', handler);
   },
+  authKvGet: (key) => ipcRenderer.invoke('auth:kv-get', key),
+  authKvSet: (key, value) => ipcRenderer.invoke('auth:kv-set', key, value),
+  authKvList: () => ipcRenderer.invoke('auth:kv-list'),
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),
   launchOrFocusApp: (exePath, closeAfter, monitor) => ipcRenderer.invoke('launch-or-focus-app', exePath, closeAfter, monitor),
@@ -107,7 +110,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onUpdateDownloadProgress: (cb) => ipcRenderer.on('update-download-progress', (_, info) => cb(info)),
   onUpdateDownloaded: (cb) => ipcRenderer.on('update-downloaded', (_, info) => cb(info)),
   readClipboard: () => ipcRenderer.invoke('read-clipboard'),
-  analyzeClipboard: () => ipcRenderer.invoke('analyze-clipboard'),
+  analyzeClipboard: (docExtensions) => ipcRenderer.invoke('analyze-clipboard', docExtensions),
+  // Document cohort directory scan — pairs with frontend/src/lib/docCohort.ts
+  // (ranking layer). Returns { ok, items: [{basename, path, mtime, size}] }.
+  listDocCohort: (directory, mask) => ipcRenderer.invoke('list-doc-cohort', directory, mask),
   checkWindowsAlive: (titles) => ipcRenderer.invoke('check-windows-alive', titles),
   checkFileExists: (filePath) => ipcRenderer.invoke('check-file-exists', filePath),
   checkItemsForTile: (items) => ipcRenderer.invoke('check-items-for-tile', items),

@@ -101,7 +101,17 @@ export interface MemoSettings {
 export interface LauncherItem {
   id: string;
   title: string;
-  type: 'url' | 'folder' | 'app' | 'window' | 'browser' | 'text' | 'cmd' | 'widget' | 'memo';
+  /**
+   * v1.3.34 — `'doc'` is a first-class type now. Previously every file
+   * that wasn't an `.exe/.lnk` got bucketed into `'app'`; that erased
+   * the user-meaningful distinction between an executable and a
+   * document, and made the doc-cohort feature impossible to gate on
+   * type alone. Launch behaviour is identical to `'app'` (Windows
+   * shell-execute via `launchOrFocusApp`) — only the classification
+   * and the rendered icon/hover differ. Migration of existing `'app'`
+   * cards happens in useAppData.migrateData.
+   */
+  type: 'url' | 'folder' | 'app' | 'doc' | 'window' | 'browser' | 'text' | 'cmd' | 'widget' | 'memo';
   /**
    * For type !== 'widget': the launchable payload (URL, file path, cmd line, …).
    * For type === 'widget': not used — widgets render from `widget.kind` instead.
@@ -129,7 +139,88 @@ export interface LauncherItem {
   // Memo — populated only when type === 'memo'. Same defensive policy
   // as `widget`: if absent on a 'memo'-typed item, render as if empty.
   memo?: MemoData;
+  /**
+   * Document cohort (v1.3.34+) — when present, the card represents the
+   * "latest version of a family of files". Set lazily the first time the
+   * user invokes "최신 버전 확인" on a doc-like card; never auto-populated
+   * at card creation (the user is presumed to register the latest file).
+   *
+   * Stored fields are minimal on purpose — token rules live globally in
+   * AppSettings.docCohort so per-card storage doesn't drift. The pattern
+   * field captures the masked basename (e.g. "기획서_v{ver}.docx") which
+   * is regenerated from `tokenType` on every scan, but caching it here
+   * lets the next "최신 확인" skip the detection dialog.
+   */
+  docCohort?: DocCohortBinding;
 }
+
+/**
+ * Per-card cohort binding — establishes WHICH file family a card belongs
+ * to. Token rules themselves (how to compare two filenames) live in
+ * `AppSettings.docCohort` as the SSOT so adding a new preset doesn't
+ * require touching every card.
+ */
+export interface DocCohortBinding {
+  /** Absolute directory to scan (the dirname of the card's `value` at
+   *  the moment the cohort was first established). */
+  directory: string;
+  /** Masked basename with a single `{token}` placeholder for the version
+   *  position. e.g. `"기획서_v{ver}.docx"` for `_v{numeric}` matching, or
+   *  `"{date}_RE{ver}_제안서.docx"` for the date+revision composite. */
+  pattern: string;
+  /** Which global token preset's comparator + extractor to use when
+   *  ranking files matched by `pattern`. */
+  tokenType: TokenPreset;
+}
+
+/**
+ * Token preset — encodes BOTH how to extract a token from a filename
+ * AND how to rank two extracted tokens. Composites carry an implicit
+ * priority order (primary key, secondary tiebreaker).
+ *
+ *   numeric            _v3 _v10               (single int, larger = newer)
+ *   semver             1.2.3                  (semver, larger = newer)
+ *   date-yymmdd        240513                 (compact 6-digit date)
+ *   date-yyyymmdd      20240513               (compact 8-digit date)
+ *   date-iso           2024-05-13             (dashed)
+ *   date-dotted        2024.05.13             (dotted)
+ *   label              draft/review/final     (user-defined hierarchy)
+ *   date-yyyymmdd_re   20260513_RE4           (date primary, RE int 2nd)
+ *   date-iso_v         2024-05-13_v2          (date primary, _v int 2nd)
+ *   semver-build       1.2.3-build42          (semver primary, build int 2nd)
+ *   label-rev          final_rev2             (label primary, _rev int 2nd)
+ *   mtime              (no filename token)    OS modification time fallback
+ */
+export type TokenPreset =
+  | 'numeric' | 'semver'
+  | 'date-yymmdd' | 'date-yyyymmdd' | 'date-iso' | 'date-dotted'
+  | 'label'
+  | 'date-yyyymmdd_re' | 'date-iso_v' | 'semver-build' | 'label-rev'
+  | 'mtime';
+
+/** Default order — user can drag-reorder in 콘텐츠 규칙 > 문서. */
+export const DEFAULT_DOC_LABEL_ORDER = ['draft', 'wip', 'review', 'revised', 'final'] as const;
+
+export interface DocCohortSettings {
+  /** Token presets the user has enabled. Order in this array DOES matter
+   *  — auto-detection tries them top-down and picks the first that matches. */
+  enabledPresets: TokenPreset[];
+  /** Label hierarchy for the `label` and `label-rev` token kinds.
+   *  Earlier = older, later = newer. */
+  labelOrder: string[];
+}
+
+export const DEFAULT_DOC_COHORT_SETTINGS: DocCohortSettings = {
+  enabledPresets: [
+    // Composites first so date+revision wins over plain numeric on filenames
+    // that happen to match both shapes (the user's "20260513_RE4" case).
+    'date-yyyymmdd_re', 'date-iso_v', 'semver-build', 'label-rev',
+    'semver', 'date-yyyymmdd', 'date-yymmdd', 'date-iso', 'date-dotted',
+    'numeric', 'label',
+    'mtime',
+  ],
+  labelOrder: [...DEFAULT_DOC_LABEL_ORDER],
+};
 
 export interface Space {
   id: string;
@@ -237,6 +328,13 @@ export interface AppSettings {
    *     at that moment instead.
    */
   extensionEverConnected?: boolean;
+  /**
+   * Doc cohort token rules — single source of truth for "how to recognise
+   * the latest file in a family". Applied uniformly when ANY doc card
+   * invokes "최신 버전 확인". See DocCohortSettings for the shape.
+   * Absent on legacy installs; migrateData seeds DEFAULT_DOC_COHORT_SETTINGS.
+   */
+  docCohort?: DocCohortSettings;
 }
 
 /** Default launcher size = full work area on cold start when the

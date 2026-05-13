@@ -95,6 +95,19 @@
 - **읽는 곳**: `frontend/vite.config.ts:9` 가 빌드시 주입. 별도 sync 안 함.
 - **금지**: `frontend/package.json` 에 별도 버전 박기
 
+### A.15 Phase 2 sync cohort (v1.3.34+)
+- **타입 분류 SSOT**: `frontend/src/lib/cohort.ts` — `cohortOfType(type)`, `isSyncable(item)`, `partitionByCohort(items)`, `DEVICE_ONLY_SETTING_KEYS`
+- **설계 SSOT**: `plans/sync-and-auth.md` §15 (사용자 합의 표)
+- **DB 스키마 SSOT**: `plans/phase2-schema.sql` (Supabase 대시보드에서 실행)
+- **읽는 곳**: Phase 2 sync 실제 구현은 다음 라운드. 일단 분류 SSOT 만 정착.
+- **금지**: 컴포넌트나 hook 에서 `if (item.type === 'url' || item.type === 'memo' ...) sync()` 같은 ad-hoc 분류. 반드시 `cohort.ts` 통과.
+
+### A.16 Auth KV 영속화 (v1.3.34+)
+- **SSOT**: `main.js` `auth:kv-get` / `auth:kv-set` / `auth:kv-list` IPC (safeStorage 암호화). store key `authKv.<key>` 아래.
+- **읽는 곳**: `frontend/src/lib/supabase.ts` `safeStorageAdapter` + `hydrateSession()`
+- **목적**: supabase-js 의 PKCE code-verifier 같은 short-lived key 가 인스턴스 분리 시에도 살아남도록. session token 은 별도의 `auth:get-session/set-session` 으로 back-compat 유지.
+- **금지**: supabase-js storage adapter 우회해서 직접 `electron-store` 에 토큰 박기
+
 ---
 
 ## B. 계획·설계 SSOT (plans/*.md)
@@ -108,11 +121,21 @@
 | 리팩토링 로드맵 | `plans/refactor-roadmap.md` | Round별 순서, Settings SSOT 정착 포함 |
 | 백로그 | `plans/backlog.md` | 우선순위 매겨진 할 일 큐 (#D-4 Settings SSOT 등) |
 | 메모 기능 v1 | `plans/memo-feature-v1.md` | 모니터 SSOT 커밋 히스토리 포함 |
+| 컬러피커 / 위젯 | `plans/color-picker-plan.md` | v1.3.31 진행분 |
 | 튜토리얼 시스템 v2 | `plans/tutorial-system-v2.md` | 챕터 단위 점진 개발의 SSOT (§12 갱신 규칙) |
 | 튜토리얼 글쓰기 톤 | `plans/tutorial-writing-style.md` | 새 퀘스트 추가 전 통과해야 함 |
 | 튜토리얼 학습 목표 | `plans/tutorial-goals.md` | 섹션 5 + 퀘스트 18개 목표 1문장씩 |
 | 튜토리얼 정합성 감사 | `plans/tutorial-coherence-audit.md` | 자동 생성, 목표 대비 step 검증 |
 | 튜토리얼 단축키 교육 | `plans/tutorial-shortcut-teaching.md` | 단축키 챕터 SSOT |
+| ESC 키 스택 (closest closer) | `plans/escape-stack-audit.md` | ESC 누르면 무엇이 닫히는지의 LIFO 스택 |
+| autoHide / alwaysOnTop 정책 | `plans/focus-state-audit.md` | 창 활성화 / blur / 다이얼로그 보호 SSOT |
+| 모드/모달 충돌 정책 | `plans/conflict-avoidance-policy.md` | `canPerform()` 매트릭스, 새 trigger 추가 시 §3 갱신 |
+| **신규 (2026-05-14):** | | |
+| 자주 하는 작업 체크리스트 | `plans/checklists.md` | 카드 타입 / IPC / 모달 / 설정 / 알림 5개 표준 절차 |
+| 릴리스 절차 | `plans/release-runbook.md` | 8단계 배포 + 검증 + 실패 모드 |
+| UI 어휘 사전 | `plans/ui-vocabulary.md` | 한국어 동사 통일, 금지어 |
+| 트러블슈팅 카탈로그 | `plans/troubleshooting.md` | 빌드/실행/배포/런타임 자주 부딪치는 케이스 |
+| Anti-pattern grep 레시피 | `plans/anti-pattern-grep.md` | 자동 점검 명령어 모음 |
 
 ---
 
@@ -124,6 +147,14 @@
 4. **수동 zoom**: `setZoomFactor` 사용 금지. 크기는 `windowSizePct`만.
 5. **scanEngine 우회**: koffi/PS 직접 호출해서 창 정보 얻는 코드 추가 금지.
 6. **버전 sync**: `frontend/package.json`에 version 박지 말 것 (vite가 root에서 주입).
+7. **`var(--accent)` fallback**: `var(--accent, #6366f1)` 형태 절대 금지 (사용자 강조색 무력화).
+8. **컴포넌트 ad-hoc mode 체크**: `if (activeMode !== 'normal') return;` — `canPerform()` SSOT 우회.
+9. **다이얼로그 좌우 padding 부족**: `padding: 'Npx 0'` 또는 `'Npx 8px'` 같은 버튼 — 좌우 ≥ 14px 필수.
+10. **캐주얼 한국어 어휘**: "발사", "짧게/길게 :" — `plans/ui-vocabulary.md` 통과 필수.
+11. **inline ref callback**: `ref={node => {...}}` 매 렌더 새 함수 → dnd-kit 죽임. `useCallback` 으로 메모이제이션.
+12. **IPC 4-file 불일치**: main.js 에만 등록하고 preload.js / electronBridge.ts 동기화 누락 — `plans/checklists.md` §2.
+
+→ 자동 점검: [`plans/anti-pattern-grep.md`](./anti-pattern-grep.md)
 
 ---
 
@@ -136,3 +167,6 @@
 - [ ] 기존 SSOT를 옮겼다면 본 인덱스 경로/줄 번호 갱신했는가?
 - [ ] 같은 영역 plan 파일이 이미 있는데 새로 또 만들지 않았는가?
 - [ ] "금지" 패턴(C) 중 하나를 새로 도입하지 않았는가?
+- [ ] 자주 하는 작업 (카드 타입 / IPC / 모달 / 설정 / 알림) 이면 [`plans/checklists.md`](./checklists.md) 통과했는가?
+- [ ] anti-pattern grep ([`plans/anti-pattern-grep.md`](./anti-pattern-grep.md) §8 종합 점검) 통과하는가?
+- [ ] UI 텍스트 추가 시 [`plans/ui-vocabulary.md`](./ui-vocabulary.md) §2 동사 통일표 따랐는가?

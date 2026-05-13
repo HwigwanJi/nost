@@ -83,6 +83,7 @@ const TYPE_OPTIONS: Array<{ value: LauncherItem['type']; label: string; icon: st
   { value: 'url',     label: '웹 URL',      icon: 'language',       hint: 'https://...' },
   { value: 'folder',  label: '폴더',        icon: 'folder',         hint: 'C:\\...' },
   { value: 'app',     label: '앱',          icon: 'apps',           hint: '.exe / .lnk' },
+  { value: 'doc',     label: '문서',        icon: 'description',    hint: '.docx / .pdf / .hwp …' },
   { value: 'memo',    label: '메모',        icon: 'sticky_note_2',  hint: '본문 내용 직접' },
   { value: 'text',    label: '텍스트',      icon: 'content_paste',  hint: '클립보드 복사' },
   { value: 'cmd',     label: '커맨드',      icon: 'terminal',       hint: 'cmd 한 줄' },
@@ -131,6 +132,46 @@ const PHASE_LABELS = ['유형', '값·이름', '위치'];
  *  multi-byte glyphs in the dingbat / supplemental ranges. Same
  *  predicate SpaceAccordion uses to render space.icon correctly. */
 const isEmojiIcon = (s: string) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s);
+
+// ── Glassmorphic phase navigation buttons (v1.3.34) ──────────────────
+// Floating `<` / `>` over the phase slider edges. Frosted backdrop blur
+// + 1px inner ring for the "glass" feel. Hover bumps the saturation
+// and accent ring; default state is calm enough to not steal attention
+// from the form content.
+const GLASS_NAV_SIZE = 34;
+function glassNavBtn(side: 'left' | 'right'): React.CSSProperties {
+  return {
+    position: 'absolute',
+    top: '50%',
+    [side]: 8,
+    transform: 'translateY(-50%)',
+    width:  GLASS_NAV_SIZE,
+    height: GLASS_NAV_SIZE,
+    borderRadius: '50%',
+    background: 'color-mix(in srgb, var(--bg-rgba) 60%, transparent)',
+    backdropFilter: 'blur(10px) saturate(120%)',
+    WebkitBackdropFilter: 'blur(10px) saturate(120%)',
+    border: '1px solid color-mix(in srgb, var(--border-rgba) 80%, transparent)',
+    boxShadow: '0 4px 12px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.08)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    zIndex: 5,
+    fontFamily: 'inherit',
+    transition: 'transform 0.18s cubic-bezier(0.34,1.56,0.64,1), background 0.15s, border-color 0.15s',
+  };
+}
+const glassNavBtnHover: React.CSSProperties = {
+  transform: 'translateY(-50%) scale(1.06)',
+  background: 'color-mix(in srgb, var(--bg-rgba) 80%, transparent)',
+  borderColor: 'var(--accent)',
+};
+const glassNavBtnReset: React.CSSProperties = {
+  transform: 'translateY(-50%) scale(1)',
+  background: 'color-mix(in srgb, var(--bg-rgba) 60%, transparent)',
+  borderColor: 'color-mix(in srgb, var(--border-rgba) 80%, transparent)',
+};
 
 export function ItemDialog({
   open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1,
@@ -440,12 +481,17 @@ export function ItemDialog({
     if (isWidgetMode) return;
     let cancelled = false;
     (async () => {
+      // ItemDialog reaches into AppData via its props (no settings prop
+      // currently); for the doc-extensions arg we fall back to undefined
+      // here so main.js uses its default doc list. If we later thread
+      // the user's customised list through, this is the swap point.
       const r = await electronAPI.analyzeClipboard();
       if (cancelled) return;
       if (r.type === 'none' || !r.value) return;
       const mapped: LauncherItem['type'] | null =
         r.type === 'url' ? 'url' :
         r.type === 'app' ? 'app' :
+        r.type === 'doc' ? 'doc' :
         r.type === 'folder' ? 'folder' :
         r.type === 'text' ? 'text' :
         null;
@@ -749,19 +795,50 @@ export function ItemDialog({
         target.isContentEditable
       );
       const cur = latestRef.current;
+      // Power-user shortcut — Ctrl/Cmd+Enter anywhere submits, regardless
+      // of phase or input focus. Kept for muscle memory; new users get
+      // the simpler Enter-Enter flow below.
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
         e.stopPropagation();
         cur.handleSave();
         return;
       }
-      // Plain Enter on phase ③ (no input focused) → save with the
-      // currently-selected space chip. Phase ② keeps its
-      // input-bound Enter → "next" semantic via renderValuePhase.
-      if (e.key === 'Enter' && !inInput && cur.isLastPhase(cur.phase) && !e.metaKey && !e.ctrlKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        cur.handleSave();
+      // Plain Enter (no input focused) — chains forward:
+      //   phase ① type        → advance to ② if type is set
+      //   phase ② value+name  → advance to ③ if value passes validation
+      //   phase ③ place       → submit (handleSave)
+      // Inputs handle their own Enter via onKeyDown in renderValuePhase
+      // (advance to next phase), so "type a value + Enter + Enter" naturally
+      // ends in save with no Ctrl needed.
+      if (e.key === 'Enter' && !inInput && !e.metaKey && !e.ctrlKey) {
+        if (cur.isLastPhase(cur.phase)) {
+          e.preventDefault(); e.stopPropagation();
+          cur.handleSave();
+        } else if (cur.phaseComplete(cur.phase)) {
+          e.preventDefault(); e.stopPropagation();
+          cur.goPhase(cur.nextPhase(cur.phase));
+        }
+        return;
+      }
+      // Tab — page-style navigation (v1.3.34). Treat like the glass `>`
+      // button: advance phase when current is complete, otherwise no-op
+      // (instead of cycling focus to a child element which leaves the
+      // user stranded mid-dialog). Shift+Tab goes backward like `<`.
+      // We intercept Tab BEFORE the browser's default tabindex traversal
+      // by stopping immediate propagation in addition to preventDefault.
+      if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.shiftKey) {
+          if (!cur.isFirstPhase(cur.phase)) {
+            e.preventDefault(); e.stopPropagation();
+            cur.goPhase(cur.prevPhase(cur.phase));
+          }
+        } else {
+          if (!cur.isLastPhase(cur.phase) && cur.phaseComplete(cur.phase)) {
+            e.preventDefault(); e.stopPropagation();
+            cur.goPhase(cur.nextPhase(cur.phase));
+          }
+        }
         return;
       }
       if (e.key === 'ArrowLeft' && !inInput) {
@@ -903,14 +980,48 @@ export function ItemDialog({
         </div>
 
         {/* Phase slider — overflow hidden, transform-translateX.
-            Phase navigation: tab buttons above, arrow keys, or footer
-            buttons. Pointer-drag/swipe was removed (caused accidental
+            Phase navigation surfaces (v1.3.34):
+              - Tab dots above (jump to any phase)
+              - Tab / Shift+Tab keys (page-style nav)
+              - Arrow keys ← / →
+              - Floating glass `<` / `>` buttons on each edge (new!)
+              - Plain Enter chains forward; Enter at last phase saves
+            Pointer-drag/swipe was removed earlier (caused accidental
             phase changes during marquee selection of chips).
             Width/box-sizing locked at every layer so content-driven
             growth (long unbreakable tokens in inputs/textareas) can't
             inflate the inner flex past the viewport — that would make
             translateX(-100%) over-shift and bleed the next phase in. */}
-        <div style={{ overflow: 'hidden', userSelect: 'none', width: '100%', boxSizing: 'border-box' }}>
+        <div style={{ overflow: 'hidden', userSelect: 'none', width: '100%', boxSizing: 'border-box', position: 'relative' }}>
+          {/* Glass-morph prev/next buttons — absolutely positioned over
+              the slider's vertical centre, hidden at the boundaries so
+              first phase shows only `>` and last phase only `<`. Uses
+              backdrop-filter for the frosted look against whichever
+              phase content sits behind. */}
+          {!isFirstPhase(phase) && (
+            <button
+              type="button"
+              onClick={() => goPhase(prevPhase(phase))}
+              title="이전 단계 (Shift+Tab / ←)"
+              style={glassNavBtn('left')}
+              onMouseEnter={e => Object.assign(e.currentTarget.style, glassNavBtnHover)}
+              onMouseLeave={e => Object.assign(e.currentTarget.style, glassNavBtnReset)}
+            >
+              <Icon name="chevron_left" size={18} color="var(--text-color)" />
+            </button>
+          )}
+          {!isLastPhase(phase) && phaseComplete(phase) && (
+            <button
+              type="button"
+              onClick={() => goPhase(nextPhase(phase))}
+              title="다음 단계 (Tab / Enter / →)"
+              style={glassNavBtn('right')}
+              onMouseEnter={e => Object.assign(e.currentTarget.style, glassNavBtnHover)}
+              onMouseLeave={e => Object.assign(e.currentTarget.style, glassNavBtnReset)}
+            >
+              <Icon name="chevron_right" size={18} color="var(--text-color)" />
+            </button>
+          )}
           <div style={{
             display: 'flex',
             width: '100%',

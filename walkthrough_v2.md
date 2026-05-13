@@ -1,8 +1,8 @@
-# nost — 개발 컨텍스트 워크스루 v2 (v1.3.0+)
+# nost — 개발 컨텍스트 워크스루
 
-> 이 문서는 기존 [walkthrough.md](walkthrough.md) (v1.0.9 기준, 2026-04-13)를 대체합니다.
-> 마지막 업데이트: 2026-04-27 (v1.3.x WIP 시점)
-> 새 대화 시작 시 이 파일과 [PROJECT_NOTES.md](PROJECT_NOTES.md), [guide.md](guide.md)를 같이 읽으세요.
+> 정본 — 옛 walkthrough.md / PROJECT_NOTES.md / research_favicon_caching.md 는 v1.3.34 시점에 일몰됨.
+> 마지막 업데이트: 2026-05-14 (v1.3.33 출시 + v1.3.34 미커밋 작업 진행 중)
+> **새 세션 시작 시**: 먼저 [`MASTER.md`](MASTER.md) 를 읽고, 거기서 가리키는 순서대로 본 파일 + plans/* 를 읽으세요.
 
 ---
 
@@ -22,6 +22,14 @@
 | v1.2.1 | **Pro-tier entitlement (Phase 5)** 골격, space-drag 데이터 손실 fix |
 | v1.3.0 | **온보딩 팩** — 환영 위자드, 5종 템플릿, 빈 상태 UI, 가져오기 위자드 |
 | v1.3.x WIP | userBusy 상태 레지스트리, sandbox 튜토리얼 모드 |
+| v1.3.4~7 | **미디어 컨트롤 / 컬러 스와치 위젯**, 컨테이너 bloom UX |
+| v1.3.8~12 | Chrome 웹스토어 등록, **Save-As 컨텍스트 팝업** (자주 가는 폴더 빠른 paste), 다중 DPI Node/Deck fix |
+| v1.3.15 | **모니터 SSOT** (per-monitor BrowserWindow), 렌더링 폭풍 진압 (~7000 re-render 제거), 네이티브 다이얼로그 감지 (koffi user32) |
+| v1.3.22~27 | 튜토리얼 시스템 v2 (sprint 1+2 — 18 quests × 5 카테고리), 스포트라이트 정합성, 단축키 교육 |
+| v1.3.28~31 | **충돌 회피 정책** (`canPerform()` + shake feedback), launch SSOT 정착, 컬러피커 정착, 다이얼로그 정렬 |
+| v1.3.32 | 알림센터 SSOT (확장 끊김 배너 → kind:'system' 통합), guide.md 갱신 |
+| v1.3.33 | **calm-by-default 알림** (`extensionEverConnected` latch, stale-update sweep), 튜토리얼 daily nudge 알림센터 미러, Whale 분기 제거 |
+| v1.3.34 | 환경설정 Option C 재구조화 (4 groups × 2-3 sub-tabs), **doc 코호트 first-class type 승격**, ItemWizard segmented tab (카드/메모), **공식 Google/GitHub 브랜드 마크**, **Auth CSP allowlist + PKCE verifier safeStorage 영속화**, Phase 2 sync 범위 합의 + cohort SSOT 골격 |
 
 ---
 
@@ -582,31 +590,86 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 
 ---
 
-## 10. 현재 WIP 상태 (커밋 전)
+## 10. 현재 WIP 상태 (v1.3.34, 미커밋)
 
-```
-M  frontend/src/App.tsx
-M  frontend/src/badges/Badge.tsx
-M  frontend/src/components/ItemDialog.tsx
-M  frontend/src/components/ItemWizard.tsx
-M  frontend/src/components/PaywallModal.tsx
-M  frontend/src/components/SettingsDialog.tsx
-M  frontend/src/components/SpaceAccordion.tsx
-M  frontend/src/electronBridge.ts
-M  frontend/src/onboarding/ImportWizard.tsx
-M  frontend/src/onboarding/WelcomeWizard.tsx
-M  frontend/src/tour/TourOverlay.tsx
-M  frontend/src/tour/tours.ts
-M  main.js
-M  package.json
-M  preload.js
-?? frontend/src/lib/userBusy.ts            ← 신규: busy 상태 레지스트리
-?? frontend/src/tour/SandboxExitModal.tsx  ← WIP: 샌드박스 종료 confirm
-?? frontend/src/tour/TutorialBanner.tsx    ← WIP: 투어 진행 배너
-?? frontend/src/tour/sandbox.ts            ← WIP: 샌드박스 데이터 시드
-```
+> 매 세션마다 갱신 — `git status --short`로 직접 확인하세요.
 
-**추정 작업 방향**: 튜토리얼/샌드박스 모드 완성을 위해 자동 팝업 조율(userBusy), 진행 상태 가시화(TutorialBanner), 샌드박스 진입/이탈 플로우(SandboxExitModal, sandbox.ts) 동시 작업 중.
+### 이번 라운드 작업 (테스트 후 사용자 허락 시 커밋)
+
+1. **환경설정 Option C 재구조화** — 8 flat tabs → 4 그룹 × 2-3 sub-tabs
+   - "나의 nost": 계정 · 데이터
+   - "작업 환경": 테마 및 색상 · 동작 · 플로팅 및 모니터
+   - "콘텐츠 규칙": 메모 · 문서
+   - "도움": 튜토리얼 · 확장
+   - `Section` 컴포넌트 shadcn-풍 아코디언 (gray box 제거, hairline divider, chevron toggle)
+
+2. **문서 코호트 first-class type 승격** — `LauncherItem.type`에 `'doc'` 추가
+   - 7개 분류기 (inferItemFromPath, analyzeClipboard IPC, detectClipboardType, ItemWizard, ContainerSlotPicker, ItemDialog auto-prefill, batch drop) 모두 doc 반환
+   - 마이그레이션: 기존 `'app'` 카드 중 `documentExtensions`에 매치되는 항목 자동 reclassify
+   - 사용자 설정 (`AppSettings.documentExtensions`) 기반 SSOT — 모든 지점이 동일 리스트 사용
+
+3. **빠른 추가 (ItemWizard) 재설계** — 하단 3-버튼 → 상단 segmented tab + 단일 추가
+   - text 타입일 때만 노출: `[클립보드 카드] [메모]` segmented control
+   - 메모 탭: 이름 필드 + 아이콘 영역 자동 숨김 (메모는 body 첫 줄이 title)
+
+4. **알림 카테고리 뱃지** — `NotificationPanel.deriveCategory()` 신설
+   - `action.intent === 'open-tour'` → `[튜토리얼]` 뱃지
+   - `dedupKey` 가 `ext-*` → `[확장]` 뱃지
+   - 미래 카테고리 추가는 deriveCategory 한 줄
+
+5. **세 곳의 튜토리얼 nudge → 알림센터 미러링** (v1.3.33의 누락 fix)
+   - TutorialProvider daily nudge
+   - TutorialProvider resume prompt
+   - NudgeToast 이벤트 nudge (`installNudges` ToastApi에 `addNotification` 추가)
+
+6. **호버 힌트 어투 폴리쉬** — "짧게/길게" → "클릭/길게 누르기", "발사" 등 캐주얼 어휘 제거
+   - widgets/widgetTokens.ts `HOVER_HINT` 헬퍼 docstring 갱신
+
+7. **저장 버튼 좌우 padding 전수 fix** — 8개 버튼의 `padding: 'Npx 0'` / `'Npx 8px'` → `14~18px` 보정
+   - NodePanel × 2, DeckPanel × 1, WelcomeModal × 2, ItemWizard WizardBtn × 1
+
+8. **컨테이너 호버 ContainerSlotGhosts 일몰** — 4-corner dot은 유지, hover 시 펄럭이는 ghost rectangles 제거 + 파일 삭제
+
+9. **ItemDialog Tab/Enter 페이지네이션** — Tab=다음 / Shift+Tab=이전 / Enter Enter=완성, 양옆 글래스모피 `< / >` 버튼
+
+10. **Whale 분기 제거** — Chrome 확장 단일 카드 (Whale 사용자도 동일)
+
+11. **공식 Google/GitHub 브랜드 마크** (2026-05-14)
+    - `frontend/src/components/ui/BrandLogo.tsx` 신규 — `GoogleLogo` (공식 4색 G, viewBox 48), `GitHubLogo` (공식 Invertocat 실루엣, `currentColor`)
+    - SignInScreen 의 `ProviderButton` API 가 `icon: string` → `leading: ReactNode` 로 변경
+    - SettingsDialog AccountTab 의 Google 버튼은 AccentBtn 배경 위에 작은 흰색 pill 로 감싸 브랜드 가이드라인 준수
+
+12. **Auth CSP allowlist** (2026-05-14, `main.js` CSP 블록)
+    - `connect-src` 에 `https://*.supabase.co` + `wss://*.supabase.co` 추가 (Phase 2 Realtime 까지 미리 반영)
+    - `img-src` 에 `https://lh3.googleusercontent.com` (Google 아바타), `https://avatars.githubusercontent.com` (GitHub 아바타), `https://*.supabase.co` (Supabase Storage 아바타 미래분) 추가
+    - 빠뜨리면: PKCE 토큰 교환 fetch 가 차단되어 deep-link 받은 후 토큰 못 받음 → SignInScreen 에서 영원히 못 빠져나옴
+
+13. **PKCE verifier safeStorage 영속화** (2026-05-14, IPC 4-file)
+    - 증상: dev mode 에서 `nost://auth-callback` 클릭 시 Windows 가 두 번째 electron.exe 를 spawn → 새 인스턴스가 lock 잡으면 첫 인스턴스의 renderer 메모리에 있던 PKCE `code_verifier` 손실 → 토큰 교환 실패
+    - 해결: supabase-js 의 storage adapter 가 **모든 key** (verifier 포함) 를 safeStorage 영속화. 새 인스턴스가 boot 시 `hydrateSession()` 의 `authKvList()` 로 일괄 복원
+    - 변경 파일: `main.js` (`auth:kv-get/set/list` IPC 신설, safeStorage 암호화), `preload.js` (3 메서드 노출), `frontend/src/electronBridge.ts` (타입 + noopApi), `frontend/src/lib/supabase.ts` (adapter 모든 키 영속화 + hydrate 일괄 복원)
+    - 부분 fix — production installer 로 가면 single-instance lock 이 정상 작동해 인스턴스 분리 자체가 안 일어남. PKCE 영속화는 그래도 "어떤 인스턴스가 콜백 받든 OK" 안전망
+
+14. **Phase 2 sync 범위 합의** (2026-05-14, `plans/sync-and-auth.md` §15)
+    - Cohort A (sync): url / memo / widget / text / browser
+    - Cohort C (PC-local): app / folder / doc / window / cmd
+    - Cohort D (디바이스 settings 절대 sync X): shortcut / autoHide / monitorDirections 등
+    - Cohort D-but-shared (default sync, 사용자 명시 override 시 분기): theme / accentColor / documentExtensions / docCohort / memo 설정
+    - `plans/sync-and-auth.md` §14 #3 "기존 폴더 카드 처리" 답도 함께 적음
+
+15. **Phase 2 SSOT 골격** (2026-05-14)
+    - `frontend/src/lib/cohort.ts` — `cohortOf(type)` 함수 + `SYNCED_TYPES` / `LOCAL_TYPES` 상수. 향후 sync push/pull 분기 진입점
+    - `plans/phase2-schema.sql` — Supabase 대시보드에서 실행할 DDL (app_data_snapshots / memos / devices + RLS)
+    - 실제 sync 코드는 Phase 1 E2E 검증 후 별도 라운드에서
+
+### 이전부터 진행 중 (별도 사이클)
+
+- 🔄 **인증 Phase 1 E2E 검증** — `plans/auth-status.md` §3·§4 체크박스 미완. v1.3.34 production installer 로 검증 예정
+- 🔄 **App.tsx 분리** — 4400줄+ → 도메인별 훅 (refactor-roadmap Round 3)
+- 🔄 **Settings SSOT** — main이 소유, renderer는 IPC subscribe (Round 2)
+
+### 신규 빈 폴더 / 파일
+- `plans/_archive/` 없음 — 일몰 파일은 직접 삭제 (`research_favicon_caching.md`, 옛 `walkthrough.md`, `PROJECT_NOTES.md`, `frontend/README.md`)
 
 ---
 
@@ -616,21 +679,85 @@ M  preload.js
 - ✅ DPI 혼합 모니터 타일링 (.NET Screen 직접 조회)
 - ✅ Store 앱 실행 (3단계 AUMID)
 - ✅ Props drilling (AppContext)
-- ✅ App.tsx 비대화 (1,600 → 1,300, 그러나 다시 2,961로 증가 — 재정리 필요)
 - ✅ 자동 업데이트 404 (public repo)
 - ✅ EADDRINUSE 크래시 (extServer graceful shutdown, v1.0.10)
 - ✅ 스페이스 드래그 데이터 손실 (v1.2.1)
 - ✅ 페어 모델 안정화 (v1.0.13)
+- ✅ 모니터 SSOT (v1.3.15 — per-monitor BrowserWindow)
+- ✅ 렌더링 폭풍 (v1.3.15 — ~7000 re-render 제거)
+- ✅ 충돌 회피 정책 정착 (v1.3.31 — `canPerform()` SSOT)
+- ✅ 확장 끊김 알림 false-positive (v1.3.33 — `extensionEverConnected` latch)
+- ✅ Stale "설치 준비 완료" 알림 (v1.3.33 — boot sweep)
+- ✅ 튜토리얼 nudge 알림센터 누락 (v1.3.34 미커밋 — 3 경로 모두 미러링)
+- ✅ 문서 코호트 분류 분산 (v1.3.34 미커밋 — `'doc'` first-class)
 
 ### 진행 중
-- 🔄 **튜토리얼/샌드박스 모드** (WIP)
-- 🔄 **userBusy 자동 팝업 조율** (WIP)
-- 🔄 **Pro-tier 서버 검증** (Phase 5 이후)
+- 🔄 **인증 Phase 1 E2E** — `plans/auth-status.md` §3·§4 (외부 console 작업)
+- 🔄 **App.tsx 분리** — 4400줄+ (refactor-roadmap Round 3)
+- 🔄 **Settings SSOT** — Round 2
+- 🔄 **Tutorial trigger callee-fires** — Round 4
+- 🔄 **Pro-tier 서버 검증** — Phase 2 (sync)
+
+### App.tsx 라인 수 추이 (재정리 필요 시그널)
+- v1.0.9: 1,600
+- v1.3.x: 2,961
+- v1.3.34: 4,400+ (Round 3 분리 시점)
 
 ### 미해결 / 연구 중
-- 🔍 **Favicon 캐싱** ([research_favicon_caching.md](research_favicon_caching.md) 참고) — 한번 가져온 favicon을 영구 보관할 수 있는 방안
-- 🔍 App.tsx 2,961줄 재분리 (다시 비대화됨)
+- 🔍 **Favicon 캐싱** — v1.3.3에서 net.fetch 기반 캐싱 구현됨. 추가 개선 후보: cache TTL 정책, 만료된 캐시 자동 갱신
+- 🔍 App.tsx 4,400+줄 재분리 (refactor-roadmap Round 3)
 - 🔍 ItemDialog ↔ ItemWizard에 favicon 로직 중복 → 공유 훅으로 추출 필요
-- 🔍 다운로드 감지를 폴링 대신 `SetWinEventHook`으로
+- 🔍 다운로드 감지를 폴링 대신 `SetWinEventHook` 이벤트 기반으로 (v1.3.15에서 koffi user32 직접 호출로 1차 가속됨, 추가 개선 여지)
 - 🔍 3분할 타일 안정성 개선
 - 🔍 고스트 카드 UX 세분화 (스페이스 선택 UI)
+- 🔍 테스트 커버리지 확대 — 현재 `lib/typePlausibility.test.ts` 1개뿐
+
+---
+
+## 12. 세션 인수인계 룰 (정착 필수)
+
+> 새 세션이 시작될 때 stale 정보로 작업하지 않도록 보장하는 메커니즘.
+> 본 룰을 어기면 다음 세션이 잘못된 가정으로 작업 시작 → 회귀 발생.
+
+### 12.1 세션 종료 시 의무 갱신
+
+작업 마치고 대화 클리어 / 컨텍스트 컴팩트 전에:
+
+| 갱신 대상 | 트리거 |
+|---|---|
+| **walkthrough_v2.md §10 WIP** | 이번 세션에서 코드 / 문서 변경분 있을 때 (커밋 여부 무관) |
+| **walkthrough_v2.md §11 해결됨** | 어떤 항목이 커밋 + 배포 완료됐을 때 §10 → §11 이동 |
+| **§0 변경 요약 표** | 새 버전 출시되면 한 줄 추가 |
+| **plans/ssot-index.md** | 새 SSOT 만들었거나 코드 파일/라인 위치 옮겼을 때 |
+| **MASTER.md §1** | 출시 버전 변경 시 (`현재 출시 버전`, `미커밋 작업`) |
+| **MASTER.md §3.x** | 새 plan 추가 또는 plan 이름 변경 시 인덱스 갱신 |
+| **plans/anti-pattern-grep.md** | 이번 세션에서 새 anti-pattern 발견 시 grep 추가 |
+| **plans/checklists.md** | 4가지 표준 작업 (카드 타입 / IPC / 모달 / 설정) 외에 반복 패턴 발견 시 §X 신설 |
+| **plans/troubleshooting.md** | 빌드/런타임 새 실패 모드 만났을 때 |
+| **plans/ui-vocabulary.md** | 새 UI 동사 추가 또는 사용자가 어휘 피드백 줬을 때 |
+| **plans/release-runbook.md** | 배포 절차 변경 시 (e.g., gh CLI → action 등) |
+
+### 12.2 새 세션 시작 시 확인 순서
+
+```
+1. MASTER.md 읽기                                                ← 30초
+2. walkthrough_v2.md §10 (현재 WIP) + §0 (변경 요약) 확인        ← 1분
+3. git status --short + git log --oneline -5                    ← 10초
+4. (작업 영역 결정 후) MASTER.md §3.2 표에서 해당 plan 1개 읽기   ← 5분
+5. 작업 착수
+```
+
+### 12.3 stale 감지 휴리스틱
+
+다음 경우 의심:
+- walkthrough_v2 의 "마지막 업데이트" 일자와 `git log -1` 사이가 1주 이상
+- §10 WIP 에 적힌 변경사항이 이미 §11 해결됨 으로 옮겨졌어야 할 것 같은 경우
+- ssot-index 가 가리키는 `file:line` 이 실제 코드와 안 맞음
+
+→ stale 감지 시 사용자에게 알리고 갱신 우선.
+
+### 12.4 갱신 책임
+
+- 코드 / 문서 변경 작업자가 같은 세션 안에서 갱신
+- 사용자가 "정리해줘" 등 명시 요청 시 전수 점검 (이번 2026-05-14 작업 같이)
+- 자동화 후보 (미래): pre-commit hook 으로 일자 freshness 체크

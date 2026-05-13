@@ -93,7 +93,9 @@ export function ContainerSlotPicker({
     const text = await electronAPI.readClipboard();
     if (!text?.trim()) return;
     const detected = detectClipboardType(text.trim(), DEFAULT_DOCUMENT_EXTENSIONS);
-    const mappedType: LauncherItem['type'] = detected === 'doc' ? 'app' : detected === null ? 'text' : detected;
+    // v1.3.34: 'doc' is a first-class LauncherItem.type now — pass through
+    // without remapping (was previously collapsed to 'app').
+    const mappedType: LauncherItem['type'] = detected === null ? 'text' : detected;
     setNewType(mappedType);
     setNewValue(text.trim());
     if (!newTitle) setNewTitle(suggestName(mappedType, text.trim()));

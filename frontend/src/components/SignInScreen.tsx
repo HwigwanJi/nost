@@ -11,8 +11,10 @@
  * instead of broken sign-in buttons.
  */
 
+import type { ReactNode } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
+import { GoogleLogo, GitHubLogo } from '@/components/ui/BrandLogo';
 import { signIn, clearAuthError, useAuth } from '../lib/auth';
 
 interface Props {
@@ -51,13 +53,13 @@ export function SignInScreen({ onSkip }: Props) {
       <Header />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
         <ProviderButton
-          icon="login"
+          leading={<GoogleLogo size={16} />}
           label="Google로 계속하기"
           onClick={() => signIn('google')}
           disabled={isAuthing}
         />
         <ProviderButton
-          icon="code"
+          leading={<GitHubLogo size={16} />}
           label="GitHub으로 계속하기"
           onClick={() => signIn('github')}
           disabled={isAuthing}
@@ -122,8 +124,8 @@ function Header() {
   );
 }
 
-function ProviderButton({ icon, label, onClick, disabled }: {
-  icon: string; label: string; onClick: () => void; disabled?: boolean;
+function ProviderButton({ leading, label, onClick, disabled }: {
+  leading: ReactNode; label: string; onClick: () => void; disabled?: boolean;
 }) {
   return (
     <button
@@ -131,7 +133,7 @@ function ProviderButton({ icon, label, onClick, disabled }: {
       onClick={onClick}
       disabled={disabled}
       style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
         height: 40, padding: '0 14px',
         borderRadius: 8,
         border: '1px solid var(--border-rgba)',
@@ -146,7 +148,9 @@ function ProviderButton({ icon, label, onClick, disabled }: {
       onMouseEnter={e => { if (!disabled) e.currentTarget.style.borderColor = 'var(--accent)'; }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border-rgba)'; }}
     >
-      <Icon name={icon} size={16} color="var(--text-muted)" />
+      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 16, height: 16, flexShrink: 0 }}>
+        {leading}
+      </span>
       {label}
     </button>
   );

@@ -4,6 +4,7 @@ import {
   MEMO_TTL_DAYS_MIN, MEMO_TTL_DAYS_MAX, DEFAULT_MEMO_SETTINGS,
 } from '../types';
 import { Icon } from '@/components/ui/Icon';
+import { GoogleLogo, GitHubLogo } from '@/components/ui/BrandLogo';
 import { electronAPI } from '../electronBridge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -14,22 +15,85 @@ import { useAuth, signIn, signOut } from '../lib/auth';
 import { AccordionPanel } from '../tutorial';
 import { ExtensionInstallWizard } from './ExtensionInstallWizard';
 import { DEFAULT_DOCUMENT_EXTENSIONS } from '../lib/documentExtensions';
+import type { TokenPreset } from '../types';
+import { DEFAULT_DOC_COHORT_SETTINGS, DEFAULT_DOC_LABEL_ORDER } from '../types';
 import { useBusyMark } from '../lib/userBusy';
 import { TOURS } from '../tour/tours';
 
 type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'dev-mode' | 'error';
-type Tab = 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'tutorial' | 'data' | 'account';
 
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: 'account',   label: '계정',     icon: 'account_circle' },
-  { id: 'general',   label: '일반',     icon: 'tune' },
-  { id: 'monitor',   label: '모니터',   icon: 'desktop_windows' },
-  { id: 'docs',      label: '문서',     icon: 'description' },
-  { id: 'extension', label: '확장',     icon: 'extension' },
-  { id: 'memo',      label: '메모',     icon: 'sticky_note_2' },
-  { id: 'tutorial',  label: '튜토리얼', icon: 'school' },
-  { id: 'data',      label: '데이터',   icon: 'save' },
+// v1.3.34: settings reorg per Option C.
+// 8 flat tabs collapsed into 4 semantic groups × 2-3 sub-tabs each.
+// `general` is dropped — its sections fanned out into appearance / behavior
+// / surfaces. `tutorial` consolidates the duplicated "다시 보기" surface
+// that used to live both in its own tab and inside 일반.
+// Legacy tab ids ('general', 'monitor') are still accepted in `initialTab`
+// for back-compat with deep links — they remap on entry (see remapTab below).
+type Tab =
+  | 'account' | 'data'                                  // 나의 nost
+  | 'appearance' | 'behavior' | 'surfaces'              // 작업 환경
+  | 'memo' | 'docs'                                     // 콘텐츠 규칙
+  | 'tutorial' | 'extension';                           // 도움
+
+interface TabGroup {
+  /** Sidebar header text — non-clickable. */
+  label: string;
+  tabs: { id: Tab; label: string; icon: string }[];
+}
+
+const TAB_GROUPS: TabGroup[] = [
+  {
+    label: '나의 nost',
+    tabs: [
+      { id: 'account', label: '계정',   icon: 'account_circle' },
+      { id: 'data',    label: '데이터', icon: 'save' },
+    ],
+  },
+  {
+    label: '작업 환경',
+    tabs: [
+      { id: 'appearance', label: '테마 및 색상',     icon: 'palette' },
+      { id: 'behavior',   label: '동작',             icon: 'tune' },
+      { id: 'surfaces',   label: '플로팅 및 모니터', icon: 'desktop_windows' },
+    ],
+  },
+  {
+    label: '콘텐츠 규칙',
+    tabs: [
+      { id: 'memo', label: '메모', icon: 'sticky_note_2' },
+      { id: 'docs', label: '문서', icon: 'description' },
+    ],
+  },
+  {
+    label: '도움',
+    tabs: [
+      { id: 'tutorial',  label: '튜토리얼', icon: 'school' },
+      { id: 'extension', label: '확장',     icon: 'extension' },
+    ],
+  },
 ];
+
+// Back-compat mapping: deep links from earlier versions used 'general' and
+// 'monitor'. Redirect to the natural new home so existing callers (orb
+// right-click → settings, notification action payload, etc.) keep working
+// without an update.
+function remapLegacyTab(id: string | undefined): Tab {
+  switch (id) {
+    case 'general': return 'appearance';
+    case 'monitor': return 'surfaces';
+    case 'appearance':
+    case 'behavior':
+    case 'surfaces':
+    case 'docs':
+    case 'extension':
+    case 'memo':
+    case 'tutorial':
+    case 'data':
+    case 'account':
+      return id;
+    default:        return 'appearance';
+  }
+}
 
 interface MonitorInfo {
   index: number;
@@ -47,7 +111,10 @@ interface SettingsDialogProps {
   onSave: (s: AppSettings) => void;
   updateDownloaded?: boolean;
   downloadProgress?: number | null;
-  initialTab?: Tab;
+  /** Accepts both new (v1.3.34+) Tab ids and legacy 'general' / 'monitor'
+   *  aliases — remapLegacyTab() funnels old ids to their new homes when
+   *  the state is initialised. */
+  initialTab?: Tab | 'general' | 'monitor';
   /** Optional — invoked when the user picks a quest from the
    *  튜토리얼 tab. App routes through TutorialProvider.start. */
   onStartTutorial?: (quest: import('../tutorial').Quest) => void;
@@ -61,26 +128,108 @@ interface SettingsDialogProps {
   onEmptyMemoTrash?: () => number;
 }
 
-// ── Small building blocks ────────────────────────────────────────────
+// ── Settings design tokens (v1.3.34 polish) ─────────────────────────
+//
+// Centralised font + spacing scale so every tab/section/row reads with
+// the same visual rhythm. shadcn-style hierarchy:
+//   header   — section title (clickable, with chevron when collapsible)
+//   primary  — main control text / row title
+//   detail   — secondary description below the row title
+//   meta     — captions, helper text under sliders, "Xpx" badges
+//
+// Resist inlining font-size literals elsewhere in this file — if a
+// surface needs a one-off size, add a token here first.
+const FS = {
+  header:  13,   // SectionLabel header
+  primary: 12,   // row titles, button labels
+  body:    11,   // description / paragraph
+  meta:    10,   // hint, "300px" caption
+  micro:    9,   // tag chips, count badges
+} as const;
 
-function Section({ children }: { children: React.ReactNode }) {
+// ── Section — accordion-style row (v1.3.34) ────────────────────────
+//
+// Replaces the old "rounded gray box per section" layout (the user
+// flagged it as visually heavy). Now: a flat stack with hairline
+// dividers and a clickable header that toggles a collapse panel.
+// Same vibe as shadcn's `<Accordion>` but without the wrapper-per-tab
+// boilerplate — callers stay simple, just `<Section title="..." icon="...">`.
+//
+// `defaultOpen` (default true) preserves discoverability — every
+// setting is visible on tab entry; users can fold the noisy ones away
+// without losing the affordance.
+function Section({
+  title, icon, children, defaultOpen = true, collapsible = true,
+}: {
+  title?: string;
+  icon?: string;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  /** Some sections have no obvious title (e.g. single-row settings) — pass
+   *  `collapsible={false}` to render content only, no header. */
+  collapsible?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const hasHeader = collapsible && !!title;
   return (
     <div style={{
-      padding: '14px 16px',
-      borderRadius: 10,
-      background: 'var(--surface)',
-      border: '1px solid var(--border-rgba)',
+      padding: '4px 0',
+      borderBottom: '1px solid var(--border-rgba)',
     }}>
-      {children}
+      {hasHeader && (
+        <button
+          onClick={() => setOpen(o => !o)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 8,
+            width: '100%', padding: '10px 4px',
+            background: 'transparent',
+            border: 'none', borderRadius: 6,
+            cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+            color: 'var(--text-color)',
+            transition: 'background 0.12s',
+          }}
+          onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
+          onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+        >
+          {icon && <Icon name={icon} size={15} color="var(--text-muted)" style={{ flexShrink: 0 }} />}
+          <span style={{ flex: 1, fontSize: FS.header, fontWeight: 600 }}>{title}</span>
+          <Icon
+            name="expand_more"
+            size={16}
+            color="var(--text-dim)"
+            style={{
+              flexShrink: 0,
+              transition: 'transform 0.18s cubic-bezier(0.4,0,0.2,1)',
+              transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+            }}
+          />
+        </button>
+      )}
+      <div
+        style={{
+          maxHeight: hasHeader && !open ? 0 : undefined,
+          opacity: hasHeader && !open ? 0 : 1,
+          overflow: hasHeader && !open ? 'hidden' : 'visible',
+          padding: hasHeader ? (open ? '6px 4px 14px' : '0 4px') : '12px 4px',
+          transition: 'max-height 0.22s ease, opacity 0.18s ease, padding 0.22s ease',
+        }}
+      >
+        {children}
+      </div>
     </div>
   );
 }
 
+// Legacy SectionLabel — still used by older sections that haven't been
+// migrated to Section title+icon props. Renders as an inline header
+// (no chevron) so the visual register matches the new collapsible
+// header tokens. Once every call site moves to the prop form this can
+// be deleted.
 function SectionLabel({ icon, text }: { icon: string; text: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
       <Icon name={icon} size={14} color="var(--text-muted)" />
-      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-color)' }}>{text}</span>
+      <span style={{ fontSize: FS.header, fontWeight: 600, color: 'var(--text-color)' }}>{text}</span>
     </div>
   );
 }
@@ -283,10 +432,13 @@ function AccountTab() {
         </p>
         <div style={{ display: 'flex', gap: 8 }}>
           <AccentBtn onClick={() => signIn('google')} disabled={isAuthing} style={{ flex: 1 }}>
-            <Icon name="login" size={14} /> Google로 계속
+            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 14, height: 14, borderRadius: 3, background: '#fff', padding: 1 }}>
+              <GoogleLogo size={12} />
+            </span>
+            Google로 계속
           </AccentBtn>
           <GhostBtn onClick={() => signIn('github')} disabled={isAuthing} style={{ flex: 1 }}>
-            <Icon name="code" size={14} /> GitHub으로 계속
+            <GitHubLogo size={14} /> GitHub으로 계속
           </GhostBtn>
         </div>
         {isAuthing && (
@@ -338,11 +490,198 @@ function GhostBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttribut
   );
 }
 
+// ── Doc cohort token rules widgets ─────────────────────────────────────
+//
+// Two small editors hosted by the 문서 tab:
+//   - TokenPresetList   ON/OFF + drag-reorder for the 11 supported presets
+//   - LabelOrderEditor  drag-reorder + add/remove for the label hierarchy
+//                        (consumed by 'label' and 'label-rev' presets)
+//
+// Drag uses plain HTML5 DnD here (no @dnd-kit) because the row count is
+// tiny and we don't share any drop-target semantics with the cards/spaces
+// grid. Keeping it standalone avoids polluting the card DnD context.
+
+const TOKEN_PRESET_META: Record<TokenPreset, { label: string; example: string }> = {
+  numeric:            { label: '버전 번호',         example: '_v3' },
+  semver:             { label: '세마버',           example: '1.2.3' },
+  'date-yymmdd':      { label: '날짜 (YYMMDD)',    example: '240513' },
+  'date-yyyymmdd':    { label: '날짜 (YYYYMMDD)',  example: '20240513' },
+  'date-iso':         { label: '날짜 (ISO)',       example: '2024-05-13' },
+  'date-dotted':      { label: '날짜 (점)',         example: '2024.05.13' },
+  label:              { label: '라벨',              example: 'draft → final' },
+  'date-yyyymmdd_re': { label: '날짜 + 개정',       example: '20260513_RE4' },
+  'date-iso_v':       { label: '날짜 + 버전',       example: '2024-05-13_v2' },
+  'semver-build':     { label: '세마버 + 빌드',     example: '1.2.3-build42' },
+  'label-rev':        { label: '라벨 + 개정',       example: 'final_rev2' },
+  mtime:              { label: '파일 수정 시각',    example: '(이름 토큰 없음)' },
+};
+
+const ALL_PRESETS: TokenPreset[] = [
+  'date-yyyymmdd_re', 'date-iso_v', 'semver-build', 'label-rev',
+  'semver', 'date-yyyymmdd', 'date-yymmdd', 'date-iso', 'date-dotted',
+  'numeric', 'label',
+  'mtime',
+];
+
+function TokenPresetList({ enabled, onChange }: {
+  enabled: TokenPreset[];
+  onChange: (next: TokenPreset[]) => void;
+}) {
+  // Render every preset in its current ordering: enabled ones first
+  // (in their saved order), disabled ones below in canonical order.
+  const enabledSet = new Set(enabled);
+  const disabled = ALL_PRESETS.filter(p => !enabledSet.has(p));
+  const dragIdxRef = useRef<number | null>(null);
+
+  const toggle = (p: TokenPreset, on: boolean) => {
+    if (on && !enabledSet.has(p)) onChange([...enabled, p]);
+    else if (!on && enabledSet.has(p)) onChange(enabled.filter(x => x !== p));
+  };
+
+  const moveTo = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return;
+    const next = enabled.slice();
+    const [removed] = next.splice(from, 1);
+    next.splice(to, 0, removed);
+    onChange(next);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      {enabled.map((preset, idx) => {
+        const meta = TOKEN_PRESET_META[preset];
+        return (
+          <div
+            key={preset}
+            draggable
+            onDragStart={() => { dragIdxRef.current = idx; }}
+            onDragOver={e => { e.preventDefault(); }}
+            onDrop={e => { e.preventDefault(); if (dragIdxRef.current != null) moveTo(dragIdxRef.current, idx); dragIdxRef.current = null; }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '7px 10px', borderRadius: 7,
+              background: 'var(--bg-rgba)',
+              border: '1px solid var(--border-rgba)',
+              cursor: 'grab',
+            }}
+          >
+            <Icon name="drag_indicator" size={13} color="var(--text-dim)" />
+            <Switch checked={true} onCheckedChange={v => toggle(preset, v)} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-color)' }}>{meta.label}</div>
+              <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace', marginTop: 1 }}>{meta.example}</div>
+            </div>
+          </div>
+        );
+      })}
+      {disabled.length > 0 && (
+        <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px dashed var(--border-rgba)' }}>
+          <div style={{ fontSize: 10, color: 'var(--text-dim)', marginBottom: 4 }}>비활성</div>
+          {disabled.map(preset => {
+            const meta = TOKEN_PRESET_META[preset];
+            return (
+              <div key={preset} style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '5px 10px', borderRadius: 7,
+                opacity: 0.55,
+              }}>
+                <Icon name="drag_indicator" size={13} color="var(--text-dim)" style={{ visibility: 'hidden' }} />
+                <Switch checked={false} onCheckedChange={v => toggle(preset, v)} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{meta.label}</div>
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)', fontFamily: 'monospace', marginTop: 1 }}>{meta.example}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LabelOrderEditor({ order, onChange }: {
+  order: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const dragIdxRef = useRef<number | null>(null);
+
+  const move = (from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return;
+    const next = order.slice();
+    const [r] = next.splice(from, 1);
+    next.splice(to, 0, r);
+    onChange(next);
+  };
+
+  return (
+    <>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+        {order.map((label, idx) => (
+          <div
+            key={label}
+            draggable
+            onDragStart={() => { dragIdxRef.current = idx; }}
+            onDragOver={e => { e.preventDefault(); }}
+            onDrop={e => { e.preventDefault(); if (dragIdxRef.current != null) move(dragIdxRef.current, idx); dragIdxRef.current = null; }}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+              padding: '4px 8px',
+              background: 'var(--surface)',
+              border: '1px solid var(--border-rgba)',
+              borderRadius: 99,
+              fontSize: 11, fontFamily: 'monospace',
+              color: 'var(--text-color)',
+              cursor: 'grab',
+            }}
+          >
+            <Icon name="drag_indicator" size={11} color="var(--text-dim)" />
+            {label}
+            <button
+              onClick={() => onChange(order.filter(l => l !== label))}
+              title={`${label} 제거`}
+              style={{
+                display: 'inline-flex', background: 'none', border: 'none',
+                cursor: 'pointer', padding: 0, marginLeft: 2,
+              }}
+            >
+              <Icon name="close" size={10} color="var(--text-dim)" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') {
+              const v = draft.trim();
+              if (v && !order.includes(v)) onChange([...order, v]);
+              setDraft('');
+            }
+          }}
+          placeholder="라벨 추가 (예: hotfix, Enter)"
+          style={{
+            flex: 1, background: 'var(--bg-rgba)', border: '1px solid var(--border-rgba)',
+            borderRadius: 7, padding: '5px 10px', fontSize: 11,
+            color: 'var(--text-color)', fontFamily: 'monospace', outline: 'none',
+          }}
+        />
+      </div>
+    </>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────────────
 
 export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onStartTutorial, onOpenMemoTrash, onExtendAllMemos, onEmptyMemoTrash }: SettingsDialogProps) {
   useBusyMark('modal:settings', open);
-  const [tab, setTab] = useState<Tab>(initialTab ?? 'general');
+  // initialTab may carry legacy values ('general', 'monitor') from older
+  // call sites (notification action payloads, deep links). remapLegacyTab
+  // funnels them to the right new home transparently.
+  const [tab, setTab] = useState<Tab>(remapLegacyTab(initialTab));
   const [form, setForm] = useState<AppSettings>({ ...settings });
   // Snapshot of settings at the moment this dialog opened — used for
   // dirty detection and the rollback path. Captured once on open;
@@ -387,7 +726,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
       // this moment.
       originalRef.current = { ...settings };
       setForm({ ...settings });
-      setTab(initialTab ?? 'general');
+      setTab(remapLegacyTab(initialTab));
       setPendingClose(false);
       electronAPI.getMonitors().then(ms => setMonitors(ms as MonitorInfo[]));
     }
@@ -525,9 +864,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
         {/* ── Body: left nav + right content ────────────────────── */}
         <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
 
-          {/* Left sidebar nav */}
+          {/* Left sidebar nav — grouped (v1.3.34, Option C).
+              Each TAB_GROUPS entry renders a small non-clickable header
+              followed by indented tab buttons. Width grew 148 → 168 to
+              fit "나의 nost" / "콘텐츠 규칙" group labels without ellipsis. */}
           <nav style={{
-            width: 148,
+            width: 168,
             flexShrink: 0,
             borderRight: '1px solid var(--border-rgba)',
             padding: '10px 8px',
@@ -536,37 +878,52 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
             gap: 2,
             overflowY: 'auto',
           }}>
-            {TABS.map(t => {
-              const active = tab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  onClick={() => setTab(t.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '8px 10px',
-                    borderRadius: 8,
-                    border: 'none',
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    fontSize: 12,
-                    fontWeight: active ? 700 : 500,
-                    textAlign: 'left',
-                    width: '100%',
-                    background: active ? 'var(--accent-dim)' : 'transparent',
-                    color: active ? 'var(--accent)' : 'var(--text-muted)',
-                    transition: 'background 0.12s, color 0.12s',
-                  }}
-                  onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
-                  onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
-                >
-                  <Icon name={t.icon} size={16} style={{ flexShrink: 0 }} />
-                  {t.label}
-                </button>
-              );
-            })}
+            {TAB_GROUPS.map((group, gIdx) => (
+              <div key={group.label} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: gIdx === 0 ? 0 : 10 }}>
+                <div style={{
+                  fontSize: 10,
+                  fontWeight: 700,
+                  color: 'var(--text-dim)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.08em',
+                  padding: '4px 10px 6px',
+                  userSelect: 'none',
+                }}>
+                  {group.label}
+                </div>
+                {group.tabs.map(t => {
+                  const active = tab === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => setTab(t.id)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '7px 10px 7px 14px',
+                        borderRadius: 8,
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        fontSize: 12,
+                        fontWeight: active ? 700 : 500,
+                        textAlign: 'left',
+                        width: '100%',
+                        background: active ? 'var(--accent-dim)' : 'transparent',
+                        color: active ? 'var(--accent)' : 'var(--text-muted)',
+                        transition: 'background 0.12s, color 0.12s',
+                      }}
+                      onMouseEnter={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'var(--surface)'; }}
+                      onMouseLeave={e => { if (!active) (e.currentTarget as HTMLElement).style.background = 'transparent'; }}
+                    >
+                      <Icon name={t.icon} size={15} style={{ flexShrink: 0 }} />
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </nav>
 
           {/* Right content panel */}
@@ -578,8 +935,8 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                 <AccountTab />
               )}
 
-              {/* ══ 일반 ═══════════════════════════════════════════ */}
-              {tab === 'general' && <>
+              {/* ══ 화면 (Appearance) ════════════════════════════════ */}
+              {tab === 'appearance' && <>
                 <Section>
                   <SectionLabel icon="palette" text="테마 모드" />
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -616,11 +973,29 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     className="w-full" />
                 </Section>
 
-                {/* 창 크기 섹션은 status bar 우측 슬라이더 + `/N`
-                    슬래시 명령에서 이미 노출되므로 설정에서 제거.
-                    설정값(settings.windowSizePct)은 그대로 유지 —
-                    삭제한 건 UI surface일 뿐. */}
+                <Section>
+                  <SectionLabel icon="palette" text="강조색 (Accent)" />
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    {['#6366f1','#0ea5e9','#22c55e','#f59e0b','#ef4444','#a855f7','#ec4899','#14b8a6','#f97316','#64748b'].map(c => (
+                      <button key={c} onClick={() => f('accentColor', c)} style={{
+                        width: 24, height: 24, borderRadius: '50%', background: c, border: 'none', cursor: 'pointer',
+                        outline: (form.accentColor || '#6366f1') === c ? `3px solid ${c}` : '2px solid transparent',
+                        outlineOffset: 2, transition: 'outline 0.1s',
+                      }} />
+                    ))}
+                    <input type="color" value={form.accentColor || '#6366f1'}
+                      onChange={e => f('accentColor', e.target.value)} title="직접 선택"
+                      style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--border-rgba)', cursor: 'pointer', padding: 0, background: 'none' }} />
+                  </div>
+                </Section>
+              </>}
 
+              {/* ══ 동작 (Behavior) ══════════════════════════════════ */}
+              {/* 창 크기 섹션은 status bar 우측 슬라이더 + `/N`
+                  슬래시 명령에서 이미 노출되므로 설정에서 제거.
+                  설정값(settings.windowSizePct)은 그대로 유지 —
+                  삭제한 건 UI surface일 뿐. */}
+              {tab === 'behavior' && <>
                 <Section>
                   <SwitchRow icon="start" title="Windows 시작 시 자동 실행"
                     description="Windows 로그인 시 nost를 자동 실행합니다."
@@ -707,7 +1082,14 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     placeholder="예: Alt+Space" className="font-mono text-sm" />
                   <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.4 }}>단축키 변경 후 저장하면 즉시 반영됩니다.</p>
                 </Section>
+              </>}
 
+              {/* ══ 표면 (Surfaces) ══════════════════════════════════ */}
+              {/* Floating button + badges (own BrowserWindows) and the
+                  monitor identification widget all share the "external
+                  visual surfaces" mental model. Old separate '모니터' tab
+                  is collapsed here as of v1.3.34. */}
+              {tab === 'surfaces' && <>
                 {/* ── Floating button (Phase 1 MVP) ────────────────── */}
                 <Section>
                   <SwitchRow
@@ -817,73 +1199,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   </div>
                 </Section>
 
-                <Section>
-                  <SectionLabel icon="palette" text="강조색 (Accent)" />
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    {['#6366f1','#0ea5e9','#22c55e','#f59e0b','#ef4444','#a855f7','#ec4899','#14b8a6','#f97316','#64748b'].map(c => (
-                      <button key={c} onClick={() => f('accentColor', c)} style={{
-                        width: 24, height: 24, borderRadius: '50%', background: c, border: 'none', cursor: 'pointer',
-                        outline: (form.accentColor || '#6366f1') === c ? `3px solid ${c}` : '2px solid transparent',
-                        outlineOffset: 2, transition: 'outline 0.1s',
-                      }} />
-                    ))}
-                    <input type="color" value={form.accentColor || '#6366f1'}
-                      onChange={e => f('accentColor', e.target.value)} title="직접 선택"
-                      style={{ width: 24, height: 24, borderRadius: '50%', border: '1px solid var(--border-rgba)', cursor: 'pointer', padding: 0, background: 'none' }} />
-                  </div>
-                </Section>
-
-                {/* ── Tutorials replay ──
-                   Re-run any of the spotlight tours from the start. We close
-                   the dialog first and defer the dispatch by a tick so the
-                   modal's busy mark clears before TourOverlay's listener
-                   evaluates `whenIdle` — otherwise the tour would queue
-                   itself behind our own settings dialog. */}
-                <Section>
-                  <SectionLabel icon="school" text="튜토리얼 다시 보기" />
-                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
-                    각 기능별 안내를 다시 볼 수 있어요.
-                  </p>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {TOURS.map(t => (
-                      <button
-                        key={t.id}
-                        onClick={() => {
-                          onClose();
-                          // small defer so the dialog finishes unmounting and
-                          // releases its busy mark before the tour starts.
-                          setTimeout(() => {
-                            window.dispatchEvent(
-                              new CustomEvent('nost:start-tour', { detail: { tourId: t.id } }),
-                            );
-                          }, 250);
-                        }}
-                        style={{
-                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                          padding: '9px 12px', borderRadius: 8,
-                          background: 'var(--bg-rgba)',
-                          border: '1px solid var(--border-rgba)',
-                          color: 'var(--text-color)', fontSize: 12, fontWeight: 600,
-                          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
-                        }}
-                        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent)'; }}
-                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-rgba)'; }}
-                      >
-                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <Icon name="play_circle" size={14} color="var(--accent)" />
-                          {t.title}
-                        </span>
-                        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
-                          {t.steps.length}단계
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </Section>
-              </>}
-
-              {/* ══ 모니터 ══════════════════════════════════════════ */}
-              {tab === 'monitor' && <>
+                {/* ── Monitor identification widget — same group ('surfaces') as
+                       floating button + badges. Old separate '모니터' tab is gone
+                       (v1.3.34); contents stay identical, just nested here. */}
                 <Section>
                   <SectionLabel icon="visibility" text="모니터 번호 확인" />
                   <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
@@ -1067,6 +1385,58 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                         cursor: 'pointer', fontFamily: 'inherit',
                       }}>초기화</button>
                   </div>
+                </Section>
+
+                {/* ── 문서 코호트 — 토큰 규칙 (v1.3.34+) ─────────────────
+                    같은 파일의 다른 버전을 어떻게 비교할지 정의한다. 카드
+                    우클릭의 "최신 버전 확인"이 이 규칙으로 디렉터리를 스캔
+                    + 매칭 + 정렬한다. SSOT: rules are *global*, per-card
+                    binding (LauncherItem.docCohort) only stores which preset
+                    a card chose at detection time. */}
+                <Section>
+                  <SectionLabel icon="schedule" text="문서 코호트 — 토큰 규칙" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 12 }}>
+                    같은 파일의 다른 버전을 어떻게 인식할지 정의합니다. 카드 우클릭의
+                    "최신 버전 확인"이 이 규칙을 따라 디렉터리를 스캔합니다.
+                    위에서부터 순서대로 시도하므로, 복합 토큰을 먼저 두면 단순 숫자보다 우선합니다.
+                  </p>
+
+                  {/* Preset list — toggle on/off + drag-reorder. */}
+                  <TokenPresetList
+                    enabled={form.docCohort?.enabledPresets ?? DEFAULT_DOC_COHORT_SETTINGS.enabledPresets}
+                    onChange={(next) => f('docCohort', {
+                      enabledPresets: next,
+                      labelOrder: form.docCohort?.labelOrder ?? [...DEFAULT_DOC_LABEL_ORDER],
+                    })}
+                  />
+
+                  {/* Label hierarchy editor — used by 'label' and 'label-rev'
+                      presets. Older labels on the left, newer on the right. */}
+                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border-rgba)' }}>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8 }}>
+                      라벨 우선순위 <span style={{ color: 'var(--text-dim)' }}>(왼쪽 → 오른쪽: 오래된 → 최신)</span>
+                    </div>
+                    <LabelOrderEditor
+                      order={form.docCohort?.labelOrder ?? [...DEFAULT_DOC_LABEL_ORDER]}
+                      onChange={(next) => f('docCohort', {
+                        enabledPresets: form.docCohort?.enabledPresets ?? DEFAULT_DOC_COHORT_SETTINGS.enabledPresets,
+                        labelOrder: next,
+                      })}
+                    />
+                  </div>
+
+                  <button
+                    onClick={() => f('docCohort', { ...DEFAULT_DOC_COHORT_SETTINGS, labelOrder: [...DEFAULT_DOC_LABEL_ORDER] })}
+                    style={{
+                      marginTop: 12,
+                      padding: '6px 10px', background: 'var(--bg-rgba)',
+                      border: '1px solid var(--border-rgba)', borderRadius: 7,
+                      color: 'var(--text-dim)', fontSize: 11,
+                      cursor: 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    기본값으로 초기화
+                  </button>
                 </Section>
               </>}
 
@@ -1260,6 +1630,54 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                     onStartTutorial?.(q);
                     onClose();
                   }} />
+                </Section>
+
+                {/* ── Tutorials replay (moved from 일반 tab, v1.3.34) ──
+                   Re-run any of the spotlight tours from the start. We close
+                   the dialog first and defer the dispatch by a tick so the
+                   modal's busy mark clears before TourOverlay's listener
+                   evaluates `whenIdle` — otherwise the tour would queue
+                   itself behind our own settings dialog. */}
+                <Section>
+                  <SectionLabel icon="play_circle" text="다시 보기" />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.5, marginBottom: 10 }}>
+                    각 기능별 안내 투어를 다시 볼 수 있어요.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {TOURS.map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          onClose();
+                          // small defer so the dialog finishes unmounting and
+                          // releases its busy mark before the tour starts.
+                          setTimeout(() => {
+                            window.dispatchEvent(
+                              new CustomEvent('nost:start-tour', { detail: { tourId: t.id } }),
+                            );
+                          }, 250);
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          padding: '9px 12px', borderRadius: 8,
+                          background: 'var(--bg-rgba)',
+                          border: '1px solid var(--border-rgba)',
+                          color: 'var(--text-color)', fontSize: 12, fontWeight: 600,
+                          cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left',
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent)'; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-rgba)'; }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <Icon name="play_circle" size={14} color="var(--accent)" />
+                          {t.title}
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--text-dim)' }}>
+                          {t.steps.length}단계
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </Section>
               </>}
 

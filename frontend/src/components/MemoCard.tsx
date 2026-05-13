@@ -291,11 +291,11 @@ export function MemoCard({
           <div
             {...swipeHandlers}
             title={isEmpty
-              ? '짧게 : 메모 시작'
+              ? '클릭 : 메모 작성 시작'
               : HOVER_HINT({
-                  '짧게': '편집기 열기',
-                  '왼쪽으로': '마크다운으로 복사',
-                  '오른쪽으로': '텍스트로 복사',
+                  '클릭': '편집기 열기',
+                  '왼쪽으로 스와이프': '마크다운으로 복사',
+                  '오른쪽으로 스와이프': '텍스트로 복사',
                 })}
             style={{
               width: '100%',
@@ -378,7 +378,7 @@ export function MemoCard({
             data-memo-control
             onClick={handleCopyButton}
             title={HOVER_HINT({
-              '짧게': '텍스트로 복사',
+              '클릭': '텍스트로 복사',
               '왼쪽으로 스와이프': '마크다운으로 복사',
             })}
             color={copyFlash ? 'var(--accent)' : undefined}

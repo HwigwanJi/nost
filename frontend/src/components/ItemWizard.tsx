@@ -42,6 +42,15 @@ interface ItemWizardProps {
   docExtensions?: string[];
   onClose: () => void;
   onSave: (spaceId: string, item: Omit<LauncherItem, 'id'>) => void;
+  /**
+   * Memo save path — same destination as the top inline gateway banner's
+   * "메모로" button. Mirrors the SSOT decision (v1.3.34): when clipboard
+   * is plain text, the user gets TWO commit choices everywhere — card
+   * (this wizard's normal save) or memo (via this callback).
+   * Optional so older call sites that don't yet route memos through
+   * the wizard keep compiling.
+   */
+  onSaveAsMemo?: (spaceId: string, body: string) => void;
 }
 
 // ── Icon map per type ─────────────────────────────────────────────
@@ -96,7 +105,7 @@ function WizardBtn({
         alignItems: 'center',
         justifyContent: 'center',
         gap: 6,
-        padding: '9px 0',
+        padding: '9px 18px',
         borderRadius: 9,
         border: primary ? 'none' : '1px solid var(--border-rgba)',
         background: primary ? 'var(--accent)' : 'transparent',
@@ -160,7 +169,7 @@ function TextInput({
 
 // ── Main Component ────────────────────────────────────────────────
 
-export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, onClose, onSave }: ItemWizardProps) {
+export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, onClose, onSave, onSaveAsMemo }: ItemWizardProps) {
   useBusyMark('modal:item-wizard', open);
   const [phase, setPhase] = useState<Phase>({ kind: 'detecting' });
   const [selectedSpaceId, setSelectedSpaceId] = useState(defaultSpaceId);
@@ -170,6 +179,12 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
   const [iconKind, setIconKind] = useState<'image' | 'material'>('image');
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [iconSearch, setIconSearch] = useState('');
+  // v1.3.34: text type gets TWO destinations (card or memo). The
+  // segmented control at the top of the quick-confirm view toggles which
+  // commit path runs. Default = card (legacy behaviour); user can flip
+  // to memo for prose-y pastes. Other types only have one destination
+  // so the toggle is hidden.
+  const [destinationTab, setDestinationTab] = useState<'card' | 'memo'>('card');
 
   const exts = getDocumentExtensions(docExtensions);
 
@@ -183,6 +198,7 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
     setIconKind('image');
     setShowIconPicker(false);
     setIconSearch('');
+    setDestinationTab('card');
 
     if (mode === 'quick') {
       setPhase({ kind: 'detecting' });
@@ -241,10 +257,13 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
     const spaceId = selectedSpaceId || spaces[0]?.id;
     if (!spaceId || !name.trim() || !value.trim()) return;
 
-    const finalType = (type === 'doc' ? 'app' : type) as LauncherItem['type'];
+    // v1.3.34: 'doc' is now a first-class LauncherItem.type, no remap.
+    // Previously we collapsed doc → app at save time, which made the
+    // cohort feature unable to distinguish "이 카드는 문서다" from
+    // "이 카드는 앱이다" at storage level.
     const item: Omit<LauncherItem, 'id'> = {
       title: name.trim(),
-      type: finalType,
+      type: type as LauncherItem['type'],
       value: value.trim(),
       clickCount: 0,
       pinned: false,
@@ -349,50 +368,128 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
     const filteredIcons = iconSearch.trim()
       ? MAT_ICONS_MINI.filter(i => i.includes(iconSearch.toLowerCase()))
       : MAT_ICONS_MINI;
+    // Text type only — segmented destination toggle (v1.3.34).
+    const showDestinationTabs = type === 'text' && !!onSaveAsMemo;
+    const isMemo = showDestinationTabs && destinationTab === 'memo';
 
     return (
       <Dialog open={open} onOpenChange={v => !v && onClose()}>
-        <DialogContent style={{ width: 420, padding: 0, overflow: 'hidden' }}>
+        <DialogContent style={{ width: 440, padding: 0, overflow: 'hidden' }}>
           <DialogHeader style={{ padding: '16px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
             <DialogTitle style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-color)', display: 'flex', alignItems: 'center', gap: 8 }}>
               <NostLogo size={16} color="var(--accent)" />
               빠른 추가
             </DialogTitle>
           </DialogHeader>
-          <div style={{ padding: '16px 20px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {/* Segmented destination tabs — shown only when the source has
+              multiple commit targets. Today that's text only (card vs
+              memo). Visual register matches shadcn segmented control:
+              flat bg tray + active pill with subtle shadow. */}
+          {showDestinationTabs && (
+            <div style={{ padding: '12px 20px 0' }}>
+              <div
+                role="tablist"
+                style={{
+                  display: 'flex',
+                  padding: 3,
+                  background: 'var(--border-rgba)',
+                  borderRadius: 9,
+                  gap: 2,
+                }}
+              >
+                {([
+                  { id: 'card', label: '클립보드 카드', icon: 'content_paste' },
+                  { id: 'memo', label: '메모', icon: 'sticky_note_2' },
+                ] as const).map(t => {
+                  const active = destinationTab === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setDestinationTab(t.id)}
+                      style={{
+                        flex: 1,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+                        padding: '6px 10px',
+                        borderRadius: 7,
+                        border: 'none',
+                        background: active ? 'var(--bg-rgba)' : 'transparent',
+                        boxShadow: active ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
+                        color: active ? 'var(--text-color)' : 'var(--text-muted)',
+                        fontSize: 11,
+                        fontWeight: active ? 700 : 500,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        transition: 'all 0.15s',
+                      }}
+                    >
+                      <Icon name={t.icon} size={13} />
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div style={{ padding: '14px 20px 20px', display: 'flex', flexDirection: 'column', gap: 14 }}>
             {spaceSelector}
 
-            {/* Detected preview with icon */}
+            {/* Detected preview — same shape for both tabs; the icon
+                button is hidden in memo mode since memos render from
+                their body, not from a per-card icon. */}
             <div style={{ padding: '12px 14px', borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>감지됨</span>
+                <span style={{ fontSize: 11, color: 'var(--text-dim)', fontWeight: 600 }}>
+                  {isMemo ? '메모 본문' : '감지됨'}
+                </span>
                 <TypeChip type={type} small />
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                {/* Icon preview — click to open picker */}
-                <button
-                  onClick={() => setShowIconPicker(p => !p)}
-                  title="아이콘 클릭하여 변경"
-                  style={{ width: 42, height: 42, borderRadius: 10, background: `${m.color}14`, border: `1.5px solid ${showIconPicker ? m.color : `${m.color}33`}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', transition: 'border-color 0.15s' }}
-                >
-                  {iconUrl && iconKind === 'image'
-                    ? <img src={iconUrl} alt="" style={{ width: 26, height: 26, objectFit: 'contain', borderRadius: 4 }} onError={() => { setIconUrl(undefined); setIconKind('image'); }} />
-                    : <Icon name={iconKind === 'material' && iconUrl ? iconUrl : m.icon} size={22} color={m.color} />
-                  }
-                </button>
-                <div style={{ flex: 1 }}>
-                  <span style={{ fontSize: 11, color: 'var(--text-color)', fontFamily: 'monospace', wordBreak: 'break-all', lineHeight: 1.4, display: 'block' }}>
-                    {value.length > 50 ? `${value.slice(0, 48)}…` : value}
-                  </span>
-                  <button onClick={() => setShowIconPicker(p => !p)} style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0, marginTop: 3 }}>
-                    {showIconPicker ? '아이콘 닫기' : '아이콘 변경'}
+                {!isMemo && (
+                  <button
+                    onClick={() => setShowIconPicker(p => !p)}
+                    title="아이콘 클릭하여 변경"
+                    style={{ width: 42, height: 42, borderRadius: 10, background: `${m.color}14`, border: `1.5px solid ${showIconPicker ? m.color : `${m.color}33`}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, cursor: 'pointer', transition: 'border-color 0.15s' }}
+                  >
+                    {iconUrl && iconKind === 'image'
+                      ? <img src={iconUrl} alt="" style={{ width: 26, height: 26, objectFit: 'contain', borderRadius: 4 }} onError={() => { setIconUrl(undefined); setIconKind('image'); }} />
+                      : <Icon name={iconKind === 'material' && iconUrl ? iconUrl : m.icon} size={22} color={m.color} />
+                    }
                   </button>
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: 'var(--text-color)',
+                      fontFamily: 'monospace',
+                      lineHeight: 1.4,
+                      display: '-webkit-box',
+                      WebkitLineClamp: isMemo ? 4 : 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {isMemo
+                      ? value
+                      : value.length > 80 ? `${value.slice(0, 78)}…` : value}
+                  </span>
+                  {!isMemo && (
+                    <button onClick={() => setShowIconPicker(p => !p)} style={{ fontSize: 10, color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', padding: 0, marginTop: 3 }}>
+                      {showIconPicker ? '아이콘 닫기' : '아이콘 변경'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
 
-            {/* Icon picker */}
-            {showIconPicker && (
+            {/* Icon picker — hidden in memo mode (memo body's first line
+                is the title; no per-card icon). */}
+            {!isMemo && showIconPicker && (
               <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--surface)', border: '1px solid var(--border-rgba)', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <input
                   value={iconSearch}
@@ -420,24 +517,38 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
               </div>
             )}
 
-            {/* Name field */}
-            <div>
-              <FieldLabel>이름</FieldLabel>
-              <TextInput
-                value={sugName}
-                onChange={next => setPhase({ ...phase, sugName: next })}
-                placeholder="표시될 이름"
-              />
-            </div>
+            {/* Name field — card mode only. Memos take the first
+                non-empty line of their body as the title. */}
+            {!isMemo && (
+              <div>
+                <FieldLabel>이름</FieldLabel>
+                <TextInput
+                  value={sugName}
+                  onChange={next => setPhase({ ...phase, sugName: next })}
+                  placeholder="표시될 이름"
+                />
+              </div>
+            )}
 
+            {/* Single action row — destination is selected at the top.
+                The "추가" button's icon + label adapt to the active tab. */}
             <div style={{ display: 'flex', gap: 8 }}>
               <WizardBtn icon="arrow_back" label="취소" onClick={onClose} />
               <WizardBtn
-                icon="add_circle"
-                label="추가"
+                icon={isMemo ? 'sticky_note_2' : 'add_circle'}
+                label={isMemo ? '메모 추가' : '추가'}
                 primary
-                disabled={!sugName.trim()}
-                onClick={() => handleSave(type, value, sugName)}
+                disabled={isMemo ? !value.trim() : !sugName.trim()}
+                onClick={() => {
+                  if (isMemo) {
+                    const spaceId = selectedSpaceId || spaces[0]?.id;
+                    if (!spaceId) return;
+                    onSaveAsMemo?.(spaceId, value);
+                    onClose();
+                  } else {
+                    handleSave(type, value, sugName);
+                  }
+                }}
               />
             </div>
           </div>

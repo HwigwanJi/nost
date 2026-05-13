@@ -94,7 +94,11 @@ export function TutorialProvider({ data, showToast, addNotification, deleteItem,
 
   useEffect(() => {
     const off = installNudges(
-      { showToast: (m, o) => apiRef.current.showToast(m, o) },
+      {
+        showToast: (m, o) => apiRef.current.showToast(m, o),
+        // Mirror nudges into the bell — see NudgeToast.ts comment.
+        addNotification: (n) => apiRef.current.addNotification(n),
+      },
       {
         startQuest: (q) => start(q),
         getData: () => dataRef.current,
@@ -239,6 +243,17 @@ export function TutorialProvider({ data, showToast, addNotification, deleteItem,
         duration: 9000,
       },
     );
+    // Mirror into the bell — the toast is a 9 s reminder, the bell row
+    // is the permanent affordance. Clicking "이어서" in the bell row
+    // routes through open-tour intent → tutorialApi.start(quest) (same
+    // path as the toast's onClick) thanks to App.tsx's dispatcher.
+    apiRef.current.addNotification({
+      kind: 'tip',
+      title: `${quest.title} 진행 중`,
+      body: `${s.active.stepIdx + 1}/${quest.steps.length} 단계 · +${quest.rewardDays}일 적립 가능`,
+      action: { label: '이어서', intent: 'open-tour', payload: quest.id },
+      dedupKey: `tutorial-resume-${quest.id}`,
+    });
   }, [state]);
 
   const ctx = useMemo<TutorialContextValue>(() => ({ start, showResumePromptIfAny }), [start, showResumePromptIfAny]);

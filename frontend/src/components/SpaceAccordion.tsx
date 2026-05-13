@@ -83,6 +83,8 @@ interface SpaceAccordionProps {
   onConvertToContainer?: (itemId: string) => void;
   onConvertFromContainer?: (itemId: string) => void;
   onEditSlots?: (itemId: string, dir?: string) => void;
+  /** Per-card "최신 버전 확인" — opens DocCohortDialog. */
+  onCheckDocCohort?: (itemId: string) => void;
   // Ghost recommendations
   ghostItems?: import('../hooks/useGhostCards').GhostItem[];
   onGhostAccept?: (ghost: import('../hooks/useGhostCards').GhostItem) => void;
@@ -144,6 +146,7 @@ export function SpaceAccordion({
   onConvertToContainer,
   onConvertFromContainer,
   onEditSlots,
+  onCheckDocCohort,
   ghostItems,
   onGhostAccept,
   onGhostDismiss,
@@ -504,6 +507,7 @@ export function SpaceAccordion({
                   onConvertToContainer={onConvertToContainer ? () => onConvertToContainer(item.id) : undefined}
                   onConvertFromContainer={onConvertFromContainer ? () => onConvertFromContainer(item.id) : undefined}
                   onEditSlots={onEditSlots ? (dir) => onEditSlots(item.id, dir) : undefined}
+                  onCheckDocCohort={onCheckDocCohort ? () => onCheckDocCohort(item.id) : undefined}
                   onOpenMemoEditor={onOpenMemoEditor}
                   onCopyMemoBody={onCopyMemoBody}
                   onCopyMemoMarkdown={onCopyMemoMarkdown}

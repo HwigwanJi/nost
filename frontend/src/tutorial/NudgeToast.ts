@@ -23,6 +23,20 @@ interface ToastApi {
     actions?: Array<{ label: string; icon: string; onClick: () => void }>;
     duration?: number;
   }) => void;
+  /**
+   * Mirror the nudge into the bell as a `tip` notification. The toast
+   * is transient (8 s) — the bell entry is the permanent affordance the
+   * user can come back to. dedupKey is per-quest so re-triggering the
+   * same event doesn't pile up rows. (v1.3.34 — consistent with daily
+   * nudge + resume prompt.)
+   */
+  addNotification: (notif: {
+    kind: 'tip';
+    title: string;
+    body?: string;
+    action?: { label: string; intent: 'open-tour'; payload: string };
+    dedupKey: string;
+  }) => void;
 }
 
 interface Hooks {
@@ -98,6 +112,17 @@ function maybeFire(event: AppEvent, api: ToastApi, hooks: Hooks) {
       { label: '다음에',   icon: 'schedule',   onClick: () => tutorialActions.dismissNudge(pick.id, nudge.trigger.cooldownMin) },
     ],
     duration: 8000,
+  });
+  // Mirror into the bell so the user can come back to it after the
+  // toast fades. The notification's action dispatches to the same
+  // quest via the open-tour intent → App.tsx's handleNotificationAction
+  // routes through tutorialApi.start(quest).
+  api.addNotification({
+    kind: 'tip',
+    title: nudge.headline,
+    body: `${nudge.body} · +${pick.rewardDays}일`,
+    action: { label: '시작하기', intent: 'open-tour', payload: pick.id },
+    dedupKey: `tutorial-event-nudge-${pick.id}`,
   });
 }
 

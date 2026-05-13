@@ -7,11 +7,17 @@
 
 ## §1. 한 줄 요약
 
-**코드 깔림 ✅ / Provider 셋업 ✗ / E2E 검증 ✗**
+**코드 깔림 ✅ / Provider 셋업 ✅ / E2E 검증 🟡 (production installer 검증 대기)**
 
-UI·IPC·토큰 저장·세션 관리 등 클라이언트 코드는 전부 들어가 있음.
-Supabase 대시보드와 Google Cloud Console에서 OAuth provider를 활성화해야
-실제 로그인이 작동.
+UI·IPC·토큰 저장·세션 관리·CSP allowlist·PKCE verifier 영속화 모두 들어감.
+Supabase Google provider + Redirect URL 등록 끝. 마지막 단계는 production
+installer (`nost Setup 1.3.34.exe`) 로 깔아서 E2E 통과 확인.
+
+### 2026-05-14 작업 정리
+- **브랜드 마크**: SignInScreen / SettingsDialog 의 Google/GitHub 아이콘이 공식 4색 G / Invertocat 로 (`ui/BrandLogo.tsx`)
+- **CSP**: `main.js` 의 connect-src / img-src 에 `*.supabase.co` + OAuth 아바타 도메인 추가
+- **PKCE 영속화**: `auth:kv-get/set/list` IPC 4-file 패턴. supabase-js storage adapter 가 모든 키를 safeStorage 에 영속화 → 인스턴스 분리에도 verifier 보존
+- **인스턴스 race 우회**: production installer 로 가야 protocol handler 가 `nost.exe` 단일 경로로 등록되어 single-instance lock 정상. dev mode 에서는 새 electron.exe spawn 으로 race 발생 (기진단됨)
 
 ---
 

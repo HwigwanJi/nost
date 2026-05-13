@@ -49,6 +49,14 @@ export interface ElectronAPI {
   authOpenOAuthUrl: (url: string) => Promise<unknown>;
   authConsumePendingDeepLink: () => Promise<string | null>;
   onAuthDeepLink: (cb: (url: string) => void) => () => void;
+  /** Generic encrypted KV (safeStorage) for supabase-js short-lived
+   *  keys — PKCE verifier, refresh nonces — so the OAuth round-trip
+   *  survives a fresh-instance handoff (Windows dev-mode `nost://`
+   *  click sometimes spawns a new electron.exe and the renderer's
+   *  in-memory cache is born empty). */
+  authKvGet: (key: string) => Promise<string | null>;
+  authKvSet: (key: string, value: string | null) => Promise<boolean>;
+  authKvList: () => Promise<Record<string, string>>;
   updateShortcut: (shortcut: string) => void;
   detectDialog: () => Promise<{ isDialog: boolean; title?: string; className?: string }>;
   jumpToDialogFolder: (folderPath: string) => void;
@@ -107,7 +115,27 @@ export interface ElectronAPI {
   onMonitorsChanged: (cb: (monitors: Array<{ index: number; id: number; isPrimary: boolean; bounds: { x: number; y: number; width: number; height: number }; workArea: { x: number; y: number; width: number; height: number }; scaleFactor: number }>) => void) => void;
   getRecentItems: () => Promise<Array<{ title: string; value: string; type: 'folder' | 'app'; lastAccessed: string }>>;
   readClipboard: () => Promise<string>;
-  analyzeClipboard: () => Promise<{ type: 'url' | 'app' | 'folder' | 'hex' | 'text' | 'none'; value?: string; label?: string; html?: string }>;
+  // v1.3.34: optional docExtensions arg drives the new 'doc' return type.
+  // Renderer should pass `data.settings.documentExtensions` so user-customised
+  // doc lists apply uniformly across every clipboard entry point.
+  analyzeClipboard: (docExtensions?: string[]) => Promise<{
+    type: 'url' | 'app' | 'folder' | 'doc' | 'hex' | 'text' | 'none';
+    value?: string;
+    label?: string;
+    html?: string;
+  }>;
+  /**
+   * Document cohort directory scan. Returns files whose basename matches
+   * `mask` (the `{token}` placeholder is expanded to a permissive wildcard
+   * in main.js). Caller layers `rankCandidates` from `lib/docCohort.ts`
+   * to sort by the user's selected token preset.
+   */
+  listDocCohort: (directory: string, mask: string) => Promise<{
+    ok: boolean;
+    error?: 'invalid-args' | 'unsafe-path' | 'traversal' | 'readdir-failed' | 'unexpected';
+    message?: string;
+    items: Array<{ basename: string; path: string; mtime: number; size: number }>;
+  }>;
   checkWindowsAlive: (titles: string[]) => Promise<Record<string, boolean>>;
   checkFileExists: (filePath: string) => Promise<boolean>;
   checkItemsForTile: (items: { type: string; value: string; title: string }[]) => Promise<Array<{ idx: number; alive: boolean; note: string }>>;
@@ -199,6 +227,9 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   authOpenOAuthUrl: async () => ({}),
   authConsumePendingDeepLink: async () => null,
   onAuthDeepLink: () => () => {},
+  authKvGet: async () => null,
+  authKvSet: async () => true,
+  authKvList: async () => ({}),
   updateShortcut: noop,
   detectDialog: async () => ({ isDialog: false }),
   jumpToDialogFolder: noop,
@@ -232,6 +263,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   getRecentItems: async () => [],
   readClipboard: async () => '',
   analyzeClipboard: async () => ({ type: 'none' as const }),
+  listDocCohort: async () => ({ ok: false, error: 'unexpected' as const, items: [] }),
   checkWindowsAlive: async () => ({}),
   checkFileExists: async () => false,
   checkItemsForTile: async () => [],

@@ -117,13 +117,13 @@ export function WIDGET_TIP(label: string, shortcut?: string): string {
  * tooltip with one `라벨 : 동작` row per entry.
  *
  *   HOVER_HINT({
- *     '짧게': '앱 실행',
- *     '길게': '↑수정 ↓모니터 ←새창 →복사',
+ *     '클릭': '앱 실행',
+ *     '길게 누르기': '↑ 수정 ↓ 모니터 ← 새 창 → 복사',
  *   })
  *
  * Renders to:
- *   짧게 : 앱 실행
- *   길게 : ↑수정 ↓모니터 ←새창 →복사
+ *   클릭 : 앱 실행
+ *   길게 누르기 : ↑ 수정 ↓ 모니터 ← 새 창 → 복사
  *
  * Falsy values are filtered out so callers can conditionally
  * include rows without runtime checks. The colon is space-padded

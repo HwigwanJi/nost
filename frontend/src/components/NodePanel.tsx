@@ -314,8 +314,8 @@ export function NodePanel({
                       placeholder={`노드 ${nodeGroups.length + 1}`}
                       style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border-focus)', borderRadius: 6, padding: '5px 8px', fontSize: 11, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }} />
                     <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-                      <button onClick={handleSaveNode} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>저장 (Enter)</button>
-                      <button onClick={onCancelEdit} style={{ padding: '5px 8px', fontSize: 10, background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>취소</button>
+                      <button onClick={handleSaveNode} style={{ flex: 1, padding: '5px 14px', fontSize: 10, fontWeight: 600, background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>저장 (Enter)</button>
+                      <button onClick={onCancelEdit} style={{ padding: '5px 12px', fontSize: 10, background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>취소</button>
                     </div>
                   </div>
                 )}
@@ -379,8 +379,8 @@ export function NodePanel({
                       style={{ width: '100%', background: 'var(--surface)', border: '1px solid var(--border-focus)', borderRadius: 6, padding: '5px 8px', fontSize: 11, color: 'var(--text-color)', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
                     />
                     <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-                      <button onClick={handleSaveDeck} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 600, background: DECK_COLOR, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>저장 (Enter)</button>
-                      <button onClick={onCancelDeckBuild} style={{ padding: '5px 8px', fontSize: 10, background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>취소</button>
+                      <button onClick={handleSaveDeck} style={{ flex: 1, padding: '5px 14px', fontSize: 10, fontWeight: 600, background: DECK_COLOR, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>저장 (Enter)</button>
+                      <button onClick={onCancelDeckBuild} style={{ padding: '5px 12px', fontSize: 10, background: 'var(--surface)', color: 'var(--text-muted)', border: '1px solid var(--border-rgba)', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit' }}>취소</button>
                     </div>
                   </div>
                 )}

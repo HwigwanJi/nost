@@ -139,8 +139,12 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
         return;
       }
 
-      // ── app type: launch or focus ─────────────────────────────
-      if (item.type === 'app') {
+      // ── app / doc type: launch or focus ───────────────────────
+      // v1.3.34: 'doc' shares the same launcher pipeline as 'app' —
+      // Windows shell-execute handles both `.exe` and `.docx` via
+      // their default associations. The split exists at classification
+      // time (icon, hover copy, cohort gating) but launch is identical.
+      if (item.type === 'app' || item.type === 'doc') {
         showToast('확인 중...', { spinner: true, immediate: true });
 
         const r = await electronAPI.launchOrFocusApp(

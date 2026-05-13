@@ -254,9 +254,9 @@ function ColorSwatchWidgetImpl({ item, dragHandle, onContextMenu, onEdit }: Prop
         title={[
           hasName ? `${name} · ${hex}` : hex,
           HOVER_HINT({
-            '짧게': 'Hex 복사',
-            '왼쪽으로': '보색 복사',
-            '오른쪽으로': '유사색 복사',
+            '클릭': 'Hex 복사',
+            '왼쪽으로 스와이프': '보색 복사',
+            '오른쪽으로 스와이프': '유사색 복사',
           }),
         ].join('\n')}
       >

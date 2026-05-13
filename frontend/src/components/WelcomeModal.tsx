@@ -87,7 +87,7 @@ export function WelcomeModal({ extConnected, onClose, onOpenExtensionSettings }:
           <button
             onClick={() => electronAPI.openGuide()}
             style={{
-              flex: 1, padding: '9px 0',
+              flex: 1, padding: '9px 18px',
               background: 'var(--surface)', color: 'var(--text-color)',
               border: '1px solid var(--border-rgba)', borderRadius: 8,
               fontSize: 12, fontWeight: 500, cursor: 'pointer', fontFamily: 'inherit',
@@ -100,7 +100,7 @@ export function WelcomeModal({ extConnected, onClose, onOpenExtensionSettings }:
           <button
             onClick={onClose}
             style={{
-              flex: 1, padding: '9px 0',
+              flex: 1, padding: '9px 18px',
               background: 'var(--accent)', color: '#fff',
               border: 'none', borderRadius: 8,
               fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
