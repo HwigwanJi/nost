@@ -702,7 +702,21 @@ function launchBrowserExtensionsPage(target) {
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
+  // Second-instance — let the primary handle the deep-link via the
+  // 'second-instance' event Electron just fired for it. `app.quit()`
+  // alone is async (it goes through before-quit / will-quit) and lets
+  // the rest of this module keep running — including createWindow()
+  // in app.whenReady(), which spawns a duplicate renderer + asar
+  // re-load. That duplicate then "wins" because the primary thinks
+  // it handed off, leaving the user with a dead renderer (the OAuth
+  // round-trip's PKCE verifier lives in the primary's memory which
+  // is now being torn down).
+  //
+  // `process.exit(0)` is the only synchronous way to guarantee the
+  // module init halts here. We've already called app.quit() so any
+  // briefly-created Electron internals get the cleanup signal too.
   app.quit();
+  process.exit(0);
 } else {
   app.on('second-instance', (_event, argv) => {
     // Custom-scheme deep-link arrives here on Windows because the
