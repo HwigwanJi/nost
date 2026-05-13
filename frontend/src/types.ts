@@ -260,13 +260,16 @@ export const MEMO_TTL_DAYS_MAX = 90;
 //   - Renderer needs random access for dismiss / mark-read
 //   - No need for fan-out subscribers (single panel consumer)
 //
-// Sources writing notifications (v1):
-//   - electron-updater "update available" / "downloaded"
-//   - License sync — trial expiring, period ending
-//   - First-touch discoveries (e.g. first memo created)
-// Future (v2): mission-style billing-day rewards.
+// Sources writing notifications:
+//   - electron-updater "update available" / "downloaded"  → update
+//   - License sync — trial expiring, period ending        → billing
+//   - First-touch discoveries (e.g. first memo created)   → discovery
+//   - Errors the user must know about (ext disconnect,    → system
+//     boot failures, license sync failures)
+//   - Lightweight prompts / tutorial nudges               → tip
+// Future: mission-style billing-day rewards.
 
-export type NotificationKind = 'update' | 'billing' | 'discovery';
+export type NotificationKind = 'update' | 'billing' | 'discovery' | 'system' | 'tip';
 
 export interface NotificationAction {
   /** Korean label shown on the row's accent button. */

@@ -1481,35 +1481,17 @@ export default function App() {
     setClipPrompt(null);
   }, [clipPrompt]);
 
-  // ── Extension banner ──────────────────────────────────────
-  const [extBannerDismissed, setExtBannerDismissed] = useState(
-    () => localStorage.getItem('ext-banner-dismissed') === '1'
-  );
+  // ── Extension connection tracking ─────────────────────────
+  // When the bridge reports disconnected we surface a `system` notification
+  // (see effect below). The polling effect underneath handles reconnects.
   const [extConnected, setExtConnected] = useState<boolean | null>(null);
-  const [extRechecking, setExtRechecking] = useState(false);
-
-  const recheckExtension = useCallback(async () => {
-    setExtRechecking(true);
-    try {
-      const s = await electronAPI.getExtensionBridgeStatus();
-      const connected = s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0;
-      setExtConnected(connected);
-      // If user manually clicked refresh and they had previously dismissed the
-      // banner, surface it again — otherwise an extension that comes back
-      // online has no visible feedback.
-      if (connected && extBannerDismissed) {
-        setExtBannerDismissed(false);
-        localStorage.removeItem('ext-banner-dismissed');
-      }
-    } finally {
-      setExtRechecking(false);
-    }
-  }, [extBannerDismissed]);
 
   useEffect(() => {
-    // First check on mount.
-    void recheckExtension();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    electronAPI.getExtensionBridgeStatus().then(s => {
+      const connected = s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0;
+      setExtConnected(connected);
+    });
+  }, []);
 
   // After an app update / cold start, the SSE handshake with the bridge can
   // take a few seconds to settle (Chrome has to wake the service worker).
@@ -1532,6 +1514,25 @@ export default function App() {
     }, 4000);
     return () => clearInterval(id);
   }, [extConnected]);
+
+  // Surface the bridge state in the bell. Disconnect pushes a `system`
+  // notification (dedupKey idempotent); reconnect retracts it. We
+  // intentionally narrow the dep list to `extConnected` so this fires
+  // only on transitions, not on every store change.
+  useEffect(() => {
+    if (extConnected === null) return;
+    if (extConnected === false) {
+      store.addNotification({
+        kind: 'system',
+        title: '브라우저 확장이 연결되지 않았어요',
+        body: '이미 설치되어 있다면 새로고침해보세요.',
+        action: { label: '설치 안내', intent: 'open-settings', payload: 'extension' },
+        dedupKey: 'ext-disconnected',
+      });
+    } else {
+      store.dismissNotificationByDedupKey('ext-disconnected');
+    }
+  }, [extConnected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Settings initial tab ──────────────────────────────────
   const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | 'account' | undefined>(undefined);
@@ -3283,10 +3284,9 @@ export default function App() {
   useEffect(() => {
     electronAPI.onUpdateAvailable((info) => {
       setUpdateNewVer(info.version);
-      showToast(`v${info.version} 다운로드 시작...`, { duration: 2500 });
-      // Also surface in the bell so the user can find it later. The
-      // toast is transient (2.5s) — the notification persists until
-      // the user dismisses or the install completes.
+      // Bell-only — the toast used to fire here too, but it doubled with
+      // the persistent notification below. The download-complete event
+      // still surfaces a toast (it has an actionable "지금 설치" button).
       store.addNotification({
         kind: 'update',
         title: `새 버전 v${info.version}`,
@@ -4049,47 +4049,6 @@ export default function App() {
                 }}
               >
                 <Icon name="close" size={13} color="var(--text-muted)" />
-              </button>
-            </div>
-          )}
-
-          {/* ── Extension banner ─────────────────────── */}
-          {extConnected === false && !extBannerDismissed && (
-            <div style={{
-              flexShrink: 0,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '7px 12px',
-              borderBottom: '1px solid var(--border-rgba)',
-              background: 'var(--surface)',
-            }}>
-              <Icon name="extension_off" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
-              <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
-                브라우저 익스텐션이 감지되지 않았습니다. 이미 설치돼 있다면 새로고침해보세요.
-              </span>
-              <button
-                onClick={() => void recheckExtension()}
-                disabled={extRechecking}
-                title="연결 상태 새로고침"
-                style={{ flexShrink: 0, padding: '3px 8px', borderRadius: 5, border: '1px solid var(--border-rgba)', background: 'transparent', color: 'var(--text-muted)', fontSize: 10, cursor: extRechecking ? 'default' : 'pointer', fontFamily: 'inherit', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4, opacity: extRechecking ? 0.5 : 1 }}
-              >
-                <Icon name="refresh" size={12} style={{ animation: extRechecking ? 'spin 0.9s linear infinite' : 'none' }} />
-                새로고침
-              </button>
-              <button
-                onClick={() => openSettingsTab('extension')}
-                style={{ flexShrink: 0, padding: '3px 10px', borderRadius: 5, border: '1px solid var(--border-focus)', background: 'transparent', color: 'var(--accent)', fontSize: 10, cursor: 'pointer', fontFamily: 'inherit', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}
-              >
-                <Icon name="open_in_new" size={12} />
-                설치 안내
-              </button>
-              <button
-                onClick={() => { setExtBannerDismissed(true); localStorage.setItem('ext-banner-dismissed', '1'); }}
-                style={{ flexShrink: 0, background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' }}
-                title="닫기"
-              >
-                <Icon name="close" size={14} />
               </button>
             </div>
           )}

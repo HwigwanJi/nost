@@ -25,10 +25,18 @@ interface NotificationPanelProps {
   onAction: (n: AppNotification) => void;
 }
 
-const KIND_META: Record<AppNotification['kind'], { icon: string; color: string; label: string }> = {
-  update:    { icon: 'system_update', color: '#22c55e', label: '업데이트' },
-  billing:   { icon: 'workspace_premium', color: '#f59e0b', label: '프로' },
-  discovery: { icon: 'lightbulb',     color: '#6366f1', label: '발견' },
+// Kind colors map to existing design tokens — no new semantic vars introduced.
+//   update     → text-color  (strong contrast, theme-aware)
+//   billing    → destructive (the one saturated token we have)
+//   discovery  → --accent    (user-customised brand colour)
+//   system     → destructive (shares colour with billing; the icon disambiguates)
+//   tip        → text-muted  (the calmest of all kinds)
+const KIND_META: Record<AppNotification['kind'], { icon: string; tokenCSS: string; label: string }> = {
+  update:    { icon: 'system_update',     tokenCSS: 'var(--text-color)',        label: '업데이트' },
+  billing:   { icon: 'workspace_premium', tokenCSS: 'var(--color-destructive)', label: '프로' },
+  discovery: { icon: 'lightbulb',         tokenCSS: 'var(--accent)',            label: '발견' },
+  system:    { icon: 'error_outline',     tokenCSS: 'var(--color-destructive)', label: '시스템' },
+  tip:       { icon: 'tips_and_updates',  tokenCSS: 'var(--text-muted)',        label: '팁' },
 };
 
 function relativeTime(ms: number): string {
@@ -175,10 +183,10 @@ function Row({
           width: 22, height: 22,
           borderRadius: 6,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: `${meta.color}1a`,  // 10% tint
+          background: `color-mix(in srgb, ${meta.tokenCSS} 12%, transparent)`,
         }}
       >
-        <Icon name={meta.icon} size={12} color={meta.color} />
+        <Icon name={meta.icon} size={12} color={meta.tokenCSS} />
       </div>
 
       {/* Body */}
