@@ -1450,6 +1450,24 @@ export function useAppData() {
     });
   }, []);
 
+  // Dismiss a notification by its dedupKey — handy when a source wants
+  // to retract its own alert (e.g. ext reconnect after a disconnect
+  // notification was shown). No-ops if nothing matches.
+  const dismissNotificationByDedupKey = useCallback((dedupKey: string) => {
+    const now = Date.now();
+    setRawData(prev => {
+      const existing = prev.notifications ?? [];
+      const idx = existing.findIndex(n => n.dedupKey === dedupKey && !n.dismissedAt);
+      if (idx < 0) return prev;
+      const nextList = existing.slice();
+      nextList[idx] = { ...nextList[idx], dismissedAt: now };
+      const next = { ...prev, notifications: nextList };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
   const dismissAllNotifications = useCallback(() => {
     const now = Date.now();
     setRawData(prev => {
@@ -1592,6 +1610,7 @@ export function useAppData() {
     notifications: raw.notifications ?? [],
     addNotification,
     dismissNotification,
+    dismissNotificationByDedupKey,
     dismissAllNotifications,
     markAllNotificationsRead,
   };
