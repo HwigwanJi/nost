@@ -1023,6 +1023,26 @@ export default function App() {
   // Wire forward-declared ref now that showToast exists.
   showToastRef.current = showToast;
 
+  // One-shot "로그인됐어요" toast on first mount after a signed-in
+  // transition. The auth subscriber in lib/auth.ts drops a
+  // `nost:auth-toast` flag into sessionStorage right when supabase
+  // flips to signed-in; we pick it up the moment App mounts (which
+  // happens immediately after, since AppShell renders App once
+  // auth.status === 'signed-in'). sessionStorage rather than a
+  // useAuth-watching effect because the *transition* — not the
+  // *state* — is what we want to surface (a persisted session
+  // shouldn't toast on every app open).
+  useEffect(() => {
+    let flag: string | null = null;
+    try { flag = sessionStorage.getItem('nost:auth-toast'); } catch { /* */ }
+    if (!flag) return;
+    try { sessionStorage.removeItem('nost:auth-toast'); } catch { /* */ }
+    if (flag.startsWith('signed-in:')) {
+      const label = flag.slice('signed-in:'.length);
+      showToast(`${label}로 로그인됐어요`, { duration: 2800 });
+    }
+  }, [showToast]);
+
   // App-level Ctrl+Z / Ctrl+Shift+Z. Yields to native browser undo
   // when focus is on an editable surface (input / textarea /
   // contenteditable) — typing inside a memo body still uses the

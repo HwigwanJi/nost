@@ -102,7 +102,19 @@ function DialogContent({
   size?: DialogSize
   showCloseButton?: boolean
 }) {
-  const sizeStyle = size ? { width: DIALOG_SIZE[size], maxWidth: '92vw' as const } : undefined;
+  // size-driven width: the token is the *target*, maxWidth lets the
+  // dialog shrink when the user's nost main window is narrow (pair-
+  // split layout, side-by-side multitasking), and minWidth keeps the
+  // contents from collapsing past the legibility floor — at ~320px
+  // header / body / button rows still lay out cleanly. If the parent
+  // viewport is smaller than minWidth (rare, very narrow window) the
+  // dialog will overflow into the screen, which is preferable to
+  // contents truncating onto multiple awkward lines.
+  const sizeStyle = size ? {
+    width: DIALOG_SIZE[size],
+    maxWidth: '95vw' as const,
+    minWidth: Math.min(DIALOG_SIZE[size], 320),
+  } : undefined;
   return (
     <DialogPortal>
       <DialogOverlay />

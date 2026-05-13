@@ -602,10 +602,107 @@ const extServer = http.createServer((req, res) => {
       clearInterval(heartbeat);
       if (sseConnection === res) sseConnection = null;
     });
+  } else if (req.url && req.url.startsWith('/auth/callback') && req.method === 'GET') {
+    // OAuth loopback callback. Supabase 의 `redirectTo` 가 이쪽으로
+    // 향하도록 변경됐기 때문에 `nost://` protocol handler 가 새
+    // electron 인스턴스를 spawn 하는 문제가 사라진다. 동시에 외부
+    // 브라우저에 깔끔한 "완료" HTML 을 직접 응답할 수 있어 사용자가
+    // "supabase.co 로 이동 중..." 빈 페이지를 보지 않는다.
+    try {
+      const u = new URL(req.url, `http://127.0.0.1:${EXT_PORT}`);
+      // Reuse handleDeepLink so the renderer-side auth state machine
+      // gets the same shape it always has (code/access_token query
+      // params + nost://auth-callback origin).
+      const fakeUrl = `nost://auth-callback?${u.searchParams.toString()}`;
+      handleDeepLink(fakeUrl);
+      const ok = !!u.searchParams.get('code') || !!u.searchParams.get('access_token');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(ok ? AUTH_DONE_HTML_OK : AUTH_DONE_HTML_ERR);
+    } catch (err) {
+      log.warn('[auth-loopback] callback handler failed:', err && err.message);
+      res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(AUTH_DONE_HTML_ERR);
+    }
   } else {
     res.writeHead(404); res.end();
   }
 });
+
+// HTML responses for the OAuth loopback. Pure inline strings so they
+// don't add a renderer round-trip or asset path concern. Inline CSS
+// keeps it portable across browsers (and pretty even when offline).
+const AUTH_DONE_HTML_OK = `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>nost — 로그인 완료</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(160deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%);
+    color: #e0e7ff;
+  }
+  .card {
+    width: 360px; padding: 32px 28px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    backdrop-filter: blur(12px);
+    text-align: center;
+  }
+  .check {
+    width: 48px; height: 48px; margin: 0 auto 14px;
+    border-radius: 50%; background: #10b981;
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-size: 28px; line-height: 1;
+  }
+  h1 { margin: 0 0 6px; font-size: 17px; font-weight: 700; }
+  p  { margin: 0 0 4px; font-size: 12px; color: #c7d2fe; line-height: 1.6; }
+  .hint { margin-top: 14px; font-size: 11px; color: #a5b4fc; opacity: 0.8; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="check">✓</div>
+    <h1>로그인 완료</h1>
+    <p>nost 로 돌아가셔도 됩니다.</p>
+    <p class="hint">이 탭은 잠시 후 자동으로 닫혀요.</p>
+  </div>
+  <script>setTimeout(function(){ window.close(); }, 1600);</script>
+</body>
+</html>`;
+
+const AUTH_DONE_HTML_ERR = `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>nost — 로그인 처리 중 문제</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    background: #1a1a1a; color: #fca5a5;
+  }
+  .card {
+    width: 360px; padding: 32px 28px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(248,113,113,0.3);
+    border-radius: 14px; text-align: center;
+  }
+  h1 { margin: 0 0 6px; font-size: 17px; font-weight: 700; color: #f87171; }
+  p  { margin: 0; font-size: 12px; color: #fca5a5; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>로그인 처리 중 문제가 생겼어요</h1>
+    <p>nost 로 돌아가 다시 시도해주세요.</p>
+  </div>
+</body>
+</html>`;
 
 /**
  * Send a command to the connected browser extension over SSE.

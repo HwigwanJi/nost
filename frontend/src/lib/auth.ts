@@ -104,6 +104,22 @@ export async function bootstrapAuth(): Promise<void> {
     // Subscribe to supabase-js's own auth state changes — single source
     // of truth for what session is active.
     supabase.auth.onAuthStateChange((_event, session) => {
+      // Detect signed-out → signed-in transition so we can fire a
+      // one-time "로그인됐어요" toast on the next App render. We use
+      // sessionStorage rather than dispatching an event because the
+      // App component (toast emitter) may not be mounted yet — the
+      // AppShell flips from SignInScreen to App in the same render.
+      // sessionStorage survives that flip and the App effect picks
+      // up the flag, then clears it.
+      const wasSignedOut = snapshot.status !== 'signed-in';
+      if (session && wasSignedOut) {
+        try {
+          const label = session.user?.email
+            ?? (session.user?.user_metadata?.full_name as string | undefined)
+            ?? '계정';
+          sessionStorage.setItem('nost:auth-toast', `signed-in:${label}`);
+        } catch { /* sessionStorage disabled — silently skip */ }
+      }
       setState(prev => ({
         ...prev,
         status: session ? 'signed-in' : 'signed-out',
@@ -187,7 +203,16 @@ export async function signIn(provider: Provider): Promise<void> {
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider,
     options: {
-      redirectTo: 'nost://auth-callback',
+      // Loopback HTTP callback — Supabase redirects here after the
+      // provider consent, and main.js's ext-server picks it up at
+      // 127.0.0.1:14502/auth/callback. The previous `nost://` custom
+      // scheme spawned a fresh electron.exe on every Windows handoff
+      // (single-instance race), and left the user staring at a blank
+      // supabase.co tab. The loopback path stays in one process and
+      // lets us respond with a proper "로그인 완료" HTML page.
+      // The Supabase project's "Redirect URLs" allow-list must include
+      // this URL — see `plans/auth-status.md` §3.2.
+      redirectTo: 'http://127.0.0.1:14502/auth/callback',
       // skipBrowserRedirect lets supabase-js return the URL instead of
       // navigating the (non-existent) browser-window.location. We hand
       // it to the OS via Electron shell.openExternal.

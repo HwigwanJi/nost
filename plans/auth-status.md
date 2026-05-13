@@ -86,8 +86,10 @@ installer (`nost Setup 1.3.34.exe`) 로 깔아서 E2E 통과 확인.
   - Client Secret: §3.1에서 복사한 값
   - Save
 - [ ] **Authentication → URL Configuration**
-  - **Redirect URLs (Allow list)** 에 `nost://auth-callback` 추가
-  - **Site URL**은 `nost://auth-callback` 또는 적당한 값 (사용 안 하지만 비워두면 일부 흐름에서 문제)
+  - **Redirect URLs (Allow list)** 에 다음 **두 줄** 추가:
+    - `http://127.0.0.1:14502/auth/callback` — v1.3.36+ 의 기본 loopback callback. 새 electron 인스턴스 spawn 없이 내장 HTTP 서버가 받음 + 사용자에게 "로그인 완료" HTML 페이지 표시
+    - `nost://auth-callback` — 옛 protocol handler 경로. v1.3.35 이하 사용자 호환 + 만일 loopback 이 막힌 환경 fallback
+  - **Site URL**은 `http://127.0.0.1:14502/auth/callback` 또는 적당한 값 (사용 안 하지만 비워두면 일부 흐름에서 문제)
 
 ### 3.3 GitHub (선택 — SignInScreen에 GitHub 버튼이 있어서 활성화하면 그게 작동)
 

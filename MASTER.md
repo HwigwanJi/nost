@@ -14,7 +14,7 @@
 | 경로 | `D:\01_개인\06. launcher\` |
 | 절대 건드리지 말 것 | `C:\Users\User\.gemini\antigravity\scratch\quick-launcher` (구 스냅샷) |
 | GitHub | `HwigwanJi/nost` (public, electron-updater) |
-| 현재 출시 버전 | **v1.3.35** (자동 업데이트 대상) |
+| 현재 출시 버전 | **v1.3.36** (자동 업데이트 대상) |
 | 미커밋 작업 | (없음 — v1.3.34 출시 후 차기 Phase 2 sync 본격 구현이 다음 라운드) |
 | 스택 | Electron 41 · React 19 · TS · Vite 8 · Tailwind 4 · @dnd-kit · @base-ui/react |
 | 영속화 | `electron-store` (primary) + `localStorage` (fallback) |
