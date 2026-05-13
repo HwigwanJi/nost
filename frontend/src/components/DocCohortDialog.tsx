@@ -173,7 +173,7 @@ export function DocCohortDialog({ open, item, enabledPresets, labelOrder, onComm
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose(); }}>
-      <DialogContent style={{ width: 480, padding: 0, overflow: 'hidden' }}>
+      <DialogContent size="lg" style={{ padding: 0, overflow: 'hidden' }}>
         <DialogHeader style={{ padding: '16px 20px 10px', borderBottom: '1px solid var(--border-rgba)' }}>
           <DialogTitle style={{ fontSize: 14, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
             <Icon name="schedule" size={16} color="var(--accent)" />

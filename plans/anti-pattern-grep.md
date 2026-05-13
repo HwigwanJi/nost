@@ -47,6 +47,21 @@ grep -rEn "padding:[ ]*'[0-9]+px[ ]+[1-4]px'" frontend/src/components
 **Expected**: empty (또는 icon-only / 작은 토글 한정)
 **Fix**: 좌우 ≥ 14px. shadcn `<Button>` 사용 또는 인라인 시 `'Npx 14px'` 이상.
 
+### 1.4 DialogContent 인라인 너비 (v1.3.35+ 정착 중)
+
+`<DialogContent style={{ width: NNN, ... }}>` — `size` 토큰 우회.
+
+```bash
+# DialogContent 의 style 속성에 width 인라인
+grep -rEn "DialogContent[^>]*width:" frontend/src/components
+# 또는 multi-line 케이스
+grep -rEzn "DialogContent[^>]*style=\{\{[^}]*width:" frontend/src/components
+```
+
+**Expected** (v1.3.35 진입 시점): 8 개 정도 남아있음 — BatchDropDialog, ItemDialog (×2), ScanDialog, ItemWizard (×5). 점진 마이그레이션 대상.
+**Fix**: `<DialogContent size="sm|md|lg|xl">` 으로 교체. 토큰이 안 맞으면 `dialog.tsx` 의 `DIALOG_SIZE` 에 새 키 추가 후 사용.
+**Final 상태**: 이 grep 이 empty 가 되면 `dialog.tsx` 의 `!size && "w-full max-w-[calc(100%-2rem)] sm:max-w-sm"` 레거시 분기 제거 가능.
+
 ---
 
 ## §2. 한국어 어휘 (UI Vocabulary)

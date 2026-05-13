@@ -66,23 +66,59 @@ function DialogOverlay({
   )
 }
 
+/**
+ * Dialog width SSOT — see `plans/ssot-index.md` §A.17.
+ *
+ * One of these tokens, not a hand-rolled pixel count, should be the
+ * source of every dialog's width. Sizes were calibrated against the
+ * existing 9-call inventory at 2026-05-14:
+ *   sm  — confirm / single-action prompts (e.g. "취소할까요?")
+ *   md  — wizard steps, picker dialogs, settings sub-dialogs
+ *   lg  — list + detail (ScanDialog, DocCohortDialog with options)
+ *   xl  — full editors (ItemDialog with all tabs)
+ *
+ * Callers pass `size="md"` instead of `style={{ width: 440 }}`. The
+ * 92 vw cap mirrors the historic inline pattern so very narrow viewports
+ * stay reasonable. Inline `style.width` is honoured for ad-hoc cases
+ * (passes through via spread) but flagged by the anti-pattern grep —
+ * pick a token if at all possible. */
+export const DIALOG_SIZE = {
+  sm: 360,
+  md: 440,
+  lg: 520,
+  xl: 640,
+} as const;
+
+export type DialogSize = keyof typeof DIALOG_SIZE;
+
 function DialogContent({
   className,
   children,
+  size,
   showCloseButton = true,
+  style,
   ...props
 }: DialogPrimitive.Popup.Props & {
+  size?: DialogSize
   showCloseButton?: boolean
 }) {
+  const sizeStyle = size ? { width: DIALOG_SIZE[size], maxWidth: '92vw' as const } : undefined;
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed top-1/2 left-1/2 z-50 grid -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          // Back-compat: callers that haven't migrated to `size` still
+          // need a reasonable bound so they don't shrink to nothing.
+          // The 384px max stayed until v1.3.34 — it's the source of the
+          // DocCohortDialog squeeze bug. Drop it the moment all 9 sites
+          // adopt `size`.
+          !size && "w-full max-w-[calc(100%-2rem)] sm:max-w-sm",
           className
         )}
+        style={sizeStyle ? { ...sizeStyle, ...style } : style}
         {...props}
       >
         {children}

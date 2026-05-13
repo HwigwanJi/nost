@@ -30,7 +30,7 @@
 | v1.3.32 | 알림센터 SSOT (확장 끊김 배너 → kind:'system' 통합), guide.md 갱신 |
 | v1.3.33 | **calm-by-default 알림** (`extensionEverConnected` latch, stale-update sweep), 튜토리얼 daily nudge 알림센터 미러, Whale 분기 제거 |
 | v1.3.34 | 환경설정 Option C 재구조화 (4 groups × 2-3 sub-tabs), **doc 코호트 first-class type 승격**, ItemWizard segmented tab (카드/메모), **공식 Google/GitHub 브랜드 마크**, **Auth CSP allowlist + PKCE verifier safeStorage 영속화**, Phase 2 sync 범위 합의 + cohort SSOT 골격 |
-| v1.3.35 | **Single-instance lock 강화** — second instance 가 `app.quit()` 만 부르고 module init 을 계속하던 race condition fix (`process.exit(0)` 추가). OAuth 콜백이 새 instance 로 떨어질 때 첫 instance 가 죽고 PKCE verifier 유실되던 증상 해결 |
+| v1.3.35 | **Single-instance lock 강화** (second instance `process.exit(0)`) + **DocCohortDialog 깨짐 fix** + **Dialog 너비 SSOT 도입** (`dialog.tsx` 의 `DIALOG_SIZE` 토큰 + `<DialogContent size="sm\|md\|lg\|xl">` 패턴, ssot-index §A.17) |
 
 ---
 
@@ -709,6 +709,7 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 - ✅ PKCE verifier 인스턴스 분리 시 손실 (v1.3.34 — `auth:kv-*` IPC + 모든 키 영속화)
 - ✅ Phase 2 sync 범위 결정 (v1.3.34 — `plans/sync-and-auth.md` §15 + `lib/cohort.ts` SSOT)
 - ✅ OAuth 콜백 시 새 인스턴스 spawn + 첫 인스턴스 종료 race (v1.3.35 — `process.exit(0)` 으로 second instance module init 즉시 중단). 증상: 로그인/로그아웃 흐름 직후 nost 가 트레이까지 사라짐
+- ✅ DocCohortDialog "다른 파일 선택" 시 컨테이너가 좁게 squeeze (v1.3.35 — `dialog.tsx` default `sm:max-w-sm` 가 인라인 width 를 깎던 문제. `size` prop + `DIALOG_SIZE` 토큰 SSOT 도입, ssot-index §A.17 + anti-pattern-grep §1.4)
 
 ### 진행 중
 - 🔄 **인증 Phase 1 E2E** — `plans/auth-status.md` §3·§4 (외부 console 작업)

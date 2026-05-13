@@ -102,6 +102,18 @@
 - **읽는 곳**: Phase 2 sync 실제 구현은 다음 라운드. 일단 분류 SSOT 만 정착.
 - **금지**: 컴포넌트나 hook 에서 `if (item.type === 'url' || item.type === 'memo' ...) sync()` 같은 ad-hoc 분류. 반드시 `cohort.ts` 통과.
 
+### A.17 Dialog 너비 (v1.3.35+)
+- **토큰 SSOT**: `frontend/src/components/ui/dialog.tsx` `DIALOG_SIZE = { sm: 360, md: 440, lg: 520, xl: 640 }`
+- **타입 SSOT**: 같은 파일 `export type DialogSize = 'sm'|'md'|'lg'|'xl'`
+- **호출 패턴**: `<DialogContent size="md" style={{ padding: 0, overflow: 'hidden' }}>` — size 토큰 + 그 외 인라인 스타일 (padding 등)
+- **선택 기준** (사이즈 calibration):
+  - `sm` 360 — 단일 확인/취소 prompt
+  - `md` 440 — 위자드 step, picker, 작은 picker
+  - `lg` 520 — list + detail (ScanDialog, DocCohortDialog)
+  - `xl` 640 — full 편집기 (ItemDialog with all tabs)
+- **금지**: `style={{ width: 480 }}` 같은 인라인 너비 박기 → size 토큰 사용. 너비가 토큰과 안 맞으면 toolkit 에 새 토큰 추가 (`xs`/`2xl` 등) 후 사용.
+- **이행 현황 (2026-05-14)**: DocCohortDialog 만 size 사용 (squeeze bug fix 동기). 나머지 8 곳은 점진 마이그레이션. 마이그 끝나면 dialog.tsx 의 `!size && ...` 레거시 분기 제거 가능.
+
 ### A.16 Auth KV 영속화 (v1.3.34+)
 - **SSOT**: `main.js` `auth:kv-get` / `auth:kv-set` / `auth:kv-list` IPC (safeStorage 암호화). store key `authKv.<key>` 아래.
 - **읽는 곳**: `frontend/src/lib/supabase.ts` `safeStorageAdapter` + `hydrateSession()`
