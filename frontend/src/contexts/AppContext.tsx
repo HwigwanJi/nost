@@ -51,6 +51,17 @@ export interface AppActions {
   onWindowInactiveClick: (item: LauncherItem) => void;
   /** Clean-mode action: delete every unpinned/non-container item in a space. */
   onCleanSpace: (spaceId: string) => void;
+  /**
+   * Surface an actionable notification when a feature reaches for the
+   * browser extension but the bridge is offline. Calm-by-default policy
+   * (v1.3.33): the persistent "extension disconnected" alert was removed
+   * because Chrome's service worker sleeps whenever the browser isn't
+   * focused, producing constant false alarms. Features that genuinely
+   * depend on the extension (smart scan, browser-tab card launch) call
+   * this AT THE POINT they fail. dedupKey is shared so repeated misses
+   * don't pile up bell rows.
+   */
+  notifyExtensionRequiredAtUseSite: (feature: string) => void;
 }
 
 const AppStateCtx = createContext<AppState | null>(null);

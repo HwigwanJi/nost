@@ -219,6 +219,24 @@ export interface AppSettings {
   windowOpenAt?: 'cursor' | 'last';
   license?: License;             // Phase 5: paid-tier entitlement cache
   memo?: MemoSettings;           // Memo feature (v1.3.16+)
+  /**
+   * "Has the browser extension EVER connected to this install?" — set
+   * to true the first time main.js receives an SSE handshake from the
+   * Chrome extension, never reset by code (only manual clear via
+   * Settings → 데이터 → 초기화). Drives the "calm-by-default" extension
+   * notification rule (v1.3.33+):
+   *   - `false` → user has never connected the extension. After the
+   *     40 s grace, fire ONE passive tip in the notification center
+   *     suggesting install.
+   *   - `true`  → user has confirmed the extension works at least once.
+   *     Subsequent disconnects (Chrome service worker sleeping while
+   *     unfocused) are SILENT — we don't pop a notification on every
+   *     sleep cycle. If a real failure happens *at the use-site*
+   *     (smart scan returns no tabs, browser-tab card launch reports
+   *     no bridge), the consumer surfaces an actionable notification
+   *     at that moment instead.
+   */
+  extensionEverConnected?: boolean;
 }
 
 /** Default launcher size = full work area on cold start when the

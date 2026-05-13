@@ -30,6 +30,18 @@ interface ProviderProps {
   data: AppData;
   /** In-house toast for nudges + ad-hoc messages. */
   showToast: (msg: string, opts?: { actions?: Array<{ label: string; icon: string; onClick: () => void }>; duration?: number }) => void;
+  /** Daily-nudge + resume-prompt MIRROR into the bell. Toast is
+   *  transient (9 s) — the bell entry is the permanent affordance
+   *  the user can come back to. Both flow through the same dedupKey
+   *  so the panel doesn't pile up if multiple sessions skip the
+   *  nudge without dismissing the prior bell entry. */
+  addNotification: (notif: {
+    kind: 'tip';
+    title: string;
+    body?: string;
+    action?: { label: string; intent: 'open-tour'; payload: string };
+    dedupKey: string;
+  }) => void;
   /** Cleanup handles — called by CompletionModal when user picks "정리하기". */
   deleteItem:  (spaceId: string, itemId: string) => void;
   deleteSpace: (spaceId: string) => void;
@@ -51,15 +63,15 @@ type Phase =
   | { kind: 'running';  quest: Quest } // stepIdx comes from state.active
   | { kind: 'completing'; quest: Quest; earnedDays: number; bonusCategoryName?: string; bonusMaster?: boolean };
 
-export function TutorialProvider({ data, showToast, deleteItem, deleteSpace, deleteMemo, isBusy, onApiReady, children }: ProviderProps) {
+export function TutorialProvider({ data, showToast, addNotification, deleteItem, deleteSpace, deleteMemo, isBusy, onApiReady, children }: ProviderProps) {
   const state = useTutorialState();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const startTimeRef = useRef<number>(0);
 
   // Install nudge subscribers once. Use refs for the dependent
   // closures so we don't re-bind on every parent re-render.
-  const apiRef = useRef({ showToast });
-  apiRef.current = { showToast };
+  const apiRef = useRef({ showToast, addNotification });
+  apiRef.current = { showToast, addNotification };
   const dataRef = useRef(data);
   dataRef.current = data;
   const isBusyRef = useRef(isBusy);
@@ -177,6 +189,11 @@ export function TutorialProvider({ data, showToast, deleteItem, deleteSpace, del
       if (!next) { tutorialActions.markDailyNudgeShown(today); return; }
       if (isBusyRef.current()) return;
       tutorialActions.markDailyNudgeShown(today);
+      // Toast = transient (9 s) attention grab. Notification center =
+      // permanent affordance the user can come back to. Both should
+      // fire so a missed toast still lands in the bell. dedupKey is
+      // per-quest so re-suggesting the same quest later doesn't
+      // duplicate the row.
       apiRef.current.showToast(
         `📚 아직 안 한 튜토리얼: ${next.title} · +${next.rewardDays}일`,
         {
@@ -187,6 +204,13 @@ export function TutorialProvider({ data, showToast, deleteItem, deleteSpace, del
           duration: 9000,
         },
       );
+      apiRef.current.addNotification({
+        kind: 'tip',
+        title: '안 한 튜토리얼이 있어요',
+        body: `${next.title} · +${next.rewardDays}일 보상`,
+        action: { label: '시작', intent: 'open-tour', payload: next.id },
+        dedupKey: `tutorial-nudge-${next.id}`,
+      });
     }, 3500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1433,6 +1433,23 @@ export function useAppData() {
     });
   }, []);
 
+  // Set the persistent "extension has ever connected" flag. Once true,
+  // stays true — only manual reset (Settings → 데이터 → 초기화) clears it.
+  // Idempotent: no-op when already true so we can call it on every
+  // successful SSE handshake without thrashing the store.
+  const markExtensionConnected = useCallback(() => {
+    setRawData(prev => {
+      if (prev.settings.extensionEverConnected) return prev;
+      const next: AppData = {
+        ...prev,
+        settings: { ...prev.settings, extensionEverConnected: true },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      electronAPI.storeSave(next);
+      return next;
+    });
+  }, []);
+
   const dismissNotification = useCallback((id: string) => {
     const now = Date.now();
     setRawData(prev => {
@@ -1613,5 +1630,7 @@ export function useAppData() {
     dismissNotificationByDedupKey,
     dismissAllNotifications,
     markAllNotificationsRead,
+    // ── Extension state (persistent "once-seen" flag) ──────────
+    markExtensionConnected,
   };
 }

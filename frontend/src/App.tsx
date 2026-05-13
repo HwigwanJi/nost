@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Toaster } from 'sonner';
-import { TutorialProvider, triggers as tutorialTriggers } from './tutorial';
+import { TutorialProvider, triggers as tutorialTriggers, findQuest as findTutorialQuest } from './tutorial';
+import type { QuestId } from './tutorial';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -1481,58 +1482,156 @@ export default function App() {
     setClipPrompt(null);
   }, [clipPrompt]);
 
-  // ── Extension connection tracking ─────────────────────────
-  // When the bridge reports disconnected we surface a `system` notification
-  // (see effect below). The polling effect underneath handles reconnects.
-  const [extConnected, setExtConnected] = useState<boolean | null>(null);
+  // ── Extension connection tracking (v1.3.33 — calm-by-default) ─────
+  //
+  // The Chrome service worker is suspended whenever the browser window
+  // doesn't have focus, which means our SSE bridge appears "offline"
+  // most of the time even when the user has everything correctly set
+  // up. Showing a noisy "확장이 연결되지 않았어요" notification on every
+  // sleep cycle drove users crazy.
+  //
+  // SSOT decision (per AppSettings.extensionEverConnected):
+  //   • EVER connected → trust the install. Silent during disconnects;
+  //     the bridge will wake up the moment the user actually uses the
+  //     browser. We only re-surface a notification at the **use-site**
+  //     (smart scan finds no tabs, browser-tab card launch reports no
+  //     bridge) via notifyExtensionRequiredAtUseSite().
+  //   • NEVER connected → after the 40 s grace window, fire ONE
+  //     tip-kind notification suggesting install. Tip kind means it
+  //     stays calm in the bell without a system-error color.
+  //
+  // Live polling continues in the background so the indicator badge in
+  // Settings reflects current state, but it never pushes notifications
+  // on its own once everConnected is true.
+  type ExtState = 'init' | 'connected' | 'never-seen' | 'previously-offline';
+  const [extState, setExtState] = useState<ExtState>('init');
+  const everConnected = data.settings.extensionEverConnected === true;
 
+  // Probe loop: 4 s during the initial 40 s grace, then 15 s steady-state.
+  // The renderer-only state stays in sync for the Settings indicator;
+  // store.markExtensionConnected() persists the latch the first time.
   useEffect(() => {
-    electronAPI.getExtensionBridgeStatus().then(s => {
-      const connected = s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0;
-      setExtConnected(connected);
-    });
+    let cancelled = false;
+    let attempts = 0;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const probe = async () => {
+      const s = await electronAPI.getExtensionBridgeStatus();
+      if (cancelled) return;
+      const live = s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0;
+      if (live) {
+        setExtState('connected');
+        // Latch the persistent "ever seen" flag on first connect — idempotent.
+        if (!everConnected) store.markExtensionConnected();
+        // Whatever notifications the old logic left behind, clear them.
+        store.dismissNotificationByDedupKey('ext-disconnected');
+        store.dismissNotificationByDedupKey('ext-install-nudge');
+        store.dismissNotificationByDedupKey('ext-needed-now');
+        return;
+      }
+      // Offline path — branch on whether we've ever seen it work.
+      if (everConnected) {
+        setExtState('previously-offline');
+      } else if (attempts >= 10) {
+        setExtState('never-seen');
+      }
+      // else stay 'init' until grace exhausted
+    };
+
+    // Kick the first probe immediately, then on a tightening cadence.
+    void probe();
+    intervalId = setInterval(() => {
+      attempts++;
+      void probe();
+      if (attempts === 10 && intervalId) {
+        // Switch from 4 s grace cadence to 15 s steady-state.
+        clearInterval(intervalId);
+        intervalId = setInterval(() => { void probe(); }, 15_000);
+      }
+    }, 4_000);
+
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [everConnected]);
+
+  // Notification rules — fires ONLY on state transitions into
+  // 'never-seen' (initial install needs help). 'previously-offline' is
+  // intentionally silent; use-site failures handle that case.
+  useEffect(() => {
+    if (extState === 'never-seen') {
+      store.addNotification({
+        kind: 'tip',
+        title: '브라우저 확장을 설치해보세요',
+        body: 'Chrome 확장을 깔면 브라우저 탭 스캔과 분할 배치를 쓸 수 있어요.',
+        action: { label: '설치 안내', intent: 'open-settings', payload: 'extension' },
+        dedupKey: 'ext-install-nudge',
+      });
+    } else if (extState === 'connected') {
+      store.dismissNotificationByDedupKey('ext-install-nudge');
+      store.dismissNotificationByDedupKey('ext-needed-now');
+    }
+    // 'previously-offline' → no-op. The user knows; Chrome is just sleeping.
+  }, [extState]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Stale update-notification sweep (boot once) ───────────────────
+  // After install + restart, the notification "v1.3.X 설치 준비 완료"
+  // can persist in the bell even though the user IS now on v1.3.X.
+  // On boot, scan for any 'update-available-<version>' dedup-keys
+  // whose version is ≤ our current __APP_VERSION__ and dismiss them.
+  // The dedup-key naming is locked into our convention — see
+  // onUpdateAvailable / onUpdateDownloaded handlers below.
+  useEffect(() => {
+    const current = __APP_VERSION__;
+    const parseSemver = (v: string): [number, number, number] | null => {
+      const m = /^(\d+)\.(\d+)\.(\d+)/.exec(v);
+      return m ? [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)] : null;
+    };
+    const cmpSemver = (a: string, b: string): number => {
+      const pa = parseSemver(a), pb = parseSemver(b);
+      if (!pa || !pb) return 0;
+      for (let i = 0; i < 3; i++) {
+        if (pa[i] !== pb[i]) return pa[i] - pb[i];
+      }
+      return 0;
+    };
+    for (const n of store.notifications) {
+      if (n.dismissedAt) continue;
+      const m = n.dedupKey?.match(/^update-available-(.+)$/);
+      if (!m) continue;
+      // Dismiss any notification whose version is ≤ the running app —
+      // either we just installed it (was equal) or we leapfrogged past
+      // it (was older).
+      if (cmpSemver(m[1], current) <= 0) {
+        store.dismissNotification(n.id);
+      }
+    }
+    // Run once on mount; `store.notifications` mutations after this
+    // come from live updater events which set fresh notifications for
+    // versions > current.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // After an app update / cold start, the SSE handshake with the bridge can
-  // take a few seconds to settle (Chrome has to wake the service worker).
-  // So when status is "not connected" we retry every 4s for up to 40s.
-  // Once connected we stop polling — manual refresh button covers later
-  // disconnects (uninstall, Chrome closed, etc).
-  useEffect(() => {
-    if (extConnected !== false) return;
-    let attempts = 0;
-    const id = setInterval(() => {
-      attempts++;
-      if (attempts > 10) { clearInterval(id); return; }
-      electronAPI.getExtensionBridgeStatus().then(s => {
-        const connected = s.connected || s.tabsCount > 0 || s.lastExtensionConnectedAt > 0;
-        if (connected) {
-          setExtConnected(true);
-          clearInterval(id);
-        }
-      });
-    }, 4000);
-    return () => clearInterval(id);
-  }, [extConnected]);
-
-  // Surface the bridge state in the bell. Disconnect pushes a `system`
-  // notification (dedupKey idempotent); reconnect retracts it. We
-  // intentionally narrow the dep list to `extConnected` so this fires
-  // only on transitions, not on every store change.
-  useEffect(() => {
-    if (extConnected === null) return;
-    if (extConnected === false) {
-      store.addNotification({
-        kind: 'system',
-        title: '브라우저 확장이 연결되지 않았어요',
-        body: '이미 설치되어 있다면 새로고침해보세요.',
-        action: { label: '설치 안내', intent: 'open-settings', payload: 'extension' },
-        dedupKey: 'ext-disconnected',
-      });
-    } else {
-      store.dismissNotificationByDedupKey('ext-disconnected');
-    }
-  }, [extConnected]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Use-site failure hook — called by features that *expect* the
+  // extension to be live (smart scan, browser-tab card launch). Fires
+  // an actionable notification only when the extension is missing AT
+  // THE MOMENT the user reaches for it. dedupKey is shared so repeated
+  // use-site failures don't pile up rows.
+  // Exposed via AppActions for ScanDialog / useLaunchPipeline.
+  const notifyExtensionRequiredAtUseSite = useCallback((feature: string) => {
+    if (extState === 'connected') return; // it works — nothing to nudge about
+    store.addNotification({
+      kind: 'tip',
+      title: '확장이 깨어있지 않아요',
+      body: everConnected
+        ? `Chrome 창에 포커스를 한 번 주면 확장이 다시 깨어납니다 (${feature}).`
+        : `Chrome 확장을 먼저 설치하면 ${feature}을 쓸 수 있어요.`,
+      action: { label: everConnected ? '다시 시도' : '설치 안내', intent: 'open-settings', payload: 'extension' },
+      dedupKey: 'ext-needed-now',
+    });
+  }, [extState, everConnected, store]);
 
   // ── Settings initial tab ──────────────────────────────────
   const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | 'account' | undefined>(undefined);
@@ -2084,14 +2183,21 @@ export default function App() {
         // dedicated billing page lands, swap this in.
         openPaywall('generic');
         break;
-      case 'open-tour':
-        // payload = tour id; falls through to the tour engine.
-        if (n.action.payload) {
-          // Lightweight: we don't have a public start-by-id API, so
-          // signal via a custom event the tour overlay listens for.
-          window.dispatchEvent(new CustomEvent('nost:start-tour', { detail: { id: n.action.payload } }));
+      case 'open-tour': {
+        // payload = QuestId — daily-nudge notifications use this path.
+        // Resolve to a Quest and hand it to the live tutorial API so
+        // the user lands in the QuestRunner overlay directly. Falls
+        // back to the legacy tour event (TourOverlay) if no API is
+        // wired (defensive — should never happen in practice).
+        if (!n.action.payload) break;
+        const quest = findTutorialQuest(n.action.payload as QuestId);
+        if (quest && tutorialApiRef.current) {
+          tutorialApiRef.current.start(quest);
+        } else {
+          window.dispatchEvent(new CustomEvent('nost:start-tour', { detail: { tourId: n.action.payload } }));
         }
         break;
+      }
       case 'open-settings': {
         const tab = (n.action.payload as 'general' | 'monitor' | 'docs' | 'extension' | 'memo' | 'data' | undefined) ?? 'general';
         setSettingsInitialTab(tab);
@@ -3379,7 +3485,8 @@ export default function App() {
     onDeckGroupLaunch: handleDeckGroupLaunch,
     onWindowInactiveClick: handleWindowInactiveClick,
     onCleanSpace: handleCleanSpace,
-  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeModeClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace]);
+    notifyExtensionRequiredAtUseSite,
+  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeModeClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace, notifyExtensionRequiredAtUseSite]);
 
   return (
     <AppStateProvider value={appState}>
@@ -3388,6 +3495,7 @@ export default function App() {
     <TutorialProvider
       data={data}
       showToast={showToast}
+      addNotification={store.addNotification}
       deleteItem={(sid, iid) => store.deleteItem(sid, iid)}
       deleteSpace={(sid) => store.deleteSpace(sid)}
       deleteMemo={(sid, iid) => store.deleteItem(sid, iid)}
@@ -4655,7 +4763,7 @@ export default function App() {
       {/* ── Welcome / First-run modal ────────────────────────── */}
       {showWelcome && (
         <WelcomeModal
-          extConnected={extConnected}
+          extConnected={extState === 'connected' ? true : extState === 'init' ? null : false}
           onClose={() => setShowWelcome(false)}
           onOpenExtensionSettings={() => openSettingsTab('extension')}
         />

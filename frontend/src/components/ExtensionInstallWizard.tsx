@@ -300,7 +300,10 @@ function ClipboardReCopy() {
 
 export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProps) {
   const [phase, setPhase] = useState<WizardPhase>({ kind: 'idle' });
-  const [selectedBrowser, setSelectedBrowser] = useState<Browser>('chrome');
+  // Selector UI is gone (Whale users use the Chrome extension directly,
+  // v1.3.33), but the rest of the wizard still threads `selectedBrowser`
+  // into install-helper calls and step text so we keep the constant.
+  const selectedBrowser: Browser = 'chrome';
   const [extensionDir, setExtensionDir] = useState<string | null>(null);
   // Web Store is now the recommended path. The dev-mode unpacked-load
   // flow is still useful (testing, custom builds, environments where
@@ -480,41 +483,22 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
             </button>
           </div>
 
-        {/* Browser selector */}
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, fontWeight: 500 }}>
-            브라우저 선택
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            {(['chrome', 'whale'] as Browser[]).map(b => (
-              <button
-                key={b}
-                onClick={() => setSelectedBrowser(b)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 7,
-                  padding: '10px 12px',
-                  borderRadius: 10,
-                  border: `1.5px solid ${selectedBrowser === b ? 'var(--accent, #6366f1)' : 'var(--border-rgba)'}`,
-                  background: selectedBrowser === b ? 'var(--accent-dim, rgba(99,102,241,0.08))' : 'var(--surface)',
-                  color: selectedBrowser === b ? 'var(--accent, #6366f1)' : 'var(--text-muted)',
-                  fontSize: 12,
-                  fontWeight: selectedBrowser === b ? 700 : 500,
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  transition: 'all 0.15s',
-                }}
-              >
-                <Icon name={browserIcon(b)} size={16} />
-                {browserLabel(b)}
-                {selectedBrowser === b && (
-                  <Icon name="check_circle" size={13} style={{ marginLeft: 2 }} />
-                )}
-              </button>
-            ))}
-          </div>
+        {/* Browser selector is gone as of v1.3.33 — Whale users install
+            the Chrome extension directly (Naver Whale supports loading
+            Chrome Web Store extensions natively, and our Whale-store
+            submission was rejected). Single button keeps the wizard
+            linear and removes a confusing fork. */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 9,
+          padding: '10px 12px', borderRadius: 10,
+          border: '1.5px solid var(--accent)',
+          background: 'var(--accent-dim, rgba(99,102,241,0.08))',
+          color: 'var(--accent)',
+          fontSize: 12, fontWeight: 700,
+        }}>
+          <Icon name={browserIcon('chrome')} size={16} />
+          Chrome 확장 (Whale 사용자도 동일)
+          <Icon name="check_circle" size={13} style={{ marginLeft: 'auto' }} />
         </div>
 
         {/* What will happen preview */}

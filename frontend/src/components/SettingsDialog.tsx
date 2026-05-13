@@ -1106,7 +1106,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                         {extStatus === 'connected' ? '브라우저 확장 연결됨' : extStatus === 'disconnected' ? '확장 프로그램 미연결' : '상태 확인 중...'}
                       </div>
                       <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
-                        {extStatus === 'connected' ? '탭 스캔 및 타일 분할 사용 가능' : extStatus === 'disconnected' ? 'Chrome / Whale 브라우저에 확장이 필요합니다' : ''}
+                        {extStatus === 'connected' ? '탭 스캔 및 타일 분할 사용 가능' : extStatus === 'disconnected' ? 'Chrome 확장이 필요합니다 (Whale 사용자도 동일)' : ''}
                       </div>
                     </div>
                   </div>
