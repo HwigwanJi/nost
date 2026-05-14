@@ -400,6 +400,8 @@ export function useAppData() {
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newRaw));
       electronAPI.storeSave(newRaw);
+      // Phase 2 sync is manual — no auto-push here. User clicks
+      // "동기화하기" in 설정 → 계정 when they want to sync.
       return newRaw;
     });
   }, []);
@@ -1628,6 +1630,11 @@ export function useAppData() {
   return {
     data,
     isFirstRun,
+    /** Replace the entire AppData tree. Used by Phase 2 sync's
+     *  server-wins pull (P2.A) and by future restore/import flows.
+     *  Equivalent to internal `save()` but exposed with a more
+     *  intention-revealing name. */
+    replaceAll: save,
     addSpace,
     renameSpace,
     deleteSpace,

@@ -57,6 +57,11 @@ export interface ElectronAPI {
   authKvGet: (key: string) => Promise<string | null>;
   authKvSet: (key: string, value: string | null) => Promise<boolean>;
   authKvList: () => Promise<Record<string, string>>;
+  /** Stable per-install device identity (uuid + hostname + platform).
+   *  Phase 2 sync uses these to identify which PC produced each snapshot
+   *  edit and to enforce Free device quotas. deviceId persists across
+   *  app restarts (electron-store) — hostname/platform read live. */
+  deviceGetInfo: () => Promise<{ deviceId: string; hostname: string; platform: string }>;
   updateShortcut: (shortcut: string) => void;
   detectDialog: () => Promise<{ isDialog: boolean; title?: string; className?: string }>;
   jumpToDialogFolder: (folderPath: string) => void;
@@ -155,6 +160,10 @@ export interface ElectronAPI {
   notifyFloatingSettingsChanged: () => void;
   onFloatingSettingsChanged: (cb: () => void) => void;
   onFloatingOpenSettings: (cb: () => void) => void;
+  /** Subscribe to "main window was dragged-resized" events so the
+   *  status-bar slider can refresh from the new windowSizePct SSOT.
+   *  Returns an unsubscribe function. */
+  onWindowSizePctChanged: (cb: (pct: number) => void) => () => void;
   // Floating badges (Phase 2)
   pinBadge: (
     refType: 'space' | 'node' | 'deck',
@@ -230,6 +239,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   authKvGet: async () => null,
   authKvSet: async () => true,
   authKvList: async () => ({}),
+  deviceGetInfo: async () => ({ deviceId: 'noop-device', hostname: 'unknown', platform: 'unknown' }),
   updateShortcut: noop,
   detectDialog: async () => ({ isDialog: false }),
   jumpToDialogFolder: noop,
@@ -282,6 +292,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   notifyFloatingSettingsChanged: noop,
   onFloatingSettingsChanged: noop,
   onFloatingOpenSettings: noop,
+  onWindowSizePctChanged: () => () => {},
   pinBadge: async () => ({ success: false, reason: 'dev-mode' }),
   syncBadges: noop,
   // Dev-mode stubs — return a no-op unsubscribe to satisfy the new signature.

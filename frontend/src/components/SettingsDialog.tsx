@@ -12,6 +12,8 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Input } from '@/components/ui/input';
 import { useAuth, signIn, signOut } from '../lib/auth';
+import { useSyncState, syncFull, registerThisDevice } from '../lib/sync';
+import { listDevices, deleteDevice, getDeviceIdentity, type DeviceRow } from '../lib/sync/device';
 import { AccordionPanel } from '../tutorial';
 import { ExtensionInstallWizard } from './ExtensionInstallWizard';
 import { DEFAULT_DOCUMENT_EXTENSIONS } from '../lib/documentExtensions';
@@ -403,12 +405,7 @@ function AccountTab() {
             </div>
           </div>
         </Section>
-        <Section>
-          <SectionLabel icon="cloud_sync" text="동기화" />
-          <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
-            카드·메모의 클라우드 동기화는 다음 단계에서 활성화됩니다 (Phase 2). 지금은 로그인만 가능해요.
-          </p>
-        </Section>
+        <SyncDevicesSection userId={u.id} />
         <Section>
           <SectionLabel icon="logout" text="로그아웃" />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -454,6 +451,153 @@ function AccountTab() {
       </Section>
     </>
   );
+}
+
+function SyncDevicesSection({ userId }: { userId: string }) {
+  const sync = useSyncState();
+  const [devices, setDevices] = useState<DeviceRow[] | null>(null);
+  const [currentTag, setCurrentTag] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    const [rows, identity] = await Promise.all([
+      listDevices(userId),
+      getDeviceIdentity().catch(() => null),
+    ]);
+    setDevices(rows);
+    setCurrentTag(identity?.deviceId ?? null);
+  }, [userId]);
+
+  useEffect(() => { void refresh(); }, [refresh, sync.lastSyncedAt, sync.deviceRowId]);
+
+  const onDelete = useCallback(async (rowId: string) => {
+    setBusyId(rowId);
+    setErrorMsg(null);
+    const r = await deleteDevice(rowId);
+    setBusyId(null);
+    if (!r.ok) { setErrorMsg(r.message ?? '삭제 실패'); return; }
+    await refresh();
+  }, [refresh]);
+
+  const onAddDevice = useCallback(async () => {
+    setErrorMsg(null);
+    const r = await registerThisDevice();
+    if (!r.ok) setErrorMsg(r.message ?? '등록 실패');
+    await refresh();
+  }, [refresh]);
+
+  const onSync = useCallback(async () => {
+    setErrorMsg(null);
+    const r = await syncFull();
+    if (!r.ok && r.message && r.message !== 'conflict') setErrorMsg(r.message);
+  }, []);
+
+  const syncing = sync.phase === 'syncing';
+  const ago = sync.lastSyncedAt ? formatRelativeShort(Date.now() - sync.lastSyncedAt) : null;
+  const thisDeviceRegistered = (devices ?? []).some(d => d.deviceTag === currentTag);
+
+  return (
+    <Section>
+      <SectionLabel icon="cloud_sync" text="동기화" />
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+        <GhostBtn
+          onClick={onAddDevice}
+          disabled={syncing || thisDeviceRegistered}
+          style={{ flex: 1 }}
+          title={thisDeviceRegistered ? '이미 등록된 기기' : ''}
+        >
+          <Icon name="add_to_queue" size={14} />
+          현재 기기 추가
+        </GhostBtn>
+        <AccentBtn onClick={onSync} disabled={syncing} style={{ flex: 1 }}>
+          <Icon name={syncing ? 'sync' : 'cloud_sync'} size={14} />
+          {syncing ? '동기화 중...' : '동기화하기'}
+        </AccentBtn>
+      </div>
+      <div style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.55, marginBottom: 12 }}>
+        {ago
+          ? <>마지막 동기화 <strong style={{ color: 'var(--text-muted)' }}>{ago} 전</strong> · gen {sync.generation}</>
+          : '아직 동기화되지 않았어요. 누르면 서버에 없는 항목은 받아오고, 내 최신 상태를 올립니다.'}
+      </div>
+
+      {/* Device list */}
+      {devices === null ? (
+        <p style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.55 }}>불러오는 중...</p>
+      ) : devices.length === 0 ? (
+        <p style={{ fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.55 }}>
+          등록된 기기가 없어요. <strong>현재 기기 추가</strong>를 눌러 이 PC 를 먼저 등록해주세요.
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {devices.map(d => {
+            const isCurrent = !!currentTag && d.deviceTag === currentTag;
+            const displayName = (d.hostname || d.name.replace(/\s*\[[^\]]+\]\s*$/, '')) || '기기';
+            const last = formatRelativeShort(Date.now() - new Date(d.lastSeenAt).getTime());
+            const platLabel = d.platform === 'win32' ? 'Windows' : d.platform === 'darwin' ? 'macOS' : d.platform === 'linux' ? 'Linux' : (d.platform ?? 'PC');
+            return (
+              <div key={d.id} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+                padding: '8px 10px', borderRadius: 8,
+                background: isCurrent ? 'var(--accent-dim)' : 'var(--bg-rgba)',
+                border: `1px solid ${isCurrent ? 'var(--accent)' : 'var(--border-rgba)'}`,
+              }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: 'var(--text-color)' }}>
+                    <Icon name={d.platform === 'darwin' ? 'laptop_mac' : d.platform === 'linux' ? 'computer' : 'desktop_windows'} size={14} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
+                    {isCurrent && (
+                      <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--accent)', padding: '1px 5px', borderRadius: 3, border: '1px solid var(--accent)' }}>이 PC</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
+                    {platLabel} · 마지막 활동 {last} 전
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { void onDelete(d.id); }}
+                  disabled={busyId === d.id || syncing}
+                  title="이 기기 해제"
+                  style={{
+                    flex: 'none',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 28, height: 28, padding: 0,
+                    borderRadius: 6,
+                    background: 'transparent',
+                    border: '1px solid var(--border-rgba)',
+                    color: 'var(--text-muted)',
+                    cursor: (busyId === d.id || syncing) ? 'default' : 'pointer',
+                    opacity: (busyId === d.id || syncing) ? 0.4 : 1,
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  <Icon name={busyId === d.id ? 'sync' : 'delete'} size={14} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {(errorMsg || sync.errorMessage) && (
+        <p style={{ fontSize: 10, color: 'var(--destructive, #ef4444)', marginTop: 8, lineHeight: 1.5, wordBreak: 'break-word' }}>
+          {errorMsg ?? sync.errorMessage}
+        </p>
+      )}
+    </Section>
+  );
+}
+
+
+function formatRelativeShort(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 5)   return '방금';
+  if (s < 60)  return `${s}초`;
+  const m = Math.floor(s / 60);
+  if (m < 60)  return `${m}분`;
+  const h = Math.floor(m / 60);
+  if (h < 24)  return `${h}시간`;
+  return `${Math.floor(h / 24)}일`;
 }
 
 function AccentBtn({ style: s = {}, children, ...rest }: React.ButtonHTMLAttributes<HTMLButtonElement>) {

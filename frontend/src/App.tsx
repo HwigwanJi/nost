@@ -47,6 +47,8 @@ import { TileOverlay } from './components/TileOverlay';
 import { ContainerBloom, hitTestBloomZone, type Dir as BloomDir } from './components/ContainerBloom';
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
+import { useAuth } from './lib/auth';
+import { initSync, disposeSync } from './lib/sync';
 import { faviconCandidates } from './hooks/useFavicon';
 import { setBusy, whenIdle, isUserBusy } from './lib/userBusy';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
@@ -1022,6 +1024,42 @@ export default function App() {
   const { toasts, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
   // Wire forward-declared ref now that showToast exists.
   showToastRef.current = showToast;
+
+  // Phase 2 sync — manual model (user-explicit, 2026-05-14). On
+  // signed-in we just register the read/apply callbacks with the sync
+  // orchestrator; nothing fetches or pushes until the user clicks
+  // "동기화하기" in 설정 → 계정. syncDataRef tracks the latest AppData
+  // so syncFull() reads the current state at click time, not a stale
+  // closure from sign-in.
+  const auth = useAuth();
+  const syncDataRef = useRef(data);
+  useEffect(() => { syncDataRef.current = data; }, [data]);
+
+  // Status-bar slider stays in sync with user-driven window drags.
+  // Main derives a new pct from the resized bounds and pushes it here;
+  // we patch settings.windowSizePct via replaceAll (NOT updateSettings,
+  // which would echo back through setWindowSizePct IPC and re-resize
+  // the window during the user's own drag).
+  useEffect(() => {
+    const off = electronAPI.onWindowSizePctChanged((pct) => {
+      const cur = syncDataRef.current;
+      if (cur.settings.windowSizePct === pct) return;
+      store.replaceAll({ ...cur, settings: { ...cur.settings, windowSizePct: pct } });
+    });
+    return () => { off?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (auth.status !== 'signed-in' || !auth.user) return;
+    initSync({
+      userId: auth.user.id,
+      getLocal: () => syncDataRef.current,
+      applyMerged: (mergedData) => store.replaceAll(mergedData),
+    });
+    return () => { disposeSync(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.status, auth.user?.id]);
 
   // One-shot "로그인됐어요" toast on first mount after a signed-in
   // transition. The auth subscriber in lib/auth.ts drops a

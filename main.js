@@ -2327,6 +2327,38 @@ function createWindow() {
   mainWindow.on('moved',   saveBounds);
   mainWindow.on('resized', saveBounds);
 
+  // User-driven resize → keep `windowSizePct` SSOT in sync with the new
+  // bounds so the status-bar slider reflects what the user just did.
+  // Without this the slider keeps showing the last *programmatic* value
+  // (e.g. 100%) even after the user dragged the window to a smaller size.
+  //
+  // Heuristic: take whichever dimension shrank more — that's the
+  // "fit-within" pct. Re-applying that pct later will set both
+  // dimensions to that ratio of the work area (applyWindowSizePct uses
+  // the same pct for width and height), which is the closest single
+  // value to round-trip the user's drag.
+  let pctTimer = null;
+  mainWindow.on('resized', () => {
+    clearTimeout(pctTimer);
+    pctTimer = setTimeout(() => {
+      try {
+        if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMaximized()) return;
+        const b = mainWindow.getBounds();
+        const wa = getScreen().getDisplayMatching(b).workArea;
+        const pctW = (b.width  / wa.width)  * 100;
+        const pctH = (b.height / wa.height) * 100;
+        const pct = Math.max(25, Math.min(100, Math.round(Math.min(pctW, pctH))));
+        const current = Number(store.get('appData')?.settings?.windowSizePct);
+        if (Number.isFinite(current) && Math.abs(current - pct) < 1) return; // no real change
+        cachedWindowSizePct = pct;
+        persistWindowSizePct(pct);
+        sendSafe('window-size-pct-changed', pct);
+      } catch (e) {
+        log.debug('[resize→pct]', e?.message);
+      }
+    }, 200);
+  });
+
   // Register default shortcut; renderer may update it via 'update-shortcut' IPC
   registerShortcut(currentShortcut);
 
@@ -2789,6 +2821,25 @@ function registerIpcHandlers() {
       return false;
     }
   });
+  /** Stable per-install device identity for sync. The deviceId is a
+   *  UUID generated and cached on first call; hostname/platform are
+   *  read live (cheap, ~µs). Phase 2 sync uses these to identify which
+   *  PC produced each snapshot edit and to enforce Free device quotas.
+   *  No PII beyond hostname (which the user can rename in OS). */
+  ipcMain.handle('device:get-info', () => {
+    const os = require('os');
+    let deviceId = store.get('deviceId');
+    if (!deviceId || typeof deviceId !== 'string') {
+      deviceId = require('crypto').randomUUID();
+      store.set('deviceId', deviceId);
+    }
+    return {
+      deviceId,
+      hostname: os.hostname(),
+      platform: process.platform,  // 'win32' / 'darwin' / 'linux'
+    };
+  });
+
   ipcMain.handle('auth:kv-list', () => {
     // Bulk hydrate: renderer pulls every persisted supabase key into
     // its sync memCache on boot so getItem() sees the verifier the

@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   authKvGet: (key) => ipcRenderer.invoke('auth:kv-get', key),
   authKvSet: (key, value) => ipcRenderer.invoke('auth:kv-set', key, value),
   authKvList: () => ipcRenderer.invoke('auth:kv-list'),
+  deviceGetInfo: () => ipcRenderer.invoke('device:get-info'),
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),
   launchOrFocusApp: (exePath, closeAfter, monitor) => ipcRenderer.invoke('launch-or-focus-app', exePath, closeAfter, monitor),
@@ -145,6 +146,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFloatingSettingsChanged: (cb) => ipcRenderer.on('floating-settings-changed', () => cb()),
   /** Orb right-click > 설정 열기 — jump into the Settings dialog. */
   onFloatingOpenSettings: (cb) => ipcRenderer.on('floating-open-settings', () => cb()),
+  /** Main broadcasts this when the user drags the main window's edges so
+   *  the status-bar size slider can re-read the derived `windowSizePct`. */
+  onWindowSizePctChanged: (cb) => {
+    const handler = (_e, pct) => cb(pct);
+    ipcRenderer.on('window-size-pct-changed', handler);
+    return () => ipcRenderer.removeListener('window-size-pct-changed', handler);
+  },
 
   // ── Floating badges (Phase 2) ─────────────────────────────────
   /** Pin a space / node / deck as a floating badge at the given screen coord
