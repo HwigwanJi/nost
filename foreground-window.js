@@ -29,6 +29,30 @@ let GetForegroundWindow = null;
 let GetWindowTextW = null;
 let GetClassNameW = null;
 let GetWindowRect = null;
+let GetWindow = null;
+
+// GetWindow uCmd constants — we walk children via GW_CHILD (first child of
+// parent) then GW_HWNDNEXT (next sibling). No EnumChildWindows callback
+// needed, which avoids koffi callback-registration version differences.
+const GW_HWNDNEXT = 2;
+const GW_CHILD    = 5;
+
+// File-dialog button-text heuristics. The Windows Common Item Dialog
+// (used by IFileOpenDialog / IFileSaveDialog under the hood — Chrome
+// attachment uploads, VS Code save-as, Office native save, every WinForms
+// SaveFileDialog) always has both an accept button (저장/열기/Save/Open/OK)
+// AND a cancel button (취소/Cancel) as direct children of the #32770
+// shell. App-internal #32770 dialogs (Slack notifications, Discord
+// confirms, browser auth prompts) typically have one or the other but
+// not both, OR use different verbs (예/아니오, 허용, 차단). Requiring
+// the pair is what gives this heuristic precision.
+//
+// Trailing `(S)` / `(O)` / `(C)` are Windows mnemonic underscores —
+// they appear in the visible text on Korean Windows because the OS
+// renders the access-key suffix literally. English Windows just shows
+// `&Save` collapsed to `Save`.
+const ACCEPT_BUTTON_RE = /^(?:저장|열기|확인|선택|첨부|업로드|불러오기|가져오기|내보내기|보내기|폴더 선택|폴더선택|Save|Open|OK|Choose|Select|Upload|Attach|Browse|Pick)(?:\([A-Za-z]\))?$/;
+const CANCEL_BUTTON_RE = /^(?:취소|닫기|Cancel|Close)(?:\([A-Za-z]\))?$/;
 
 function init() {
   if (initialised) return supported;
@@ -69,6 +93,9 @@ function init() {
     // ourselves via koffi.alloc/decode below. Avoids koffi version
     // differences in how `_Out_` shapes the return value.
     GetWindowRect = user32.func('int GetWindowRect(void *hwnd, void *rect)');
+
+    // GetWindow — used to walk #32770 children without a koffi callback.
+    GetWindow = user32.func('void* GetWindow(void *hwnd, unsigned int cmd)');
 
     supported = true;
     log.info('foreground-window: koffi user32 bindings ready.');
@@ -111,6 +138,50 @@ function detect() {
 
     const isDialog = (className === '#32770');
 
+    // File-dialog precision check — walk direct children, look for the
+    // accept+cancel button pair. Only run on #32770 (cheap short-circuit
+    // on everything else). Cap at 200 siblings to bound worst-case cost
+    // on degenerate windows. Per-child reads are ~10µs each, so even
+    // 50-child file dialogs finish in well under a millisecond.
+    let isFileDialog = false;
+    if (isDialog) {
+      try {
+        let sawAccept = false;
+        let sawCancel = false;
+        let prevAddr = 0n;
+        let cur = GetWindow(hwnd, GW_CHILD);
+        for (let i = 0; i < 200; i++) {
+          if (!cur) break;
+          // Pointer-equality guard — bail if GetWindow loops (shouldn't
+          // happen with GW_HWNDNEXT, but defensive against driver bugs).
+          let addr = 0n;
+          try { addr = BigInt(koffiRef.address(cur)); } catch {}
+          if (addr === 0n || addr === prevAddr) break;
+          prevAddr = addr;
+
+          // Read class — only "Button" controls participate.
+          const cBuf = Buffer.alloc(64 * 2);
+          const cN = GetClassNameW(cur, cBuf, 64);
+          const cName = cN > 0 ? cBuf.toString('utf16le', 0, cN * 2) : '';
+          if (cName === 'Button') {
+            const tBuf = Buffer.alloc(128 * 2);
+            const tN = GetWindowTextW(cur, tBuf, 128);
+            const txt = tN > 0 ? tBuf.toString('utf16le', 0, tN * 2) : '';
+            if (!sawAccept && ACCEPT_BUTTON_RE.test(txt)) sawAccept = true;
+            if (!sawCancel && CANCEL_BUTTON_RE.test(txt)) sawCancel = true;
+            if (sawAccept && sawCancel) break;
+          }
+          cur = GetWindow(cur, GW_HWNDNEXT);
+        }
+        isFileDialog = sawAccept && sawCancel;
+      } catch (e) {
+        // Don't fail the whole detect — fall back to isDialog-only so the
+        // caller can still decide (it currently treats any #32770 as a
+        // potential file dialog). Log once.
+        log.warn('foreground-window: child-walk failed —', e?.message ?? e);
+      }
+    }
+
     let rect = null;
     if (isDialog) {
       // Allocate a RECT-sized buffer and let user32 fill it; then
@@ -145,7 +216,7 @@ function detect() {
       hwndNum = typeof addr === 'bigint' ? Number(addr & 0xFFFFFFFFn) : Number(addr);
     } catch { /* keep 0 */ }
 
-    return { title, className, isDialog, hwnd: hwndNum, rect };
+    return { title, className, isDialog, isFileDialog, hwnd: hwndNum, rect };
   } catch (e) {
     // Don't spam the log — a single warn is enough; the caller treats
     // null as no-op and we'll keep trying next tick.

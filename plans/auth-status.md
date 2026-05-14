@@ -106,6 +106,8 @@ installer (`nost Setup 1.3.34.exe`) 로 깔아서 E2E 통과 확인.
 
 ## §4. E2E 검증 시나리오 (셋업 후)
 
+> **상태 (2026-05-14)**: 사용자 확인 — Google 분기 E2E 정상 동작 (production installer). GitHub 분기는 §3.3 셋업 미완 → 향후 검증 필요. Phase 2 sync 진입 조건 (Google E2E 통과) 충족.
+
 §3 완료되면 이 순서대로 검증. 각 단계 **실패 시 §5 트러블슈팅** 참고.
 
 - [ ] **A. 첫 로그인 (Google)**

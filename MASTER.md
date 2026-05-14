@@ -15,7 +15,7 @@
 | 절대 건드리지 말 것 | `C:\Users\User\.gemini\antigravity\scratch\quick-launcher` (구 스냅샷) |
 | GitHub | `HwigwanJi/nost` (public, electron-updater) |
 | 현재 출시 버전 | **v1.3.36** (자동 업데이트 대상) |
-| 미커밋 작업 | (없음 — v1.3.34 출시 후 차기 Phase 2 sync 본격 구현이 다음 라운드) |
+| 미커밋 작업 | **v1.3.37 후보**: (1) path→type SSOT 회귀 fix (`handleFileDrop` 폴백 + `/clipboard` 2곳에서 `inferItemFromPath` 우회) (2) Save-As 컨텍스트바를 dialog 외부 위치로 환원 (3) Save-As 컨텍스트바 정밀도 개선 — `#32770` 자식 walk 로 "저장/취소" Button 쌍 검사 → `isFileDialog` 판정 (Slack 등 비-파일 dialog 차단). 컴파일/smoke-test 통과. |
 | 스택 | Electron 41 · React 19 · TS · Vite 8 · Tailwind 4 · @dnd-kit · @base-ui/react |
 | 영속화 | `electron-store` (primary) + `localStorage` (fallback) |
 | 자동 업데이트 | GitHub Releases (`latest.yml`) — public repo, 토큰 불필요 |

@@ -149,7 +149,22 @@ comm -23 /tmp/main-channels.txt /tmp/preload-channels.txt
 **Expected**: empty 또는 main-내부 전용 (rare)
 **Fix**: `plans/checklists.md` §2 참조 — preload.js + electronBridge.ts 동기화
 
-### 3.5 `localStorage` 직접 사용 (4-way mirror 안티패턴)
+### 3.5 path → type 하드코딩 (분류기 SSOT 우회)
+
+`isPath ? 'folder' : ...` 같은 분기 — `inferItemFromPath` SSOT 거치지 않음. 확장자 무시되어 .pptx/.docx 등이 'folder' 로 잘못 저장됨 (v1.3.36 회귀).
+
+```bash
+# 모든 isPath 분기 점검
+grep -rEn "isPath[ ]*\?[ ]*['\"]folder['\"]" frontend/src
+# 더 넓게 — path 검사 후 type 결정하는 패턴
+grep -rEn "['\"]folder['\"][ ]*:[ ]*['\"](text|app)['\"]" frontend/src
+```
+
+**Expected**: empty — path 가 들어오면 무조건 `inferItemFromPath(path, docExts).type` 경유
+**Fix**: 확장자가 `documentExtensions` 매치면 `'doc'`, `.exe/.lnk` 면 `'app'`, 확장자 없으면 `'folder'`, 그 외 `'app'`. 분류기 SSOT 한 곳만 진실.
+**참고**: 현재 path → type 분류 진입점 9곳 — `plans/checklists.md` §1 참조
+
+### 3.6 `localStorage` 직접 사용 (4-way mirror 안티패턴)
 
 ```bash
 grep -rn "localStorage\." frontend/src | grep -v "ssot-index\|migrateData\|comment"

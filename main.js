@@ -1478,15 +1478,11 @@ function destroyDialogPopupWindow() {
   dialogPopupWin = null;
 }
 
-// Approximate Windows Save-As dialog title-bar height in DIP. The popup
-// strip is parked at the bottom of the title bar so it visually sits
-// "right above the address bar" — the title bar still drag-handles work
-// (we don't capture pointer events on the strip's transparent area), but
-// the chips no longer require the user to look up and away from where
-// they're typing the filename. Empirically 30 px is a tight fit at the
-// usual 100% scale; bumped slightly so high-contrast themes that
-// thicken the title bar still don't clip the navigation strip below.
-const DIALOG_POPUP_TITLEBAR_PX = 32;
+// Gap between the popup strip's bottom edge and the dialog's top edge.
+// The strip sits ABOVE the dialog window entirely — user preference is
+// to keep it just outside so it visually reads as an external toolbar
+// attached to the dialog rather than overlapping its chrome.
+const DIALOG_POPUP_GAP_PX = 6;
 
 function positionDialogPopup(rect) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
@@ -1515,14 +1511,10 @@ function positionDialogPopup(rect) {
   // `overflowX: auto` handles horizontal scroll for the chips
   // themselves. Robust left-anchor > clever clamp.
   const x = Math.round(rect.x);
-  // Anchor the chip strip's bottom edge to just inside the dialog —
-  // overlapping the title bar (which is fixed chrome) by ~32 px so the
-  // strip sits directly above the navigation / address bar that lives
-  // immediately below the title. Earlier design placed the strip
-  // entirely above the dialog (rect.y - STRIP - 6) which left a large
-  // visual gap and made the user's eye dart up-and-back-down between
-  // chips and the address input.
-  const y = Math.round(rect.y + DIALOG_POPUP_TITLEBAR_PX - DIALOG_POPUP_STRIP_HEIGHT);
+  // Anchor the chip strip's bottom edge just above the dialog top edge.
+  // The strip sits entirely outside the dialog window (no chrome overlap)
+  // with a small visual gap — feels like an attached external toolbar.
+  const y = Math.round(rect.y - DIALOG_POPUP_STRIP_HEIGHT - DIALOG_POPUP_GAP_PX);
   try {
     dialogPopupWin.setBounds({ x, y, width, height: DIALOG_POPUP_HEIGHT });
   } catch (_) { /* dialog moved off-screen mid-set; ignore */ }
@@ -1597,8 +1589,20 @@ async function tickDialogPoll() {
     }
   }
 
-  if (!detected || !detected.isDialog) {
-    // No dialog currently focused. Tear down if we had one up.
+  // Precision gate — show the popup ONLY on actual file dialogs.
+  // `isFileDialog` is set by foreground-window.js after walking the
+  // #32770 children and confirming the accept+cancel button pair (저장/
+  // 열기/Save/Open + 취소/Cancel). Falls back to `isDialog` if the
+  // native detector couldn't read children (older PS fallback path
+  // doesn't fill isFileDialog yet — we tolerate that to avoid false
+  // negatives on koffi-failed machines).
+  const looksLikeFileDialog = detected
+    && detected.isDialog
+    && (detected.isFileDialog === true
+        || (detected.isFileDialog === undefined && detected.isDialog));
+
+  if (!looksLikeFileDialog) {
+    // Not a file dialog. Tear down if we had one up.
     if (dialogPopupWin && !dialogPopupWin.isDestroyed()) {
       destroyDialogPopupWindow();
     }
@@ -1609,20 +1613,7 @@ async function tickDialogPoll() {
     return;
   }
 
-  // The #32770 class is shared by file dialogs AND non-file dialogs
-  // (Properties / Print / Font / Color etc.) — blacklist the latter
-  // rather than whitelist file ones, because file-dialog titles vary
-  // wildly across apps and locales (Save As, Open, Browse for Folder,
-  // Choose File, Upload, 폴더 선택, 첨부할 파일, 업로드할 파일,
-  // 가져오기, 내보내기, 파일 선택, etc.). A whitelist kept missing
-  // common dialogs the user actually wanted the popup for.
   const t = (detected.title || '');
-  const looksLikeNonFileDialog = /속성|Properties|인쇄|Print|글꼴|Font|색|Color|페이지 설정|Page Setup|보안 경고|Security|확인|Confirm/i.test(t);
-  if (looksLikeNonFileDialog) {
-    if (dialogPopupWin && !dialogPopupWin.isDestroyed()) destroyDialogPopupWindow();
-    dialogTrackedHwnd = 0;
-    return;
-  }
 
   // User dismissed THIS dialog's popup — don't reattach.
   if (detected.hwnd && detected.hwnd === dialogDismissedHwnd) return;

@@ -8,20 +8,22 @@
 
 ## §1. 새 `LauncherItem.type` 추가 체크리스트
 
-> v1.3.34에서 `'doc'` 추가하면서 발견한 7+α 파일 패턴. 빠뜨리면 "클립보드에선 인식되는데 파일 드롭에선 안 되네" 류 silent failure.
+> v1.3.34에서 `'doc'` 추가하면서 발견한 7+α 파일 패턴 + v1.3.37 에서 추가 발견한 2개. 빠뜨리면 "클립보드에선 인식되는데 파일 드롭에선 안 되네" 류 silent failure.
 
-### 필수 수정 (8개)
+### 필수 수정 (10개)
 
 | # | 파일 | 무엇 | 빠뜨리면 |
 |---|---|---|---|
 | 1 | `frontend/src/types.ts` `LauncherItem.type` union | 새 리터럴 추가 | 컴파일 실패 (좋음 — 발견됨) |
-| 2 | `frontend/src/App.tsx::inferItemFromPath` | 파일 드래그앤드롭 분류 | 파일 드롭이 잘못된 타입으로 저장 |
+| 2 | `frontend/src/App.tsx::inferItemFromPath` | 파일 드래그앤드롭 분류 (메인 SSOT) | 파일 드롭이 잘못된 타입으로 저장 |
 | 3 | `main.js` `analyze-clipboard` IPC | 클립보드 분류 (path 분기의 `classifyFile`) | 클립보드 prefill이 잘못된 타입 |
 | 4 | `frontend/src/lib/documentExtensions.ts::detectClipboardType` | 텍스트 기반 분류 | ContainerSlotPicker / ItemWizard 분류 누락 |
 | 5 | `frontend/src/components/ItemWizard.tsx::handleSave` | doc → app 매핑 같은 collapse 없는지 확인 | 저장 시점에 타입 손실 |
 | 6 | `frontend/src/components/ContainerSlotPicker.tsx::fillFromClipboard` | 컨테이너 슬롯 추가 시 매핑 | 슬롯 picker에서 새 타입 안 보임 |
 | 7 | `frontend/src/components/ItemDialog.tsx` auto-prefill `useEffect` | 클립보드 → ItemDialog 매핑 (`r.type === 'X' ? 'X' :`) | 다이얼로그가 type 인식 못함 |
 | 8 | `frontend/src/components/BatchDropDialog.tsx::TYPE_META` Record | 멀티 파일 드롭 시 chip 메타데이터 | TS error (`Record<LauncherItem['type'], ...>` 누락 멤버) |
+| 9 | `frontend/src/App.tsx::handleFileDrop` **URL/text 폴백 분기** | `files[]` 비고 text/uri-list 로만 들어온 path (OneDrive virtual 등) | path 들어오면 `inferItemFromPath` 거치지 않고 `'folder'` 하드코딩 → .pptx 가 folder 로 (v1.3.36 회귀, v1.3.37 fix) |
+| 10 | `frontend/src/App.tsx::handleCmd` **`cmd.kind === 'clipboard'` 분기** | `/c` 슬래시 명령어로 클립보드 path 저장 | #9 와 동일 패턴 — `'folder'` 하드코딩 (v1.3.37 fix) |
 
 ### 렌더 + 동작 (5개)
 

@@ -32,6 +32,7 @@
 | v1.3.34 | 환경설정 Option C 재구조화 (4 groups × 2-3 sub-tabs), **doc 코호트 first-class type 승격**, ItemWizard segmented tab (카드/메모), **공식 Google/GitHub 브랜드 마크**, **Auth CSP allowlist + PKCE verifier safeStorage 영속화**, Phase 2 sync 범위 합의 + cohort SSOT 골격 |
 | v1.3.35 | **Single-instance lock 강화** (second instance `process.exit(0)`) + **DocCohortDialog 깨짐 fix** + **Dialog 너비 SSOT 도입** (`dialog.tsx` 의 `DIALOG_SIZE` 토큰 + `<DialogContent size="sm\|md\|lg\|xl">` 패턴, ssot-index §A.17) |
 | v1.3.36 | **Auth loopback HTTP callback** — `nost://` protocol 대신 `http://127.0.0.1:14502/auth/callback` 사용. 새 electron 인스턴스 spawn 없음 (single-instance race 우회). 사용자에게 "로그인 완료" HTML 페이지 직접 응답. **로그인 토스트** 추가 (sessionStorage flag 패턴). **Dialog minWidth** 도입 (좁은 pair-split 윈도우에서도 contents 안 깨짐). **DocCohort suffix wildcard** — mask 의 per-revision suffix 가 `{*}` placeholder 가 되어 `_260513.pptx` / `_260512_콘진.pptx` / `_260511_F.pptx` 같은 변형이 모두 같은 cohort 로 인식 + 옛 binding 자동 reset |
+| v1.3.37 (미커밋) | **path → type 분류기 SSOT 회귀 fix** — `handleFileDrop` 의 URL/text 폴백 + `/clipboard` 슬래시 명령어 2곳에서 `isPath ? 'folder' : ...` 하드코딩이 `inferItemFromPath` SSOT 를 우회. .pptx 등 OneDrive virtual file 처럼 `dataTransfer.files` 가 비고 text/uri-list 로만 들어올 때 확장자 검사 없이 'folder' 로 저장되던 v1.3.34 회귀. **Save-As 컨텍스트바 위치** — title bar 18px 오버랩에서 dialog 위 6px 여백 외부로 이동 (사용자 선호 환원) |
 
 ---
 
@@ -592,11 +593,41 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 
 ---
 
-## 10. 현재 WIP 상태 (v1.3.34 출시 완료 — 다음 라운드 비어있음)
+## 10. 현재 WIP 상태 (v1.3.37 미커밋)
 
 > 매 세션마다 갱신 — `git status --short`로 직접 확인하세요.
-> v1.3.34 의 모든 작업은 2026-05-14 에 commit `68b9d0a` + GitHub Release 발행됨.
-> 다음 라운드 (Phase 2 sync 본격 구현) 시작 시 여기 새 항목 추가.
+
+### v1.3.37 미커밋 작업 (2026-05-14)
+
+1. **path → type SSOT 회귀 fix** (`frontend/src/App.tsx`)
+   - `handleFileDrop` URL/text 폴백 (line ~2853): `isPath ? 'folder' : 'text'` → `inferItemFromPath` 경유
+   - `handleCmd` `clipboard` 분기 (line ~3014): 동일 패턴 → `inferItemFromPath` 경유
+   - 증상: `D:\02_Projects\54_이스포츠 실태조사\02_착수보고\(KG)...pptx` 드롭 시 'doc' 이 아닌 'folder' 로 저장되던 v1.3.36 회귀
+   - root cause: `dataTransfer.files` 가 비고 text/uri-list 만 들어오는 케이스 (OneDrive virtual / 클라우드 동기 폴더) 에서 폴백 분기가 SSOT 우회
+   - 분류기 inventory 8 → 10 으로 갱신 (`plans/checklists.md` §1)
+   - anti-pattern grep 추가 (`plans/anti-pattern-grep.md` §3.5)
+
+2. **Save-As 컨텍스트바 위치 — dialog 외부로 환원** (`main.js`)
+   - `DIALOG_POPUP_TITLEBAR_PX = 32` (title bar 18px 오버랩) → `DIALOG_POPUP_GAP_PX = 6` (dialog 위 6px 여백)
+   - `y = rect.y + 32 - STRIP_HEIGHT` → `y = rect.y - STRIP_HEIGHT - 6`
+   - 사용자 피드백: 창 안에 걸쳐 있으면 시선 분산. 외부에 떠 있는 게 "툴바가 dialog 에 부착된" 인상
+
+3. **Save-As 컨텍스트바 정밀도 개선 — 자식 버튼 검사** (`foreground-window.js` + `main.js`)
+   - 이전: `#32770` 클래스 + 제목 블랙리스트(`속성|Properties|인쇄|...`) → Slack/Discord 등 third-party `#32770` 통과
+   - 변경: 자식 윈도우 walk (`GetWindow` GW_CHILD + GW_HWNDNEXT, 콜백 없는 경량 iteration) → "Button" 클래스 자식 중 accept(`저장|열기|확인|Save|Open|OK|...`)와 cancel(`취소|닫기|Cancel|Close`) 텍스트가 **둘 다 존재**할 때만 `isFileDialog: true`
+   - Windows Common Item Dialog (IFileOpenDialog/IFileSaveDialog) 사용하는 모든 앱은 두 버튼 쌍 보장 — Chrome 업로드, VS Code, Office native, WinForms SaveFileDialog 모두 매칭
+   - 비용: 한 다이얼로그당 ~50~200μs (#32770 일 때만, 600ms 폴 cadence)
+   - PS 폴백(`detect-dialog.ps1`)은 `isFileDialog` 필드 미세팅 → main.js 에서 `=== undefined` 시 기존 동작으로 fallback (koffi init 실패 시에만 트리거되므로 정상 케이스 영향 없음)
+
+### 다음 라운드 작업 후보
+
+- **PS 폴백 detect-dialog.ps1 에 자식 버튼 검사 미러링** (정밀도 개선 완성용, koffi init 실패 케이스 대비)
+- **Phase 2 sync 본격 구현**
+  - `lib/sync.ts` — push/pull 외부 store + LWW per-field 머지
+  - `useAppData.save()` 에 sync 트리거 hook (cohort A 만)
+  - Realtime channel 구독 (memos + app_data_snapshots)
+  - AccountTab 에 sync 토글 + 디바이스 목록 UI
+  - 첫 sync 시 cohort C 자동 강등 + 안내 토스트 (`plans/sync-and-auth.md` §14 #3)
 
 ### 다음 라운드 작업 후보 (Phase 2 sync 구현)
 
@@ -715,6 +746,9 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 - ✅ 로그인 성공 시 토스트 누락 (v1.3.36 — `auth.ts` 가 signed-out → signed-in 전환 시 sessionStorage flag, App.tsx 첫 mount 에서 1회 showToast)
 - ✅ pair-split 좁은 mainWindow 에서 dialog contents 깨짐 (v1.3.36 — `DIALOG_SIZE` 의 sizeStyle 에 minWidth 추가, 320px floor)
 - ✅ DocCohort 가 같은 폴더의 버전 1개만 인식 (v1.3.36 — `rebuildMask` 가 suffix 를 `{*}` 와일드카드로 처리. main.js 의 mask→regex 변환에서 `{*}` 도 `.*?` 으로. 옛 binding 은 `maybeResetStaleCohortBinding` 마이그레이션이 자동 reset)
+- ✅ .pptx 드롭이 'folder' 로 오분류 (v1.3.37 미커밋 — `handleFileDrop` 의 text-fallback 분기와 `/clipboard` 슬래시 명령어 2곳에서 `isPath ? 'folder' : ...` 하드코딩이 `inferItemFromPath` SSOT 우회. 둘 다 SSOT 경유로 교체)
+- ✅ Save-As 컨텍스트바가 dialog title bar 에 걸침 (v1.3.37 미커밋 — `y = rect.y - STRIP - 6` 으로 dialog 외부 위치로 환원, 사용자 선호)
+- ✅ Save-As 컨텍스트바가 Slack/Discord 등 비-파일-dialog 에서도 뜸 (v1.3.37 미커밋 — `foreground-window.js` 에서 #32770 자식 walk + Button "accept+cancel" 쌍 검사로 `isFileDialog` 판정. 제목 블랙리스트 폐기)
 
 ### 진행 중
 - 🔄 **인증 Phase 1 E2E** — `plans/auth-status.md` §3·§4 (외부 console 작업)

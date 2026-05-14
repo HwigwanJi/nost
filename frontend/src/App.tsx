@@ -2850,11 +2850,16 @@ export default function App() {
     if (!raw) return;
     const isUrl  = /^https?:\/\//i.test(raw);
     const isPath = /^[a-zA-Z]:\\/i.test(raw) || raw.startsWith('\\\\');
-    const inferredType  = isUrl ? 'url' : isPath ? 'folder' : 'text';
+    // Path → defer to inferItemFromPath SSOT so the extension (incl. user's
+    // documentExtensions list) decides app/doc/folder. Earlier this branch
+    // hard-coded 'folder' which silently mis-typed .pptx / .docx etc. when
+    // the drop arrived as text-only (e.g. OneDrive virtual files).
+    const inferred = isPath ? inferItemFromPath(raw, docExts) : null;
+    const inferredType: LauncherItem['type'] = isUrl ? 'url' : inferred ? inferred.type : 'text';
     const inferredTitle = isUrl
       ? (raw.replace(/^https?:\/\/(www\.)?/, '').split('/')[0] ?? raw)
-      : inferItemFromPath(raw, docExts).title;
-    setPrefilledItem({ type: inferredType as LauncherItem['type'], title: inferredTitle, value: raw });
+      : (inferred?.title ?? inferItemFromPath(raw, docExts).title);
+    setPrefilledItem({ type: inferredType, title: inferredTitle, value: raw });
     setEditItem(null);
     setEditSpaceId(targetSpaceId);
     setDialog('item');
@@ -3009,9 +3014,14 @@ export default function App() {
       try {
         const text = await electronAPI.readClipboard();
         if (!text.trim()) { showToast('클립보드가 비어있습니다'); return; }
-        const isUrl = /^https?:\/\//i.test(text.trim()) || /^www\./i.test(text.trim());
-        const isPath = /^[a-zA-Z]:\\/i.test(text.trim()) || text.startsWith('\\\\');
-        const itemType = isUrl ? 'url' : isPath ? 'folder' : 'text';
+        const trimmed = text.trim();
+        const isUrl = /^https?:\/\//i.test(trimmed) || /^www\./i.test(trimmed);
+        const isPath = /^[a-zA-Z]:\\/i.test(trimmed) || trimmed.startsWith('\\\\');
+        // Path → use inferItemFromPath SSOT (honours documentExtensions for doc/app split)
+        const docExtsForClip = getDocumentExtensions(data.settings.documentExtensions);
+        const itemType: LauncherItem['type'] = isUrl
+          ? 'url'
+          : isPath ? inferItemFromPath(trimmed, docExtsForClip).type : 'text';
         const displayTitle = text.slice(0, 40) + (text.length > 40 ? '...' : '');
         let targetSpace: Space | undefined;
         if (cmd.spaceIdx === -1) {
