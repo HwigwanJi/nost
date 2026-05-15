@@ -43,6 +43,7 @@ import {
 } from '../lib/memoUtils';
 import { useHorizontalSwipe } from '../hooks/useHorizontalSwipe';
 import { WIDGET, HOVER_HINT } from '../widgets/widgetTokens';
+import { bumpRender } from '../lib/perf';
 
 interface MemoCardDragHandle {
   setNodeRef: ReturnType<typeof useSortable>['setNodeRef'];
@@ -82,6 +83,7 @@ export function MemoCard({
   item, space, dragHandle, pinned,
   onOpenEditor, onCopyPlain, onCopyMarkdown, onExtend, onExportTxt, isJustAdded,
 }: MemoCardProps) {
+  bumpRender('MemoCard');
   const [hovered, setHovered] = useState(false);
   const [copyFlash, setCopyFlash] = useState(false);
   const [exportFlash, setExportFlash] = useState(false);

@@ -23,6 +23,7 @@ import { MonitorPicker } from './MonitorPicker';
 // hover; no remaining consumer in this file. Reintroduce if a future
 // hover surface needs to defer to modal-class UI.
 import { canPerform } from '../lib/conflictPolicy';
+import { bumpRender } from '../lib/perf';
 import { shakeElement } from '../lib/conflictFeedback';
 
 interface ItemCardProps {
@@ -129,6 +130,7 @@ export function ItemCard({
   onCheckDocCohort,
   onOpenMemoEditor, onCopyMemoBody, onCopyMemoMarkdown, onExtendMemoTtl, onExportMemoTxt,
 }: ItemCardProps) {
+  bumpRender('ItemCard');
   const [loading, setLoading] = useState(false);
   const [imageIconFailed, setImageIconFailed] = useState(false);
   const [monitorPickerPos, setMonitorPickerPos] = useState<{ x: number; y: number } | null>(null);

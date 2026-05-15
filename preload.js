@@ -148,6 +148,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFloatingOpenSettings: (cb) => ipcRenderer.on('floating-open-settings', () => cb()),
   /** Main broadcasts this when the user drags the main window's edges so
    *  the status-bar size slider can re-read the derived `windowSizePct`. */
+  /** Renderer perf — fire-and-forget aggregate counts every 10 s.
+   *  See frontend/src/lib/perf.ts. */
+  perfReport: (payload) => ipcRenderer.send('perf:renderer-report', payload),
   onWindowSizePctChanged: (cb) => {
     const handler = (_e, pct) => cb(pct);
     ipcRenderer.on('window-size-pct-changed', handler);

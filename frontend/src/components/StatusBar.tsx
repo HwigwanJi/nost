@@ -29,6 +29,7 @@ import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '@/components/ui/dropdown-menu';
 import { useAuth, signOut } from '../lib/auth';
+import { bumpRender } from '../lib/perf';
 
 interface Props {
   /** Launcher size as % of work area (25..100). Same SSOT as
@@ -40,6 +41,7 @@ interface Props {
 const POLL_INTERVAL_MS = 2000;
 
 export function StatusBar({ sizePct, onSizePctChange }: Props) {
+  bumpRender('StatusBar');
   const auth = useAuth();
   const [stats, setStats] = useState<{
     cpuPct: number; memMB: number; procs: number;

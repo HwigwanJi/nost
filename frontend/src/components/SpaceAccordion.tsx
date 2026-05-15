@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { bumpRender } from '../lib/perf';
 import { Icon } from '@/components/ui/Icon';
 import type { Space, LauncherItem } from '../types';
 import { ItemCard } from './ItemCard';
@@ -112,7 +113,9 @@ const SPACE_ICONS = [
 // Characters outside the BMP are almost certainly legacy emoji — render as text.
 const isEmojiIcon = (s: string) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s);
 
-export function SpaceAccordion({
+export function SpaceAccordion(props: SpaceAccordionProps) {
+  bumpRender('SpaceAccordion');
+  const {
   space,
   headerDragActivator,
   onRename,
@@ -154,7 +157,7 @@ export function SpaceAccordion({
   fileDragTarget,
   onFileDragEnter,
   onFileDragLeave,
-}: SpaceAccordionProps) {
+  } = props;
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isRenaming, setIsRenaming] = useState(false);
   const [draft, setDraft] = useState(space.name);

@@ -160,6 +160,9 @@ export interface ElectronAPI {
   notifyFloatingSettingsChanged: () => void;
   onFloatingSettingsChanged: (cb: () => void) => void;
   onFloatingOpenSettings: (cb: () => void) => void;
+  /** Renderer perf — ship a `{ [counterName]: count }` aggregate to
+   *  main every 10 s. See frontend/src/lib/perf.ts. Fire-and-forget. */
+  perfReport: (payload: Record<string, number>) => void;
   /** Subscribe to "main window was dragged-resized" events so the
    *  status-bar slider can refresh from the new windowSizePct SSOT.
    *  Returns an unsubscribe function. */
@@ -292,6 +295,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   notifyFloatingSettingsChanged: noop,
   onFloatingSettingsChanged: noop,
   onFloatingOpenSettings: noop,
+  perfReport: noop,
   onWindowSizePctChanged: () => () => {},
   pinBadge: async () => ({ success: false, reason: 'dev-mode' }),
   syncBadges: noop,

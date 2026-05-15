@@ -49,6 +49,7 @@ import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
 import { useAuth } from './lib/auth';
 import { initSync, disposeSync } from './lib/sync';
+import { bumpRender, startPerfFlush } from './lib/perf';
 import { faviconCandidates } from './hooks/useFavicon';
 import { setBusy, whenIdle, isUserBusy } from './lib/userBusy';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
@@ -552,9 +553,10 @@ type DialogMode = 'none' | 'item' | 'scan' | 'settings' | 'wizard' | 'quickadd' 
 const EMPTY_DISMISSALS: Record<string, { at: number; count: number }> = {};
 
 export default function App() {
+  bumpRender('App');
   const appLog = useMemo(() => createLogger('App'), []);
   appLog.debug('App() render');
-  useEffect(() => { appLog.debug('App mounted (first useEffect)'); }, [appLog]);
+  useEffect(() => { appLog.debug('App mounted (first useEffect)'); startPerfFlush(); }, [appLog]);
   const store = useAppData();
   const { data } = store;
 

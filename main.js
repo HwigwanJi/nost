@@ -59,6 +59,107 @@ log.transports.console.format = '[{h}:{i}:{s}.{ms}] [{level}] {text}';
 
 const store = new Store({ name: 'nost-data' });
 
+// ── Perf tracker (v1.3.39) ──────────────────────────────────────────
+// Lightweight call counters flushed every 10s as a single log line per
+// category. Active in every build — overhead is ~80ns per increment so
+// even at 1000 IPC calls/s the cost is well under 0.01% CPU.
+//
+// Categories:
+//   [perf] ipc      — IPC channel call counts (wraps ipcMain.handle/on)
+//   [perf] store    — electron-store.set call counts + byte volume
+//   [perf] timers   — known interval-driven ticks (dialog-poll, etc)
+//   [perf] render   — renderer-side React render counts (pushed via IPC)
+//
+// To analyse: tail %APPDATA%/nost/logs/main.log and grep '[perf]'.
+const PERF_FLUSH_MS = 10000;
+const perfIpc = new Map();         // channel → { count, totalMs }
+const perfStoreSet = new Map();    // key → count
+const perfStoreBytes = { total: 0 };
+const perfTimers = new Map();      // label → count
+const perfRender = new Map();      // component → count (filled via IPC)
+
+function perfBumpIpc(channel, durationMs) {
+  const cur = perfIpc.get(channel) || { count: 0, totalMs: 0 };
+  cur.count++;
+  cur.totalMs += durationMs;
+  perfIpc.set(channel, cur);
+}
+function perfBumpStore(key, payloadBytes) {
+  perfStoreSet.set(key, (perfStoreSet.get(key) || 0) + 1);
+  perfStoreBytes.total += payloadBytes;
+}
+function perfBumpTimer(label) {
+  perfTimers.set(label, (perfTimers.get(label) || 0) + 1);
+}
+
+// Wrap ipcMain.handle / ipcMain.on at registration time. Done once
+// here so every handler registered downstream is auto-instrumented.
+const _origHandle = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = (channel, handler) => {
+  _origHandle(channel, async (...args) => {
+    const t0 = Date.now();
+    try { return await handler(...args); }
+    finally { perfBumpIpc(channel, Date.now() - t0); }
+  });
+};
+const _origOn = ipcMain.on.bind(ipcMain);
+ipcMain.on = (channel, listener) => {
+  _origOn(channel, (...args) => {
+    const t0 = Date.now();
+    try { listener(...args); }
+    finally { perfBumpIpc(channel, Date.now() - t0); }
+  });
+};
+
+// Wrap store.set so [perf] store-set surfaces the hottest key. Note:
+// electron-store doesn't expose a generic mutation hook, so we proxy.
+const _origStoreSet = store.set.bind(store);
+store.set = (key, value) => {
+  let bytes = 0;
+  try { bytes = JSON.stringify(value ?? '').length; } catch { /* circular — skip */ }
+  perfBumpStore(typeof key === 'string' ? key : '(object)', bytes);
+  return _origStoreSet(key, value);
+};
+
+// Renderer-side counts pour in via this IPC.
+ipcMain.on('perf:renderer-report', (_e, payload) => {
+  if (!payload || typeof payload !== 'object') return;
+  for (const [name, count] of Object.entries(payload)) {
+    perfRender.set(name, (perfRender.get(name) || 0) + Number(count || 0));
+  }
+});
+
+// 10s flush. Each non-empty bucket emits one summary line.
+setInterval(() => {
+  if (perfIpc.size > 0) {
+    const sorted = [...perfIpc.entries()].sort((a, b) => b[1].count - a[1].count);
+    const top = sorted.slice(0, 12)
+      .map(([ch, s]) => `${ch}×${s.count}(${Math.round(s.totalMs / Math.max(1, s.count))}ms)`)
+      .join(' ');
+    log.info(`[perf] ipc(10s): ${top}`);
+    perfIpc.clear();
+  }
+  if (perfStoreSet.size > 0) {
+    const total = [...perfStoreSet.values()].reduce((a, b) => a + b, 0);
+    const sorted = [...perfStoreSet.entries()].sort((a, b) => b[1] - a[1]);
+    const top = sorted.slice(0, 3).map(([k, v]) => `${k}×${v}`).join(' ');
+    log.info(`[perf] store-set(10s): total=${total} kb=${(perfStoreBytes.total / 1024).toFixed(1)} ${top}`);
+    perfStoreSet.clear();
+    perfStoreBytes.total = 0;
+  }
+  if (perfTimers.size > 0) {
+    const top = [...perfTimers.entries()].map(([k, v]) => `${k}×${v}`).join(' ');
+    log.info(`[perf] timers(10s): ${top}`);
+    perfTimers.clear();
+  }
+  if (perfRender.size > 0) {
+    const sorted = [...perfRender.entries()].sort((a, b) => b[1] - a[1]);
+    const top = sorted.slice(0, 12).map(([n, c]) => `${n}×${c}`).join(' ');
+    log.info(`[perf] render(10s): ${top}`);
+    perfRender.clear();
+  }
+}, PERF_FLUSH_MS);
+
 // ── 2. Module-level globals ──────────────────────────────────────────
 let mainWindow;
 // Hot cache of the user's preferred launcher size as a % of the
@@ -1576,6 +1677,7 @@ function createDialogPopupWindow(rect, dialogTitle) {
  * foreground.
  */
 async function tickDialogPoll() {
+  perfBumpTimer('dialog-poll');
   // Native koffi-bound user32 call (~10-50 µs) replaces the PowerShell
   // spawn (~50-200 ms). Falls back to the PS script ONLY if the native
   // path failed to initialise (e.g. koffi load error on a weird OS).
@@ -4201,6 +4303,7 @@ function registerIpcHandlers() {
     log.debug(`[orb] drag-start offset=(${floatingDragOffset.ox},${floatingDragOffset.oy}) cursor=(${initialPt.x},${initialPt.y})`);
 
     floatingDragInterval = setInterval(() => {
+      perfBumpTimer('orb-drag');
       if (!floatingWindow || floatingWindow.isDestroyed() || !floatingDragOffset) return;
 
       const pt = getScreen().getCursorScreenPoint();
@@ -4882,6 +4985,7 @@ app.whenReady().then(() => {
   ipcMain.once('renderer-ready', () => {
     let extWarmupAttempts = 0;
     const extWarmupTimer = setInterval(() => {
+      perfBumpTimer('ext-warmup');
       extWarmupAttempts += 1;
       const haveTabs = lastTabsUpdateAt > 0 && global.chromeTabs?.length > 0;
       if (haveTabs || extWarmupAttempts >= 8) {
