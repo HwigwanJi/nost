@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
 import type { LauncherItem, Space } from '../types';
@@ -123,7 +123,7 @@ function getTypeIcon(type: LauncherItem['type']) {
   return map[type] ?? 'link';
 }
 
-export function ItemCard({
+function ItemCardImpl({
   item, space, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, onSetMonitor,
   onConvertToContainer, onConvertFromContainer, onEditSlots,
@@ -1305,6 +1305,40 @@ export function ItemCard({
     </>
   );
 }
+
+/** Memoised export — skip re-render unless rendered fields actually changed.
+ *  Callbacks (onEdit / onDelete / …) are intentionally NOT compared because
+ *  they often get fresh refs from App on every render; the rendered output
+ *  only depends on the data props below. Field-by-field cost is a few
+ *  hundred nanoseconds × 41 cards × App-render-rate — well under the cost
+ *  of a single avoided re-render. */
+export const ItemCard = memo(ItemCardImpl, (prev, next) => {
+  if (prev.pinned !== next.pinned) return false;
+  // Space attrs that affect rendering. We compare a stable set of fields
+  // rather than `prev.space === next.space` so a parent-side spread that
+  // gives the same content but a new ref doesn't break memoisation.
+  const ps = prev.space, ns = next.space;
+  if (ps.id !== ns.id || ps.color !== ns.color || ps.sortMode !== ns.sortMode) return false;
+  // Item content equality.
+  const a = prev.item, b = next.item;
+  if (a === b) return true;
+  return a.id === b.id
+    && a.type === b.type
+    && a.title === b.title
+    && a.value === b.value
+    && a.icon === b.icon
+    && a.iconType === b.iconType
+    && a.color === b.color
+    && a.monitor === b.monitor
+    && a.clickCount === b.clickCount
+    && a.lastClickedAt === b.lastClickedAt
+    && a.pinned === b.pinned
+    && a.hiddenInSpace === b.hiddenInSpace
+    && a.isContainer === b.isContainer
+    && a.slots === b.slots
+    && a.widget === b.widget
+    && a.memo === b.memo;
+});
 
 // ── Card hover hint — discoverability copy in tooltip ───────────
 //

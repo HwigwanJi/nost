@@ -32,7 +32,7 @@
  *     intensification, is the feedback.
  */
 
-import { useState, useRef, useLayoutEffect, useCallback } from 'react';
+import { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import type { LauncherItem, Space } from '../types';
 import { useSortable } from '@dnd-kit/sortable';
@@ -79,7 +79,7 @@ function ttlStatusColor(daysLeft: number | null, pinned: boolean): string {
   return '#22c55e';
 }
 
-export function MemoCard({
+function MemoCardImpl({
   item, space, dragHandle, pinned,
   onOpenEditor, onCopyPlain, onCopyMarkdown, onExtend, onExportTxt, isJustAdded,
 }: MemoCardProps) {
@@ -409,6 +409,23 @@ export function MemoCard({
     </>
   );
 }
+
+/** Memoised export — see ItemCard.tsx for the same rationale. */
+export const MemoCard = memo(MemoCardImpl, (prev, next) => {
+  if (prev.pinned !== next.pinned) return false;
+  if (prev.isJustAdded !== next.isJustAdded) return false;
+  if (prev.dragHandle !== next.dragHandle) return false;
+  const ps = prev.space, ns = next.space;
+  if (ps.id !== ns.id || ps.color !== ns.color) return false;
+  const a = prev.item, b = next.item;
+  if (a === b) return true;
+  return a.id === b.id
+    && a.title === b.title
+    && a.color === b.color
+    && a.pinned === b.pinned
+    && a.memo === b.memo
+    && a.clickCount === b.clickCount;
+});
 
 /* ── Bottom T-split cell — wide region, icon centered ───────── */
 interface BottomCellProps {

@@ -3518,10 +3518,26 @@ function registerIpcHandlers() {
   // extension matches gets `'doc'` instead of being lumped into 'app'.
   // The arg is optional for back-compat; absent → conservative default
   // list (same shape as lib/documentExtensions.ts::DEFAULT_DOCUMENT_EXTENSIONS).
+  // Clipboard hash cache — idle clients poll this every ~1.5s. When the
+  // clipboard hasn't changed, the cached result is byte-identical to what
+  // the classifier would compute again, so skipping the work is free.
+  // The renderer's poll cadence stays the same; this just makes 99% of
+  // polls a hash-compare + early return.
+  let lastClipboardHash = '';
+  let lastClipboardResult = null;
+  let lastClipboardDocExts = '';
   ipcMain.handle('analyze-clipboard', async (_event, docExtensions) => {
     let text = clipboard.readText().trim();
     if (!text) text = await readClipboardFileDrop();
     if (!text) return { type: 'none' };
+    // Cache key combines the clipboard text AND the docExts list — if the
+    // user changed their document-extensions setting between polls, we
+    // must reclassify. Hash is cheap (string concat + native string ===).
+    const docExtsKey = Array.isArray(docExtensions) ? docExtensions.join(',') : '';
+    if (text === lastClipboardHash && docExtsKey === lastClipboardDocExts && lastClipboardResult) {
+      return lastClipboardResult;
+    }
+    const result = await (async () => {
     const DEFAULT_DOC_EXTS = [
       'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
       'hwp', 'hwpx', 'hwt',
@@ -3641,6 +3657,12 @@ function registerIpcHandlers() {
     }
 
     return { type: 'none' };
+    })();
+    // Cache for the next poll (idle clients hit this every ~1.5 s).
+    lastClipboardHash = text;
+    lastClipboardDocExts = docExtsKey;
+    lastClipboardResult = result;
+    return result;
   });
 
   // ── 12e. App Launching ───────────────────────────────────────────

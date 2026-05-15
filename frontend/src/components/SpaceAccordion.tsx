@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { bumpRender } from '../lib/perf';
 import { Icon } from '@/components/ui/Icon';
 import type { Space, LauncherItem } from '../types';
@@ -113,7 +113,7 @@ const SPACE_ICONS = [
 // Characters outside the BMP are almost certainly legacy emoji — render as text.
 const isEmojiIcon = (s: string) => /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(s);
 
-export function SpaceAccordion(props: SpaceAccordionProps) {
+function SpaceAccordionImpl(props: SpaceAccordionProps) {
   bumpRender('SpaceAccordion');
   const {
   space,
@@ -584,6 +584,45 @@ export function SpaceAccordion(props: SpaceAccordionProps) {
     </div>
   );
 }
+
+/** Memoised export — re-render only when the space identity, its items,
+ *  or one of the explicitly-rendered scalar props changes. Callbacks
+ *  intentionally NOT compared. */
+export const SpaceAccordion = memo(SpaceAccordionImpl, (prev, next) => {
+  const ps = prev.space, ns = next.space;
+  // Cheap scalar checks first.
+  if (ps === ns) {
+    // Same space ref → still need to check non-space scalar props below.
+  } else {
+    if (ps.id !== ns.id) return false;
+    if (ps.name !== ns.name) return false;
+    if (ps.color !== ns.color) return false;
+    if (ps.icon !== ns.icon) return false;
+    if (ps.sortMode !== ns.sortMode) return false;
+    if (ps.splitRatio !== ns.splitRatio) return false;
+    // Items: ref check first (useAppData preserves refs for unchanged items
+    // and only the affected space gets a new array). If different ref,
+    // check length + per-index id to detect actual structural change.
+    if (ps.items !== ns.items) {
+      if ((ps.items?.length ?? 0) !== (ns.items?.length ?? 0)) return false;
+      for (let i = 0; i < (ps.items?.length ?? 0); i++) {
+        if (ps.items![i] !== ns.items![i]) return false;
+      }
+    }
+    // pinnedIds: ref check + content
+    if (ps.pinnedIds !== ns.pinnedIds) {
+      if ((ps.pinnedIds?.length ?? 0) !== (ns.pinnedIds?.length ?? 0)) return false;
+      for (let i = 0; i < (ps.pinnedIds?.length ?? 0); i++) {
+        if (ps.pinnedIds![i] !== ns.pinnedIds![i]) return false;
+      }
+    }
+  }
+  // Scalar prop scan beyond space.
+  return prev.defaultOpen === next.defaultOpen
+    && prev.fileDragActive === next.fileDragActive
+    && prev.fileDragTarget === next.fileDragTarget
+    && prev.headerDragActivator === next.headerDragActivator;
+});
 
 /* Small reusable action icon button */
 function ActionBtn({ icon, title, onClick }: { icon: string; title: string; onClick: () => void }) {
