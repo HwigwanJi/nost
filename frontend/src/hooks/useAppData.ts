@@ -1291,24 +1291,40 @@ export function useAppData() {
   }, []);
 
   // ── Settings ─────────────────────────────────────────────
+  // Idempotent: every IPC AND the save fire only when their respective
+  // value actually changed vs. the current store state. Critical for
+  // the v1.3.42 loop fix — without this guard, a slider re-firing
+  // onValueChange on programmatic value updates (base-ui quirk) would
+  // call updateSettings every render with the same payload, blasting
+  // setOpacity/setAutoHide/setWindowOpenAt/updateShortcut IPCs in a
+  // tight loop and saving 100KB+ to electron-store 25×/s — which
+  // crashed the renderer on heavy interaction (resize / drag).
   const updateSettings = useCallback((settings: AppSettings) => {
-    electronAPI.setOpacity(settings.opacity);
-    electronAPI.updateShortcut(settings.shortcut);
-    // Push autoHide to main's hot cache so the blur handler doesn't
-    // have to re-read electron-store (which had a staleness bug).
-    electronAPI.setAutoHide(!!settings.autoHide);
-    // Same pattern for the window-open-at strategy — main's
-    // toggleMainWindow reads from a hot cache to avoid a disk
-    // roundtrip on every show.
-    electronAPI.setWindowOpenAt(settings.windowOpenAt === 'last' ? 'last' : 'cursor');
-    // Live-apply launcher window size %. Main owns the persistence
-    // path (it writes into electron-store's appData.settings directly)
-    // so we only fire when the value actually changed — sending it on
-    // every settings save would cause unnecessary setBounds churn.
+    const prev = data.settings;
+    if (settings.opacity !== prev.opacity) {
+      electronAPI.setOpacity(settings.opacity);
+    }
+    if (settings.shortcut !== prev.shortcut) {
+      electronAPI.updateShortcut(settings.shortcut);
+    }
+    if (!!settings.autoHide !== !!prev.autoHide) {
+      electronAPI.setAutoHide(!!settings.autoHide);
+    }
+    const nextOpenAt = settings.windowOpenAt === 'last' ? 'last' : 'cursor';
+    const prevOpenAt = prev.windowOpenAt === 'last' ? 'last' : 'cursor';
+    if (nextOpenAt !== prevOpenAt) {
+      electronAPI.setWindowOpenAt(nextOpenAt);
+    }
     if (typeof settings.windowSizePct === 'number' &&
-        settings.windowSizePct !== data.settings.windowSizePct) {
+        settings.windowSizePct !== prev.windowSizePct) {
       electronAPI.setWindowSizePct(settings.windowSizePct);
     }
+    // Skip the entire save round-trip when nothing changed. Equality
+    // via stringify — settings is < 1 KB so the cost is negligible
+    // (~3 µs) vs. the ~12 ms of a wasted storeSave IPC + disk write.
+    try {
+      if (JSON.stringify(settings) === JSON.stringify(prev)) return;
+    } catch { /* settings has unserialisable shape — fall through, do save */ }
     save({ ...data, settings });
   }, [data, save]);
 
