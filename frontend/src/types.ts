@@ -483,10 +483,17 @@ export interface License {
   lastVerifiedAt?: number;
 }
 
-/** Free-plan limits. A Pro subscription removes every cap. */
+/** Free-plan limits. A Pro subscription removes every cap.
+ *  Tuned 2026-05-15 per founder decision:
+ *    - totalCards 16 (was 20) — tighter to push earlier upgrade signal
+ *    - 노드/덱/플로팅뱃지/위젯 1 — "맛보기 1개씩" 일관 정책
+ *    - presets 1 — 프리셋 2/3 잠금
+ *    - containerEnabled false — 컨테이너 슬롯 Pro 전용
+ *    - memo: 마크다운 에디터 / .md 저장 / 폴더 sync 모두 Pro 전용 (false)
+ */
 export const FREE_LIMITS = {
   /** Max cards across ALL spaces in the active preset. */
-  totalCards: 20,
+  totalCards: 16,
   /** Max spaces in the active preset. */
   spaces: 4,
   /** Max nodes in the active preset. */
@@ -501,6 +508,12 @@ export const FREE_LIMITS = {
   presets: 1,
   /** Container feature (slot-based cards) is Pro-only. */
   containerEnabled: false,
+  /** Markdown rich editor for memo body (live preview + toolbar). Pro. */
+  memoMarkdownEditor: false,
+  /** Save memo body as .md file. Pro. */
+  memoMdExport: false,
+  /** Auto-mirror memos to a user-chosen folder (Obsidian vault style). Pro. */
+  memoFolderSync: false,
 } as const;
 
 /** Trial window length in milliseconds. */

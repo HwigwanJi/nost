@@ -57,6 +57,11 @@ interface ItemDialogProps {
   defaultSpaceId?: string;
   monitorCount?: number;
   allowedTypes?: Array<LauncherItem['type']>;
+  /** User's document-extensions setting. Threaded down so the type
+   *  plausibility filter honours custom extensions when classifying
+   *  a path-like value as 'doc' vs 'folder'/'app'. Omit and the
+   *  plausibility check falls back to DEFAULT_DOCUMENT_EXTENSIONS. */
+  docExtensions?: readonly string[];
   presets?: Array<{ id: '1' | '2' | '3'; label?: string; spaces: Space[] }>;
   currentPresetId?: '1' | '2' | '3';
   onSave: (spaceId: string, item: Omit<LauncherItem, 'id'> | LauncherItem, targetPresetId?: '1' | '2' | '3') => void;
@@ -175,7 +180,7 @@ const glassNavBtnReset: React.CSSProperties = {
 
 export function ItemDialog({
   open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1,
-  allowedTypes, presets, currentPresetId, onSave,
+  allowedTypes, docExtensions, presets, currentPresetId, onSave,
   onRequestAdvanced, startAdvanced, onPickOnScreen, showToast,
 }: ItemDialogProps) {
   useBusyMark('modal:item-edit', open);
@@ -274,7 +279,10 @@ export function ItemDialog({
    * override). If everything would be hidden by plausibility, we
    * still show the override-revealed full list for sanity. */
   const [showAllTypes, setShowAllTypes] = useState(false);
-  const plausibleSet = useMemo(() => plausibleTypes(form.value), [form.value]);
+  const plausibleSet = useMemo(
+    () => plausibleTypes(form.value, docExtensions),
+    [form.value, docExtensions],
+  );
 
   const typeOptions = useMemo(() => {
     let opts = TYPE_OPTIONS;
@@ -736,7 +744,7 @@ export function ItemDialog({
     // plausibility check gives us a free incompatibility test.
     const v = form.value.trim();
     if (v) {
-      const okTypes = plausibleTypes(v);
+      const okTypes = plausibleTypes(v, docExtensions);
       if (!okTypes.has(t)) {
         f({ type: t, value: '' });
       } else {

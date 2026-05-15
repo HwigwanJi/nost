@@ -24,6 +24,9 @@ export type PaywallReason =
   | 'container-lock'
   | 'floating-badge-limit'
   | 'widget-limit'
+  | 'memo-markdown-lock'
+  | 'memo-md-export-lock'
+  | 'memo-folder-sync-lock'
   | 'generic';
 
 interface Props {
@@ -36,7 +39,7 @@ interface Props {
 }
 
 const HEADLINE: Record<PaywallReason, { icon: string; title: string; body: string }> = {
-  'card-limit':           { icon: 'style',             title: '카드 20개 제한에 도달했어요',     body: 'Pro로 업그레이드하면 카드를 무제한으로 추가할 수 있습니다.' },
+  'card-limit':           { icon: 'style',             title: '카드 16개 제한에 도달했어요',     body: 'Pro로 업그레이드하면 카드를 무제한으로 추가할 수 있습니다.' },
   'space-limit':          { icon: 'dashboard',         title: '스페이스 4개 제한에 도달했어요',  body: 'Pro는 스페이스를 원하는 만큼 만들 수 있습니다.' },
   'node-limit':           { icon: 'hub',               title: '노드는 무료 1개까지',            body: '여러 워크플로우를 동시에 관리하려면 Pro가 필요합니다.' },
   'deck-limit':           { icon: 'stacks',            title: '덱은 무료 1개까지',              body: '순차 실행할 덱이 더 필요하면 Pro로 업그레이드하세요.' },
@@ -44,6 +47,9 @@ const HEADLINE: Record<PaywallReason, { icon: string; title: string; body: strin
   'container-lock':       { icon: 'view_module',       title: '컨테이너 기능은 Pro 전용',       body: '슬롯 기반 카드 레이아웃은 Pro 플랜에서만 사용 가능합니다.' },
   'floating-badge-limit': { icon: 'radio_button_checked', title: '플로팅 뱃지 1개 제한',         body: '여러 스페이스·노드·덱을 동시에 띄우려면 Pro.' },
   'widget-limit':         { icon: 'widgets',           title: '위젯 카드 1개 제한',             body: '여러 위젯(미디어 컨트롤·시계·…)을 동시에 두려면 Pro.' },
+  'memo-markdown-lock':   { icon: 'edit_note',         title: '마크다운 에디터는 Pro 전용',     body: '본문 미리보기·헤더·리스트·코드블록을 그대로 쓰려면 Pro로 업그레이드하세요.' },
+  'memo-md-export-lock':  { icon: 'save',              title: '.md 파일로 저장은 Pro 전용',     body: '메모를 .md 파일로 내보내 Obsidian·VSCode 워크플로우에 연결합니다.' },
+  'memo-folder-sync-lock':{ icon: 'sync_alt',          title: '폴더 자동 동기화는 Pro 전용',    body: '모든 메모를 지정한 폴더에 .md 로 자동 미러링 (Obsidian Vault 호환).' },
   'generic':              { icon: 'auto_awesome',      title: 'nost Pro로 업그레이드',          body: '모든 기능 · 모든 제한 해제 · 연 5,900원.' },
 };
 

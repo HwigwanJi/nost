@@ -53,6 +53,13 @@ const GW_CHILD    = 5;
 // `&Save` collapsed to `Save`.
 const ACCEPT_BUTTON_RE = /^(?:저장|열기|확인|선택|첨부|업로드|불러오기|가져오기|내보내기|보내기|폴더 선택|폴더선택|Save|Open|OK|Choose|Select|Upload|Attach|Browse|Pick)(?:\([A-Za-z]\))?$/;
 const CANCEL_BUTTON_RE = /^(?:취소|닫기|Cancel|Close)(?:\([A-Za-z]\))?$/;
+/** Safety-net title heuristic — file-action verbs that strongly imply
+ *  the user is in a file dialog. Used when the descendant button walk
+ *  doesn't find the accept/cancel pair (e.g. exotic DirectUI dialog or
+ *  a locale our button regex hasn't seen). Overincluding non-file
+ *  dialogs here is the trade-off we accept to never silently miss a
+ *  Save-As. Slack/Discord notification titles don't match these verbs. */
+const TITLE_FILE_VERB_RE = /(?:다른 이름으로 저장|이름으로 저장|저장|열기|불러오기|업로드|첨부|파일 선택|폴더 선택|가져오기|내보내기|Save As|Save|Open|Upload|Attach|Choose File|Choose Folder|Browse For|Select File|Select Folder|Import|Export)/i;
 
 function init() {
   if (initialised) return supported;
@@ -138,47 +145,82 @@ function detect() {
 
     const isDialog = (className === '#32770');
 
-    // File-dialog precision check — walk direct children, look for the
-    // accept+cancel button pair. Only run on #32770 (cheap short-circuit
-    // on everything else). Cap at 200 siblings to bound worst-case cost
-    // on degenerate windows. Per-child reads are ~10µs each, so even
-    // 50-child file dialogs finish in well under a millisecond.
+    // File-dialog precision check — walk descendants (BFS up to depth 5,
+    // 1000 windows cap) looking for the accept+cancel button pair.
+    //
+    // v1.3.41: previous version only walked DIRECT children. That works
+    // for the legacy Win32 Common Dialog (NT-era), but Vista+ uses the
+    // Common Item Dialog which nests buttons inside DirectUIHWND /
+    // CtrlNotifySink panels at depth 2-3. The old walk silently
+    // returned isFileDialog=false on every modern Save-As → the popup
+    // never appeared.
+    //
+    // Plus a title-based safety net: if the BFS didn't conclude (button
+    // text we don't pattern-match, OS locale we haven't seen) but the
+    // title contains a recognisable file-action verb, accept the dialog
+    // anyway. Restoring the title heuristic this way is strictly
+    // additive — overinclusion is preferable to silent missing-popup.
     let isFileDialog = false;
     if (isDialog) {
       try {
         let sawAccept = false;
         let sawCancel = false;
-        let prevAddr = 0n;
-        let cur = GetWindow(hwnd, GW_CHILD);
-        for (let i = 0; i < 200; i++) {
-          if (!cur) break;
-          // Pointer-equality guard — bail if GetWindow loops (shouldn't
-          // happen with GW_HWNDNEXT, but defensive against driver bugs).
-          let addr = 0n;
-          try { addr = BigInt(koffiRef.address(cur)); } catch {}
-          if (addr === 0n || addr === prevAddr) break;
-          prevAddr = addr;
+        const visited = new Set();
+        const stack = [{ h: hwnd, d: 0 }];
+        const MAX_VISITED = 1000;
+        const MAX_DEPTH = 5;
+        let visitCount = 0;
 
-          // Read class — only "Button" controls participate.
-          const cBuf = Buffer.alloc(64 * 2);
-          const cN = GetClassNameW(cur, cBuf, 64);
-          const cName = cN > 0 ? cBuf.toString('utf16le', 0, cN * 2) : '';
-          if (cName === 'Button') {
-            const tBuf = Buffer.alloc(128 * 2);
-            const tN = GetWindowTextW(cur, tBuf, 128);
-            const txt = tN > 0 ? tBuf.toString('utf16le', 0, tN * 2) : '';
-            if (!sawAccept && ACCEPT_BUTTON_RE.test(txt)) sawAccept = true;
-            if (!sawCancel && CANCEL_BUTTON_RE.test(txt)) sawCancel = true;
-            if (sawAccept && sawCancel) break;
+        while (stack.length > 0 && visitCount < MAX_VISITED) {
+          const { h, d } = stack.pop();
+          if (d > MAX_DEPTH) continue;
+          let addr = 0n;
+          try { addr = BigInt(koffiRef.address(h)); } catch { continue; }
+          if (addr === 0n || visited.has(addr)) continue;
+          visited.add(addr);
+          visitCount++;
+
+          // Class read for non-root nodes — root #32770 already known.
+          if (d > 0) {
+            const cBuf = Buffer.alloc(64 * 2);
+            const cN = GetClassNameW(h, cBuf, 64);
+            const cName = cN > 0 ? cBuf.toString('utf16le', 0, cN * 2) : '';
+            if (cName === 'Button') {
+              const tBuf = Buffer.alloc(128 * 2);
+              const tN = GetWindowTextW(h, tBuf, 128);
+              const txt = tN > 0 ? tBuf.toString('utf16le', 0, tN * 2) : '';
+              if (!sawAccept && ACCEPT_BUTTON_RE.test(txt)) sawAccept = true;
+              if (!sawCancel && CANCEL_BUTTON_RE.test(txt)) sawCancel = true;
+              if (sawAccept && sawCancel) { stack.length = 0; break; }
+            }
           }
-          cur = GetWindow(cur, GW_HWNDNEXT);
+
+          // Push children: iterate GW_HWNDNEXT siblings starting from
+          // GW_CHILD. Cap per-level fan-out at 300 to bound pathological
+          // dialogs.
+          let child = GetWindow(h, GW_CHILD);
+          let prevChildAddr = 0n;
+          for (let i = 0; i < 300; i++) {
+            if (!child) break;
+            let childAddr = 0n;
+            try { childAddr = BigInt(koffiRef.address(child)); } catch { break; }
+            if (childAddr === 0n || childAddr === prevChildAddr) break;
+            prevChildAddr = childAddr;
+            stack.push({ h: child, d: d + 1 });
+            child = GetWindow(child, GW_HWNDNEXT);
+          }
         }
         isFileDialog = sawAccept && sawCancel;
+
+        // Title-based safety net (see comment above).
+        if (!isFileDialog && TITLE_FILE_VERB_RE.test(title)) {
+          isFileDialog = true;
+        }
       } catch (e) {
-        // Don't fail the whole detect — fall back to isDialog-only so the
-        // caller can still decide (it currently treats any #32770 as a
-        // potential file dialog). Log once.
+        // Don't fail the whole detect — fall back to title heuristic so
+        // the caller can still decide. Log once.
         log.warn('foreground-window: child-walk failed —', e?.message ?? e);
+        isFileDialog = TITLE_FILE_VERB_RE.test(title);
       }
     }
 

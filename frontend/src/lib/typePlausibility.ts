@@ -28,6 +28,7 @@
  */
 
 import type { LauncherItem } from '../types';
+import { getDocumentExtensions } from './documentExtensions';
 
 export type PlausibleType = LauncherItem['type'];
 
@@ -47,6 +48,7 @@ const EXE_EXT_RE = /\.(exe|lnk|bat|cmd|com|msi)$/i;
 // have no TLD conflict so we treat them as exe-only.
 const STRICT_EXE_RE = /\.(exe|lnk|bat|cmd|msi)$/i;
 const TEXT_DOC_EXT_RE = /\.(txt|md|markdown)$/i;
+const TRAILING_EXT_RE = /\.([a-z0-9]+)$/i;
 const HEX_RE = /^#?[0-9A-Fa-f]{3,8}$/;
 
 export function isUrlLike(v: string): boolean {
@@ -72,8 +74,31 @@ export function isTextDocLike(v: string): boolean {
   return TEXT_DOC_EXT_RE.test(v);
 }
 
+/** Does `v` end with a document-like extension?
+ *
+ *  Honours the user's customised `docExtensions` setting if provided —
+ *  this is the SSOT-correct path. Callers that don't have access to the
+ *  user setting (e.g. unit tests, main process before settings hydrate)
+ *  can omit and we fall back to the DEFAULT_DOCUMENT_EXTENSIONS list
+ *  (Office / 한컴 / PDF / open-format defaults).
+ *
+ *  v1.3.41: signature took only `(v)` and hard-coded a regex of the
+ *  defaults. That meant a user who added e.g. `epub` in Settings still
+ *  saw their .epub drop get auto-corrected to 'folder' in ItemDialog —
+ *  the dialog asked the wrong SSOT. Now both sides agree. */
+export function isDocLike(v: string, docExtensions?: readonly string[]): boolean {
+  const m = TRAILING_EXT_RE.exec(v);
+  if (!m) return false;
+  const ext = m[1].toLowerCase();
+  const list = getDocumentExtensions(docExtensions ? [...docExtensions] : undefined);
+  for (const e of list) {
+    if (String(e).toLowerCase().replace(/^\./, '') === ext) return true;
+  }
+  return false;
+}
+
 const ALL_TYPES: Set<PlausibleType> = new Set([
-  'url', 'browser', 'folder', 'app', 'window', 'text', 'cmd', 'memo',
+  'url', 'browser', 'folder', 'app', 'doc', 'window', 'text', 'cmd', 'memo',
 ]);
 
 /**
@@ -84,7 +109,10 @@ const ALL_TYPES: Set<PlausibleType> = new Set([
  * returned. `text` survives most prunings since "save the literal
  * string for paste" is a valid save intent for any input.
  */
-export function plausibleTypes(rawValue: string): Set<PlausibleType> {
+export function plausibleTypes(
+  rawValue: string,
+  docExtensions?: readonly string[],
+): Set<PlausibleType> {
   const v = rawValue.trim();
   if (!v) return new Set(ALL_TYPES);
 
@@ -102,12 +130,20 @@ export function plausibleTypes(rawValue: string): Set<PlausibleType> {
     return new Set<PlausibleType>(['url', 'browser', 'text']);
   }
 
-  // Windows / UNC / POSIX path → folder or app, never URL.
+  // Windows / UNC / POSIX path → folder / app / doc, never URL.
   if (isPathLike(v)) {
     if (isExeLike(v)) return new Set<PlausibleType>(['app', 'text', 'cmd']);
     // Text docs (.txt/.md/.markdown) — memo is a sensible alt to the
-    // standard file-card path; load contents into a memo body.
-    if (isTextDocLike(v)) return new Set<PlausibleType>(['memo', 'folder', 'app', 'text']);
+    // standard file-card path; load contents into a memo body. 'doc' is
+    // also valid since memo can fall back to a regular doc card.
+    if (isTextDocLike(v)) return new Set<PlausibleType>(['memo', 'doc', 'folder', 'app', 'text']);
+    // Document extensions (.docx / .pptx / .pdf / .hwp + user custom) →
+    // surface 'doc' as the recommended option, with folder/app as
+    // alternatives. The `docExtensions` arg threads the user's customised
+    // list from settings; omit it and we fall back to defaults. Without
+    // 'doc' in this set the auto-correct effect in ItemDialog snaps a
+    // dropped .pptx down to 'folder' (v1.3.34 regression, fixed in v1.3.41).
+    if (isDocLike(v, docExtensions)) return new Set<PlausibleType>(['doc', 'folder', 'app', 'text']);
     return new Set<PlausibleType>(['folder', 'app', 'text']);
   }
 

@@ -65,6 +65,18 @@ interface MemoEditorProps {
   /** Called by the empty-on-close auto-trash logic. */
   onAutoDeleteIfEmpty: () => void;
   showToast?: (msg: string, opts?: { actions?: Array<{ label: string; icon: string; onClick: () => void }>; duration?: number }) => void;
+  /** Pro 게이트 (2026-05-16). Free 사용자에겐:
+   *    - preview toggle 숨김 (마크다운 렌더링 미리보기는 Pro 전용)
+   *    - cleanup tool 팔레트 숨김 (markdownify / format 등 고급 정리는 Pro)
+   *    - Ctrl+M 단축키도 no-op
+   *  Free 는 plain textarea + copy 만으로 메모 작성. 마크다운 문법 자체는
+   *  당연히 입력 가능 (그건 그냥 텍스트). "랜더링" 만 Pro 영역. */
+  canUseMarkdownEditor?: boolean;
+  /** .md 파일로 저장 (Pro 전용). save palette 의 .md 옵션이 잠긴 표시로
+   *  뜸 — 클릭 시 paywall (memo-md-export-lock). */
+  canUseMdExport?: boolean;
+  /** Free 사용자가 Pro 잠금을 눌렀을 때 호출 — reason 별 분기. */
+  onUpgradePrompt?: (reason?: 'markdown' | 'md-export' | 'folder-sync') => void;
 }
 
 const AUTOSAVE_DEBOUNCE_MS = 200;
@@ -74,6 +86,9 @@ export function MemoEditor({
   item, pinned, exportFolder: _exportFolder,
   onChangeBody, onClose, onExtend, onTogglePin, onTrash,
   onAutoDeleteIfEmpty, showToast,
+  canUseMarkdownEditor = true,  // 기본 true — 호출자 누락 시 기존 동작 유지
+  canUseMdExport = true,
+  onUpgradePrompt,
 }: MemoEditorProps) {
   // ── View mode (edit textarea ↔ preview rendered) ──────────────
   // The user asked for a markdown editor "based on modern markdown
@@ -303,13 +318,18 @@ export function MemoEditor({
       return;
     }
     // Ctrl+M — toggle preview (markdown render). Vim-style mnemonic.
+    // Pro 전용 — Free 면 paywall.
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'm') {
       e.preventDefault();
+      if (!canUseMarkdownEditor) {
+        onUpgradePrompt?.('markdown');
+        return;
+      }
       setMode(m => m === 'edit' ? 'preview' : 'edit');
       return;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pinned, showToast]);
+  }, [pinned, showToast, canUseMarkdownEditor, onUpgradePrompt]);
 
   // ── Close path ────────────────────────────────────────────────
   // Plays the close animation (~150 ms) before unmounting via onClose.
@@ -839,28 +859,42 @@ export function MemoEditor({
               shortcut, `라벨 · 부연` for buttons that benefit from
               a one-clause clarifier (정리하여 복사 / 보호). Same
               design-system rule the cards follow. */}
-          <HeaderBtn
-            icon={mode === 'edit' ? 'visibility' : 'edit'}
-            title={mode === 'edit' ? '미리보기 (Ctrl+M)' : '편집 (Ctrl+M)'}
-            onClick={() => setMode(m => m === 'edit' ? 'preview' : 'edit')}
-            active={mode === 'preview'}
-          />
+          {canUseMarkdownEditor ? (
+            <HeaderBtn
+              icon={mode === 'edit' ? 'visibility' : 'edit'}
+              title={mode === 'edit' ? '미리보기 (Ctrl+M)' : '편집 (Ctrl+M)'}
+              onClick={() => setMode(m => m === 'edit' ? 'preview' : 'edit')}
+              active={mode === 'preview'}
+            />
+          ) : (
+            // Free 사용자: preview 토글 자리에 자물쇠 안내 버튼. 클릭하면 paywall.
+            <HeaderBtn
+              icon="lock"
+              title="마크다운 미리보기는 Pro 전용 — 클릭하면 안내가 뜹니다"
+              onClick={() => onUpgradePrompt?.()}
+            />
+          )}
           <HeaderBtn
             icon="content_copy"
             title="복사 (Ctrl+Shift+C)"
             onClick={handleCopy}
           />
-          {/* ── Cleanup tool palette (Adobe-style) ────────────
+          {/* ── Cleanup tool palette (Adobe-style) — Pro 전용 ─────
+              마크다운 변환 / 정리 도구는 마크다운 편집 사용자 전용 가치
+              라서 Pro 게이트에 묶임. Free 사용자는 이 자리에 자물쇠
+              버튼만 보임 (클릭 시 paywall).
               The toolbar slot mirrors WHATEVER tool is currently
               armed. Hover reveals the full palette so the user
               can swap the armed tool — clicking a palette entry
               ONLY arms it (icon swaps). Actually running the
-              cleanup happens by clicking the main slot afterwards.
-
-              Two-step (select → apply) instead of one-step
-              (select-and-run) because the user described the
-              flow explicitly that way: pick the tool, then use
-              the button you just configured. */}
+              cleanup happens by clicking the main slot afterwards. */}
+          {!canUseMarkdownEditor ? (
+            <HeaderBtn
+              icon="lock"
+              title="마크다운 정리 도구는 Pro 전용 — 클릭하면 안내가 뜹니다"
+              onClick={() => onUpgradePrompt?.()}
+            />
+          ) : (
           <div
             data-tour-id="memo-editor-toolbar"
             style={{ position: 'relative', display: 'flex' }}
@@ -1053,6 +1087,7 @@ export function MemoEditor({
               </div>
             )}
           </div>
+          )}
           <HeaderBtn
             icon={pinned ? 'lock' : 'lock_open'}
             title={pinned ? '보호 해제 (Ctrl+P)' : '보호 · 자동 만료 안 됨 (Ctrl+P)'}
@@ -1076,9 +1111,20 @@ export function MemoEditor({
             }}
           >
             <HeaderBtn
-              icon={activeSaveTool.icon}
-              title={`저장 — ${activeSaveTool.label}\n클릭: 즉시 실행 · 호버: 다른 형식 선택`}
-              onClick={() => runSaveTool()}
+              icon={activeSaveTool.id === 'md' && !canUseMdExport ? 'lock' : activeSaveTool.icon}
+              title={
+                activeSaveTool.id === 'md' && !canUseMdExport
+                  ? '.md 저장은 Pro 전용 — 클릭하면 안내가 뜹니다. 호버로 .txt 선택 가능.'
+                  : `저장 — ${activeSaveTool.label}\n클릭: 즉시 실행 · 호버: 다른 형식 선택`
+              }
+              onClick={() => {
+                // 활성 도구가 .md 인데 Free 면 paywall 로 우회.
+                if (activeSaveTool.id === 'md' && !canUseMdExport) {
+                  onUpgradePrompt?.('md-export');
+                  return;
+                }
+                runSaveTool();
+              }}
             />
             {saveMenuOpen && (
               <div
@@ -1113,12 +1159,22 @@ export function MemoEditor({
                 </div>
                 {saveTools.map(tool => {
                   const isActive = tool.id === lastSaveTool;
+                  // .md option = Pro 전용. Free 사용자는 클릭 시 paywall.
+                  const isLocked = tool.id === 'md' && !canUseMdExport;
                   return (
                     <button
                       key={tool.id}
                       type="button"
                       role="menuitem"
-                      onClick={(e) => { e.stopPropagation(); armAndRunSaveTool(tool.id); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isLocked) {
+                          onUpgradePrompt?.('md-export');
+                          return;
+                        }
+                        armAndRunSaveTool(tool.id);
+                      }}
+                      title={isLocked ? '.md 파일로 저장은 Pro 전용 — Pro 로 업그레이드' : undefined}
                       style={{
                         display: 'flex', alignItems: 'flex-start', gap: 10,
                         padding: '8px 10px',
@@ -1126,7 +1182,8 @@ export function MemoEditor({
                         border: 'none', borderRadius: 7,
                         cursor: 'pointer', fontFamily: 'inherit',
                         textAlign: 'left',
-                        transition: 'background 0.1s',
+                        opacity: isLocked ? 0.6 : 1,
+                        transition: 'background 0.1s, opacity 0.1s',
                       }}
                       onMouseEnter={e => {
                         if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-hover)';
@@ -1135,16 +1192,17 @@ export function MemoEditor({
                         if (!isActive) (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
                       }}
                     >
-                      <Icon name={tool.icon} size={16} color={isActive ? 'var(--accent)' : 'var(--text-muted)'} style={{ marginTop: 1, flexShrink: 0 }} />
+                      <Icon name={isLocked ? 'lock' : tool.icon} size={16} color={isLocked ? 'var(--text-dim)' : isActive ? 'var(--accent)' : 'var(--text-muted)'} style={{ marginTop: 1, flexShrink: 0 }} />
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
                         <span style={{ fontSize: 12, fontWeight: 600, color: isActive ? 'var(--accent)' : 'var(--text-color)' }}>
                           {tool.label}
+                          {isLocked && <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--accent)', fontWeight: 700 }}>PRO</span>}
                         </span>
                         <span style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.4 }}>
-                          {tool.hint}
+                          {isLocked ? 'Pro 로 업그레이드해서 사용' : tool.hint}
                         </span>
                       </div>
-                      {isActive && (
+                      {isActive && !isLocked && (
                         <Icon name="check" size={13} color="var(--accent)" style={{ marginLeft: 'auto', flexShrink: 0 }} />
                       )}
                     </button>

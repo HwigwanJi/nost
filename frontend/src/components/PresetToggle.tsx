@@ -22,9 +22,14 @@ interface Props {
   activeId: PresetId;
   onSelect: (id: PresetId) => void;
   onRename: (id: PresetId, label: string) => void;
+  /** Preset ids that are visually locked (Free tier without Pro). The pill
+   *  still calls onSelect — the parent's quota gate opens the paywall —
+   *  but the lock icon + dimmed style gives the user a 0-click signal
+   *  about what's gated. */
+  lockedIds?: PresetId[];
 }
 
-export function PresetToggle({ presets, activeId, onSelect, onRename }: Props) {
+export function PresetToggle({ presets, activeId, onSelect, onRename, lockedIds = [] }: Props) {
   // When user double-clicks a pill we swap it for an inline input.
   const [renamingId, setRenamingId] = useState<PresetId | null>(null);
   const [draft, setDraft] = useState('');
@@ -80,15 +85,27 @@ export function PresetToggle({ presets, activeId, onSelect, onRename }: Props) {
       {presets.map(p => {
         const isActive = p.id === activeId;
         const isRenaming = renamingId === p.id;
-        // Show only the id inline; the label is exposed on hover + in
-        // rename mode. Keeps the pill compact in the tight title bar.
+        const isLocked = lockedIds.includes(p.id);
+        const pillStyle = pill(isActive);
+        // Lock visuals: dimmer text + slight opacity. Click still routes
+        // through parent's quotaChecks → paywall.
+        if (isLocked && !isActive) {
+          pillStyle.color = 'var(--text-dim)';
+          pillStyle.opacity = 0.62;
+        }
+        const hoverTitle = isLocked
+          ? `${p.label} — Pro 전용 (클릭하면 안내가 뜹니다)`
+          : `${p.label} (더블클릭하여 이름 변경)`;
         return (
           <button
             key={p.id}
             onClick={() => { if (!isRenaming) onSelect(p.id); }}
-            onDoubleClick={() => { setRenamingId(p.id); setDraft(p.label); }}
-            style={pill(isActive)}
-            title={`${p.label} (더블클릭하여 이름 변경)`}
+            onDoubleClick={() => {
+              if (isLocked) return;  // 잠긴 프리셋은 rename 도 막음
+              setRenamingId(p.id); setDraft(p.label);
+            }}
+            style={pillStyle}
+            title={hoverTitle}
             onMouseEnter={e => { if (!isActive && !isRenaming) e.currentTarget.style.background = 'var(--surface-hover)'; }}
             onMouseLeave={e => { if (!isActive && !isRenaming) e.currentTarget.style.background = 'transparent'; }}
           >
@@ -125,6 +142,9 @@ export function PresetToggle({ presets, activeId, onSelect, onRename }: Props) {
                 <span>{p.id}</span>
                 {isActive && (
                   <Icon name="circle" size={6} color="rgba(255,255,255,0.85)" style={{ marginLeft: -1 }} />
+                )}
+                {isLocked && !isActive && (
+                  <Icon name="lock" size={9} color="var(--text-dim)" style={{ marginLeft: -1 }} />
                 )}
               </>
             )}

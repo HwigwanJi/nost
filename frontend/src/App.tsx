@@ -139,7 +139,6 @@ import {
   arrayMove,
   useSortable,
 } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 
 // ── Sortable space wrapper (Phase 3: pair-based layout) ─────────────────────
 // Layout invariant: every row is either a SOLO space (full width) or a PAIR
@@ -172,7 +171,19 @@ function SortableSpace({
   currentSplitRatio?: number;               // current ratio [0.25, 0.75] for the pair; only used when pairPartnerId set
   onSplitRatioChange?: (ratio: number) => void;
 }) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transition, isDragging } = useSortable({ id });
+  // Intentionally ignore `transform` from useSortable. With the pair
+  // model (rows of 1 or 2 spaces with custom grid templates), dnd-kit's
+  // auto-shift transforms compute against a flat sortable index and
+  // ignore row membership — peers visually slide into the wrong row,
+  // sometimes producing a 3-column squash during the drag.
+  //
+  // Policy: peers stay put during the drag. The user gets predictable
+  // feedback from (a) the floating DragOverlay at the cursor, and (b)
+  // the explicit drop indicator (left/right/center line on the hovered
+  // target — see dropEdge below). Both signals are accurate; the
+  // auto-shift was misleading anyway because the real drop outcome
+  // depends on edge intent, not the flat reorder dnd-kit assumes.
   const elRef = useRef<HTMLDivElement | null>(null);
   const [resizing, setResizing] = useState(false);
 
@@ -241,17 +252,12 @@ function SortableSpace({
       ref={combinedNodeRef}
       data-space-id={id}
       style={{
-        // While THIS space is the active drag source, the visible
-        // cursor follower is provided by <DragOverlay /> (App.tsx,
-        // bottom of DndContext). Applying useSortable's translate
-        // transform on top of the overlay made the original drift
-        // diagonally underneath the ghost — the "우스꽝스러운 프리뷰"
-        // bug. Strip the transform when isDragging; the placeholder
-        // stays put so the layout doesn't reflow until drop. Other
-        // sortable peers still receive their reflow transform via
-        // the `transform` value (this only zeroes out for the active
-        // dragged element).
-        transform: isDragging ? 'none' : CSS.Transform.toString(transform),
+        // Always 'none' (see comment above the useSortable destructure
+        // for the rationale). Drag source stays put with opacity 0.35;
+        // DragOverlay handles the cursor-follower preview; drop
+        // indicators (left/right/center bars) communicate where the
+        // drop will land. Peers are NOT auto-shifted.
+        transform: 'none',
         transition: resizing ? undefined : transition,
         opacity: isDragging ? 0.35 : 1,
         height: '100%',
@@ -1026,6 +1032,29 @@ export default function App() {
   const { toasts, showToast, dismissToast, pauseToast, resumeToast } = useToastQueue();
   // Wire forward-declared ref now that showToast exists.
   showToastRef.current = showToast;
+
+  // Downgrade toast: Pro → Free 전환을 한 번만 안내.
+  // 트리거 — 같은 세션 내에서 license expired / canceled, 또는 BETA flag flip
+  // 후 entitlement.tier 가 'pro' → 'free' 로 바뀌는 순간. 첫 mount
+  // (prev undefined) 는 의도적으로 무시 — 새 부팅 때마다 토스트 띄우면
+  // 시끄러움. 데이터는 그대로 살아있다는 점도 명시해서 사용자 불안 줄임.
+  const prevTierRef = useRef<typeof entitlement.tier | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevTierRef.current;
+    prevTierRef.current = entitlement.tier;
+    if (prev === undefined) return;
+    if (prev === 'pro' && entitlement.tier === 'free') {
+      const reasonLabel =
+        entitlement.notProReason === 'trial-expired' ? '체험 기간이 만료됐어요' :
+        entitlement.notProReason === 'subscription-expired' ? 'Pro 결제 기간이 끝났어요' :
+        entitlement.notProReason === 'canceled' ? 'Pro 구독이 해지됐어요' :
+        'Pro 권한이 해제됐어요';
+      showToast(`${reasonLabel} · 기존 카드는 그대로 살아있습니다. 추가 시 한도 안내가 떠요.`, {
+        duration: 6000,
+        actions: [{ label: '업그레이드', icon: 'auto_awesome', onClick: () => openPaywall('generic') }],
+      });
+    }
+  }, [entitlement.tier, entitlement.notProReason, showToast, openPaywall]);
 
   // Phase 2 sync — manual model (user-explicit, 2026-05-14). On
   // signed-in we just register the read/apply callbacks with the sync
@@ -3941,6 +3970,7 @@ export default function App() {
             <PresetToggle
               presets={store.presets}
               activeId={store.activePresetId}
+              lockedIds={(['1','2','3'] as const).filter(id => !entitlement.canUsePreset(id))}
               onSelect={id => {
                 if (!quotaChecks.preset(id)) return;
                 const from = store.activePresetId;
@@ -4046,23 +4076,46 @@ export default function App() {
                   onAction={handleNotificationAction}
                 />
               </div>
-              {[
-                { icon: 'add_circle', title: '새 스페이스', fn: () => { if (quotaChecks.space()) addSpaceWithTrigger(); }, dim: true,  tourId: 'header-add-space' },
-                { icon: 'settings',   title: '환경설정',   fn: () => setDialog('settings'),            dim: true,  tourId: 'header-settings' },
-                { icon: 'close',      title: '닫기(Esc)',  fn: () => electronAPI.hideApp(),            dim: false, tourId: undefined },
-              ].map(btn => (
-                <button
-                  key={btn.icon}
-                  onClick={btn.fn}
-                  title={btn.title}
-                  className="action-icon-btn"
-                  style={{ width: 28, height: 28 }}
-                  {...(btn.dim ? { 'data-mode-dim': 'true' } : {})}
-                  {...(btn.tourId ? { 'data-tour-id': btn.tourId } : {})}
-                >
-                  <Icon name={btn.icon} size={17} />
-                </button>
-              ))}
+              {(() => {
+                // Free-tier 한도 nudge: 스페이스 개수가 80% 이상이면 색 변화,
+                // 도달하면 자물쇠 아이콘 + tooltip 으로 안내.
+                const spaceCount = data.spaces.length;
+                const spaceMax = entitlement.limits.spaces;
+                const spaceFull = Number.isFinite(spaceMax) && spaceCount >= spaceMax;
+                const spaceNear = Number.isFinite(spaceMax) && spaceCount / spaceMax >= 0.75;
+                const spaceCountLabel = Number.isFinite(spaceMax) ? ` (${spaceCount}/${spaceMax})` : '';
+                const buttons = [
+                  {
+                    icon: spaceFull ? 'lock' : 'add_circle',
+                    title: spaceFull
+                      ? `한도 도달 — Pro 로 업그레이드해서 추가${spaceCountLabel}`
+                      : `새 스페이스${spaceCountLabel}`,
+                    fn: () => { if (quotaChecks.space()) addSpaceWithTrigger(); },
+                    dim: true, tourId: 'header-add-space',
+                    nearLimit: spaceNear, atLimit: spaceFull,
+                  },
+                  { icon: 'settings', title: '환경설정', fn: () => setDialog('settings'), dim: true,  tourId: 'header-settings', nearLimit: false, atLimit: false },
+                  { icon: 'close',    title: '닫기(Esc)', fn: () => electronAPI.hideApp(), dim: false, tourId: undefined,         nearLimit: false, atLimit: false },
+                ];
+                return buttons.map(btn => (
+                  <button
+                    key={btn.icon}
+                    onClick={btn.fn}
+                    title={btn.title}
+                    className="action-icon-btn"
+                    style={{
+                      width: 28,
+                      height: 28,
+                      ...(btn.atLimit  ? { color: 'var(--accent)', opacity: 0.85 } : {}),
+                      ...(btn.nearLimit && !btn.atLimit ? { color: 'var(--accent)' } : {}),
+                    }}
+                    {...(btn.dim ? { 'data-mode-dim': 'true' } : {})}
+                    {...(btn.tourId ? { 'data-tour-id': btn.tourId } : {})}
+                  >
+                    <Icon name={btn.icon} size={17} />
+                  </button>
+                ));
+              })()}
             </div>
           </div>
 
@@ -4343,6 +4396,21 @@ export default function App() {
                     // CSS grid with 1 column (solo) or two fractional columns (pair).
                     const rows = computeRows(filteredSpaces);
 
+                    // Free 한도 nudge: 활성 프리셋의 모든 스페이스를 통틀어
+                    // 카드 총합을 한 번 계산하고, 각 SpaceAccordion 에 동일
+                    // limit-state 를 전달. limit 은 preset-wide 라서 어느 스페이스
+                    // 의 +추가 버튼이든 같은 시각 상태를 보여야 함.
+                    const totalCards = (data.spaces ?? []).reduce(
+                      (n, s) => n + (s.items ?? []).length, 0,
+                    );
+                    const cardMax = entitlement.limits.totalCards;
+                    const cardLimitLabel = Number.isFinite(cardMax) ? `${totalCards} / ${cardMax}` : undefined;
+                    const cardLimitState: 'ok' | 'near' | 'full' = !Number.isFinite(cardMax)
+                      ? 'ok'
+                      : totalCards >= cardMax ? 'full'
+                      : totalCards / cardMax >= 0.75 ? 'near'
+                      : 'ok';
+
                     const renderSpace = (space: Space, pairPartnerId?: string, currentSplitRatio?: number) => (
                       <SortableSpace
                         key={space.id}
@@ -4357,6 +4425,8 @@ export default function App() {
                           <SpaceAccordion
                             space={space}
                             headerDragActivator={dragActivator}
+                            cardLimitState={cardLimitState}
+                            cardLimitLabel={cardLimitLabel}
                             onRename={name => {
                               const prevName = space.name;
                               if (prevName === name) return;
@@ -4734,6 +4804,13 @@ export default function App() {
             pinned={isPinned}
             exportFolder={exportFolder}
             showToast={showToast}
+            canUseMarkdownEditor={entitlement.canUseMemoMarkdownEditor()}
+            canUseMdExport={entitlement.canUseMemoMdExport()}
+            onUpgradePrompt={(reason) => {
+              if (reason === 'md-export') openPaywall('memo-md-export-lock');
+              else if (reason === 'folder-sync') openPaywall('memo-folder-sync-lock');
+              else openPaywall('memo-markdown-lock');
+            }}
             onChangeBody={(body) => {
               // updateMemoBody only writes to the active preset. If the
               // user navigated away from the source preset mid-edit,
@@ -4821,12 +4898,14 @@ export default function App() {
         allowedTypes={
           editItem?.id ? undefined :
           prefilledItem?.type === 'url' || prefilledItem?.type === 'browser' ? ['url', 'browser'] :
-          prefilledItem?.type === 'folder' ? ['folder'] :
+          prefilledItem?.type === 'folder' ? ['folder', 'doc', 'app'] :
+          prefilledItem?.type === 'doc' ? ['doc', 'folder', 'app'] :
           prefilledItem?.type === 'app' || prefilledItem?.type === 'cmd' ? ['app', 'cmd'] :
           prefilledItem?.type === 'window' ? ['window'] :
           prefilledItem?.type === 'text' ? ['text'] :
           undefined
         }
+        docExtensions={data.settings.documentExtensions}
         onSave={handleSaveItem}
         onRequestAdvanced={handleRequestAdvanced}
         startAdvanced={itemDialogStartAdvanced}

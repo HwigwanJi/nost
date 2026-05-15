@@ -37,6 +37,9 @@ export interface Entitlement {
     widgets: number;
     presets: number;
     containerEnabled: boolean;
+    memoMarkdownEditor: boolean;
+    memoMdExport: boolean;
+    memoFolderSync: boolean;
   };
   /** Reason the user is not Pro (for UX copy). Empty string when Pro. */
   notProReason: '' | 'never-signed-in' | 'trial-expired' | 'subscription-expired' | 'canceled';
@@ -50,6 +53,10 @@ export interface Entitlement {
   canAddWidget:        (currentCount: number) => boolean;
   canUsePreset:        (presetId: '1' | '2' | '3') => boolean;
   canUseContainer:     () => boolean;
+  /** Memo Pro features. UI surfaces a lock indicator + opens paywall when false. */
+  canUseMemoMarkdownEditor: () => boolean;
+  canUseMemoMdExport:       () => boolean;
+  canUseMemoFolderSync:     () => boolean;
 }
 
 const PRO_LIMITS = {
@@ -61,6 +68,9 @@ const PRO_LIMITS = {
   widgets: Infinity,
   presets: 3,
   containerEnabled: true,
+  memoMarkdownEditor: true,
+  memoMdExport: true,
+  memoFolderSync: true,
 } as const;
 
 /**
@@ -97,15 +107,19 @@ function resolveTier(license: License | undefined, now: number): {
 }
 
 /**
- * BETA OVERRIDE — flip every user to Pro until billing infrastructure
- * is in place. The license/entitlement plumbing stays intact (so code
- * paths that gate features keep working as designed) but the resolved
- * tier is forced regardless of what the license record actually says.
+ * BETA OVERRIDE — when true, every user is treated as Pro regardless of
+ * license state. Used during early beta when billing wasn't ready yet.
  *
- * Remove this flag once Toss + Supabase backend lands and we want
- * paying-vs-free to differentiate again. Search for BETA_FORCE_PRO.
+ * Flipped OFF (2026-05-15) once the founder confirmed Free/Pro policy:
+ *   - Free: presets 1, spaces 4/preset, cards 16/preset, nodes 1, decks 1
+ *   - Pro:  unlimited everything + container slots + memo markdown stack
+ *           + cloud sync (server-gated)
+ *
+ * Real Pro entitlement now flows through useLicenseSync ← server verify.
+ * Keep this constant so a future emergency rollback (e.g. payment outage)
+ * can be a one-line flip back to true.
  */
-const BETA_FORCE_PRO = true;
+const BETA_FORCE_PRO = false;
 
 export function useEntitlement(data: AppData): Entitlement {
   return useMemo(() => {
@@ -142,6 +156,9 @@ export function useEntitlement(data: AppData): Entitlement {
       // Preset 1 is always free; 2/3 need pro tier.
       canUsePreset: (id) => id === '1' ? true : isPro,
       canUseContainer: () => limits.containerEnabled,
+      canUseMemoMarkdownEditor: () => limits.memoMarkdownEditor,
+      canUseMemoMdExport:       () => limits.memoMdExport,
+      canUseMemoFolderSync:     () => limits.memoFolderSync,
     };
   }, [data.settings.license]);
 }

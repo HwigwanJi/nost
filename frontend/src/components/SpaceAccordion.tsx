@@ -95,6 +95,15 @@ interface SpaceAccordionProps {
   fileDragTarget?: boolean;     // this specific space is the current target
   onFileDragEnter?: () => void;
   onFileDragLeave?: () => void;
+  /** Global card-limit pressure for the active preset. The +추가 split-button
+   *  shows a 0-click hint:
+   *    - 'near' (>= 75% full): accent color on the icon
+   *    - 'full' (limit reached): lock icon + tooltip explaining
+   *  Parent (App.tsx) computes once across all spaces and passes the same
+   *  value to every SpaceAccordion, since the limit is preset-wide. */
+  cardLimitState?: 'ok' | 'near' | 'full';
+  /** Display string like "14 / 16" used in the tooltip when near/full. */
+  cardLimitLabel?: string;
 }
 
 const SPACE_COLORS = [
@@ -157,6 +166,8 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
   fileDragTarget,
   onFileDragEnter,
   onFileDragLeave,
+  cardLimitState = 'ok',
+  cardLimitLabel,
   } = props;
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isRenaming, setIsRenaming] = useState(false);
@@ -529,24 +540,41 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
                 />
               ))}
 
-              {/* Add / Scan split button */}
+              {/* Add / Scan split button — Free 한도 nudge 적용:
+                  near (75%+) → accent 색 변화로 사용자 인지
+                  full (도달) → 자물쇠 아이콘 + tooltip 안내 (클릭 시 paywall) */}
               <div
                 className="flex rounded-xl overflow-hidden"
                 style={{
-                  border: '1.5px dashed var(--border-rgba)',
+                  border: cardLimitState === 'full'
+                    ? '1.5px dashed var(--accent)'
+                    : '1.5px dashed var(--border-rgba)',
                   minHeight: 72,
+                  opacity: cardLimitState === 'full' ? 0.85 : 1,
+                  transition: 'border-color 0.2s, opacity 0.2s',
                 }}
               >
                 <button
                   data-tour-id="add-card-button"
                   onClick={onQuickAdd}
+                  title={
+                    cardLimitState === 'full'
+                      ? `카드 한도 도달${cardLimitLabel ? ` (${cardLimitLabel})` : ''} — Pro 로 업그레이드`
+                      : cardLimitState === 'near'
+                      ? `카드 추가${cardLimitLabel ? ` — 곧 한도 (${cardLimitLabel})` : ''}`
+                      : '카드 추가'
+                  }
                   className="flex-1 flex flex-col items-center justify-center gap-1 transition-colors text-[11px] cursor-pointer"
-                  style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)' }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: cardLimitState === 'ok' ? 'var(--text-dim)' : 'var(--accent)',
+                  }}
                   onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface)')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                 >
-                  <Icon name="add" size={18} />
-                  추가
+                  <Icon name={cardLimitState === 'full' ? 'lock' : 'add'} size={18} />
+                  {cardLimitState === 'full' ? '한도 도달' : '추가'}
                 </button>
                 <DropdownMenu>
                   <DropdownMenuTrigger
