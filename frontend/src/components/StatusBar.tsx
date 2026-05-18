@@ -138,17 +138,14 @@ export function StatusBar({ sizePct, onSizePctChange }: Props) {
       <div style={{ flex: 1 }} />
 
       {/* ── Window-size controls (right) — numeric input ─────────────
-          Slider was replaced (v1.3.44) — the continuous slider drag
-          fired setBounds at every tick, and no anchor combo (center /
-          bottom-Y / bottom-right + animate flag tuning) made it feel
-          stable. The user reported "꾸우우우웅 / 전광석화" depending on
-          which knob we tried. A typed % input commits on Enter / blur
-          which is one-and-done — no resize churn, no anchor edge cases.
-          +/− still nudge by 5%; the % chip opens the preset dropdown. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-        <button onClick={() => commit(sizePct - 5)} title="5% 축소" style={zoomBtnStyle}>−</button>
+          Single outer border wraps − / [수치] / + so the group reads
+          as one segmented control (calculator-style). Previous design
+          had three separate borders side-by-side which created the
+          "이중박스" feel — outer chip frame + inner input frame. */}
+      <div style={groupStyle}>
+        <button onClick={() => commit(sizePct - 5)} title="5% 축소" style={{ ...segBtnStyle, borderLeft: 'none' }}>−</button>
         <PctInput value={sizePct} onCommit={(p) => commit(p)} />
-        <button onClick={() => commit(sizePct + 5)} title="5% 확대" style={zoomBtnStyle}>+</button>
+        <button onClick={() => commit(sizePct + 5)} title="5% 확대" style={segBtnStyle}>+</button>
 
         {/* Click % label → preset dropdown — same SSOT as `/N` slash. */}
         <DropdownMenu>
@@ -224,12 +221,17 @@ function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) =>
       style={{
         display: 'inline-flex',
         alignItems: 'center',
-        height: 20,
-        padding: '0 6px',
-        borderRadius: 4,
-        border: `1px solid ${focused ? 'var(--accent)' : 'var(--border-rgba)'}`,
-        background: 'var(--surface)',
-        transition: 'border-color 120ms ease',
+        height: '100%',
+        padding: '0 7px',
+        // No outer border / background — the parent groupStyle owns
+        // those. Focused state surfaces as a subtle inset accent line
+        // along the bottom instead of a full second border (which was
+        // the "이중박스" source).
+        border: 'none',
+        borderLeft: '1px solid var(--border-rgba)',
+        background: 'transparent',
+        boxShadow: focused ? 'inset 0 -1px 0 0 var(--accent)' : 'none',
+        transition: 'box-shadow 120ms ease',
       }}
     >
       <input
@@ -283,11 +285,28 @@ function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) =>
   );
 }
 
-const zoomBtnStyle: React.CSSProperties = {
-  width: 20, height: 20,
-  borderRadius: 4,
+// Outer wrapper for the size-control group ([−] [수치] [+]). Single
+// border keeps it visually one chip; inner items are borderless and
+// separated by 1px dividers.
+const groupStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'stretch',
+  height: 22,
   border: '1px solid var(--border-rgba)',
+  borderRadius: 5,
   background: 'var(--surface)',
+  overflow: 'hidden',
+};
+
+// Segmented button inside the group — borderless, with a divider on
+// its inner side (− has right divider, + has left). Dividers are
+// produced by group flex-gap of 1px on a tinted background.
+const segBtnStyle: React.CSSProperties = {
+  width: 22, height: '100%',
+  borderRadius: 0,
+  border: 'none',
+  borderLeft: '1px solid var(--border-rgba)',
+  background: 'transparent',
   color: 'var(--text-color)',
   cursor: 'pointer',
   fontSize: 12,
