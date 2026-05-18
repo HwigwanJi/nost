@@ -2000,21 +2000,21 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog, activeMode, tileOverlayGroup, nodeEditMode, nodeBuilding, editingNodeGroupId, deckBuilding, cmdOpen]);
 
-  // ── Tab key cycles through all 3 presets ──────────────────────
+  // ── Tab key cycles through accessible presets ─────────────────
   //
-  // Press Tab anywhere (outside of inputs / modals) to advance to the
-  // next preset. ALL 3 presets are in the cycle regardless of
-  // entitlement — landing on a Pro-locked preset opens the paywall
-  // with `preset-lock` context (same as clicking the locked toggle).
+  // Cycle ONLY through presets the user has access to (Free: 1↔2 ; Pro:
+  // 1→2→3→1). Locked presets are skipped silently — discovery happens
+  // through the explicit preset toggle click which opens the paywall.
   //
-  // v1.3.44: restored from "silent skip" (introduced in v1.3.41 with
-  // Pro gating). User feedback: the silent skip felt like the feature
-  // had disappeared — Tab is muscle memory and now only cycles 2 of 3
-  // presets on Free, which reads as "broken" not "gated". Better UX
-  // is full cycle + paywall when reaching the locked one, mirroring
-  // the explicit preset toggle click. The paywall close action
-  // returns the user to their previous preset, so accidental
-  // Tab-into-paywall isn't disruptive.
+  // v1.3.44 fix: previously had an early `if (accessible.length <= 1)
+  // return` WITHOUT preventDefault, which allowed the default Tab focus
+  // traversal to steal focus to whatever DOM element was next — and
+  // since most clickable elements in the launcher catch focus, Tab
+  // would visibly "do something else" instead of cycling. Result: even
+  // on Free (where accessible = ['1','2']) the user perceived "Tab is
+  // broken" because the focus jump was the dominant visible effect.
+  // We now ALWAYS preventDefault when there's any accessible preset
+  // and we're in the cycle gate — Tab no longer wanders the DOM.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
@@ -2033,22 +2033,29 @@ export default function App() {
       if (verdict !== true) return;
 
       const order: Array<'1' | '2' | '3'> = ['1', '2', '3'];
+      const accessible = order.filter(id => entitlement.canUsePreset(id));
+      if (accessible.length <= 1) return;
+
+      // Always consume Tab once we've decided to cycle. Without this,
+      // the browser's focus traversal runs alongside our cycle and
+      // the visible result feels broken even when the active preset
+      // did change.
       e.preventDefault();
-      const idx = order.indexOf(store.activePresetId as '1' | '2' | '3');
-      const next = order[(idx + 1) % order.length];
-      if (!entitlement.canUsePreset(next)) {
-        // Locked preset — surface paywall with the same context the
-        // explicit toggle click uses. Don't switch the active preset.
-        openPaywall('preset-lock');
-        return;
-      }
+
+      // indexOf may return -1 if activePresetId is currently a locked
+      // preset (e.g. user dropped from Pro to Free while sitting on
+      // preset 3). Treat -1 as "before the first" so the cycle lands
+      // on accessible[0] next — no NaN math, no off-by-one.
+      const curIdx = accessible.indexOf(store.activePresetId as '1' | '2' | '3');
+      const nextIdx = curIdx < 0 ? 0 : (curIdx + 1) % accessible.length;
+      const next = accessible[nextIdx];
       store.setActivePreset(next);
       tutorialTriggers.fire('preset-switched', { from: store.activePresetId, to: next, via: 'tab' });
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cmdOpen, entitlement, store, activeMode, nodeEditMode, deckBuilding, dialog, tileOverlayGroup, editingMemoId, openPaywall]);
+  }, [cmdOpen, entitlement, store, activeMode, nodeEditMode, deckBuilding, dialog, tileOverlayGroup, editingMemoId]);
 
   // ── Dialog helpers ────────────────────────────────────────
   const openEditItem = useCallback((item: LauncherItem, spaceId: string) => {
