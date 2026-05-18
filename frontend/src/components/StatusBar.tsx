@@ -259,6 +259,15 @@ function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) =>
           background: 'transparent',
           border: 'none',
           outline: 'none',
+          // Chromium ships <input type="text"> with a default inset
+          // shadow + native frame that survives border:none / outline:
+          // none. Force appearance:none on every vendor branch to
+          // collapse it — without this the visible "박스 겹쳐 보이는"
+          // artifact appears around the digits.
+          appearance: 'none',
+          WebkitAppearance: 'none' as never,
+          MozAppearance: 'textfield' as never,
+          boxShadow: 'none',
           color: 'var(--text-color)',
           fontFamily: 'monospace',
           fontVariantNumeric: 'tabular-nums',
@@ -266,7 +275,7 @@ function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) =>
           fontWeight: 600,
           textAlign: 'right',
           padding: 0,
-          MozAppearance: 'textfield' as never,
+          margin: 0,
         }}
       />
       <span style={{ color: 'var(--text-muted)', fontSize: 10, marginLeft: 2 }}>%</span>
