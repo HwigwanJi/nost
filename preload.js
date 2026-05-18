@@ -239,4 +239,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  Resolves with the hex the user clicked, or { success:false, reason }
    *  on cancel / busy / failure. The launcher is always restored. */
   pickColorFromScreen: () => ipcRenderer.invoke('eyedropper-pick'),
+
+  // ── Satellite ItemDialog (card add/edit) ────────────────────────
+  // The card-edit dialog runs in its own BrowserWindow so it can extend
+  // past the main launcher's rectangle (pair-split / narrow-window
+  // scenarios were getting it clipped). See plans/satellite-dialogs.md.
+  /** Open the satellite item-edit dialog with the given initial state.
+   *  Payload mirrors the props the inline ItemDialog used to take:
+   *  spaces, presets, editItem, defaultSpaceId, allowedTypes,
+   *  docExtensions, monitorCount, currentPresetId, startAdvanced,
+   *  accentColor. */
+  openItemDialog: (payload) => ipcRenderer.send('open-item-dialog', payload),
+  /** Subscribe to action events from the satellite (save / request-
+   *  advanced / pick-on-screen / toast). App.tsx wires these to the
+   *  existing handlers it used to receive as props. */
+  onItemDialogAction: (cb) => {
+    const handler = (_e, action) => cb(action);
+    ipcRenderer.on('item-dialog-action', handler);
+    return () => ipcRenderer.removeListener('item-dialog-action', handler);
+  },
+  /** Fires when the satellite window is destroyed (user closed it).
+   *  App.tsx uses this to reset its dialog state. */
+  onItemDialogClosed: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('item-dialog-closed', handler);
+    return () => ipcRenderer.removeListener('item-dialog-closed', handler);
+  },
 });

@@ -212,7 +212,27 @@ export interface ElectronAPI {
     Promise<{ success: boolean; filePath?: string; reason?: string }>;
   openMemoFolder: (customFolder?: string) => Promise<{ success: boolean; filePath?: string; reason?: string }>;
   getMemoDefaultFolder: () => Promise<string>;
+
+  // ── Satellite ItemDialog (card add/edit) ────────────────────────
+  /** Open the satellite card-edit dialog in its own BrowserWindow.
+   *  See plans/satellite-dialogs.md. Payload mirrors the props the
+   *  inline ItemDialog used to take. */
+  openItemDialog: (payload: unknown) => void;
+  /** Subscribe to action events (save / request-advanced / pick-on-
+   *  screen / toast) emitted by the satellite. Returns unsubscribe. */
+  onItemDialogAction: (cb: (action: ItemDialogAction) => void) => () => void;
+  /** Fires when the satellite window is destroyed. App.tsx uses this
+   *  to reset its local dialog state. Returns unsubscribe. */
+  onItemDialogClosed: (cb: () => void) => () => void;
 }
+
+/** Action payloads emitted by the ItemDialog satellite. Each kind maps
+ *  1-to-1 to a callback prop the inline dialog used to receive. */
+export type ItemDialogAction =
+  | { kind: 'save'; spaceId: string; item: import('./types').LauncherItem | Omit<import('./types').LauncherItem, 'id'>; targetPresetId?: '1' | '2' | '3' }
+  | { kind: 'request-advanced'; spaceId: string }
+  | { kind: 'pick-on-screen'; item: Omit<import('./types').LauncherItem, 'id'> }
+  | { kind: 'toast'; msg: string; opts?: { duration?: number } };
 
 function noop(..._args: unknown[]) { /* dev-mode no-op */ }
 
@@ -318,4 +338,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   openMemoExternal: async () => ({ success: false, reason: 'dev-mode' }),
   openMemoFolder: async () => ({ success: false, reason: 'dev-mode' }),
   getMemoDefaultFolder: async () => '',
+  openItemDialog: noop,
+  onItemDialogAction: () => () => {},
+  onItemDialogClosed: () => () => {},
 };

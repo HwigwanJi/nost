@@ -20,7 +20,9 @@ import { WelcomeWizard } from './onboarding/WelcomeWizard';
 import { FirstCardCelebration, fireFirstCardCelebration } from './onboarding/FirstCardCelebration';
 import { ImportWizard } from './onboarding/ImportWizard';
 import type { Template } from './onboarding/templates';
-import { ItemDialog } from './components/ItemDialog';
+// ItemDialog is no longer rendered inline — it runs in a satellite
+// BrowserWindow. The component file is still imported by
+// src/item-dialog/ItemDialogSatellite.tsx (satellite renderer).
 import { DocCohortDialog } from './components/DocCohortDialog';
 import { ItemWizard } from './components/ItemWizard';
 import { MemoEditor } from './components/MemoEditor';
@@ -3663,6 +3665,83 @@ export default function App() {
     notifyExtensionRequiredAtUseSite,
   }), [showToast, launchAndPosition, handlePinModeClick, handleNodeModeClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace, notifyExtensionRequiredAtUseSite]);
 
+  // ── Satellite ItemDialog bridge (v1.3.44+) ──────────────────────
+  // The card add/edit dialog now lives in its own BrowserWindow (see
+  // plans/satellite-dialogs.md). App.tsx no longer renders it inline —
+  // instead, when dialog state transitions to 'item' we push a payload
+  // to main, which spawns / re-uses the satellite. User actions come
+  // back as IPC messages and dispatch to the same handlers the inline
+  // dialog used as callback props (handleSaveItem etc.).
+  useEffect(() => {
+    if (dialog !== 'item') return;
+    const allowedTypes: Array<LauncherItem['type']> | undefined =
+      editItem?.id ? undefined :
+      prefilledItem?.type === 'url' || prefilledItem?.type === 'browser' ? ['url', 'browser'] :
+      prefilledItem?.type === 'folder' ? ['folder', 'doc', 'app'] :
+      prefilledItem?.type === 'doc' ? ['doc', 'folder', 'app'] :
+      prefilledItem?.type === 'app' || prefilledItem?.type === 'cmd' ? ['app', 'cmd'] :
+      prefilledItem?.type === 'window' ? ['window'] :
+      prefilledItem?.type === 'text' ? ['text'] :
+      undefined;
+    electronAPI.openItemDialog({
+      spaces: data.spaces,
+      presets: store.presets,
+      currentPresetId: store.activePresetId,
+      editItem: editItem || prefilledItem,
+      defaultSpaceId: editSpaceId,
+      monitorCount,
+      allowedTypes,
+      docExtensions: data.settings.documentExtensions,
+      startAdvanced: itemDialogStartAdvanced,
+      accentColor: data.settings.accentColor,
+    });
+  }, [
+    dialog, editItem, prefilledItem, itemDialogStartAdvanced, editSpaceId,
+    monitorCount, data.spaces, store.presets, store.activePresetId,
+    data.settings.documentExtensions, data.settings.accentColor,
+  ]);
+
+  // Listen for actions from the satellite (save / request-advanced /
+  // pick-on-screen / toast). These map 1:1 to the callback props the
+  // inline dialog used to receive — wire them through the same handlers.
+  // NOTE: toast actions (the "꾸미기" button after save) are dropped in
+  // satellite mode because closure-onClick can't cross IPC. Documented
+  // limitation; tracked in plans/satellite-dialogs.md as Phase 2 polish.
+  useEffect(() => {
+    const off = electronAPI.onItemDialogAction((action) => {
+      switch (action.kind) {
+        case 'save':
+          handleSaveItem(action.spaceId, action.item, action.targetPresetId);
+          break;
+        case 'request-advanced':
+          handleRequestAdvanced(action.spaceId);
+          break;
+        case 'pick-on-screen':
+          handlePickOnScreen(action.item);
+          break;
+        case 'toast':
+          showToast(action.msg, action.opts);
+          break;
+      }
+    });
+    return off;
+  }, [handleSaveItem, handleRequestAdvanced, handlePickOnScreen, showToast]);
+
+  // Cleanup when the satellite window is destroyed (user closed it,
+  // OS killed it, ESC pressed inside, etc.). Mirrors the inline
+  // ItemDialog's onClose handler.
+  useEffect(() => {
+    const off = electronAPI.onItemDialogClosed(() => {
+      if (dialog !== 'item') return; // not our dialog state
+      tutorialTriggers.fire('item-dialog-cancelled');
+      setDialog('none');
+      setEditItem(null);
+      setPrefilledItem(null);
+      setItemDialogStartAdvanced(false);
+    });
+    return off;
+  }, [dialog]);
+
   return (
     <AppStateProvider value={appState}>
     <AppActionsProvider value={appActions}>
@@ -4870,49 +4949,9 @@ export default function App() {
       />
 
       {/* ── Dialogs ──────────────────────────────────────────── */}
-      <ItemDialog
-        // Re-mount when target item changes OR when we're re-opening
-        // the same item to land on the advanced section (the latter
-        // wouldn't otherwise re-trigger startAdvanced).
-        key={
-          (editItem?.id || (prefilledItem ? 'prefill-' + prefilledItem.value : 'none'))
-          + (itemDialogStartAdvanced ? ':adv' : '')
-        }
-        open={dialog === 'item'}
-        onClose={() => {
-          // Publish cancel event for tutorial nudge subscribers
-          // (Sprint 1: registry empty so no-op; Sprint 2 wires
-          // basics.cards into this signal).
-          tutorialTriggers.fire('item-dialog-cancelled');
-          setDialog('none'); setEditItem(null); setPrefilledItem(null);
-          setItemDialogStartAdvanced(false);
-        }}
-        spaces={data.spaces}
-        presets={store.presets}
-        currentPresetId={store.activePresetId}
-        editItem={editItem || (prefilledItem as LauncherItem)}
-        defaultSpaceId={editSpaceId}
-        monitorCount={monitorCount}
-        // Drag-drop / paste / scan prefills land here with a known type; narrow the Type
-        // dropdown to the plausible alternatives so the picker isn't full of nonsense.
-        // Editing an existing item (editItem.id present) keeps all types open.
-        allowedTypes={
-          editItem?.id ? undefined :
-          prefilledItem?.type === 'url' || prefilledItem?.type === 'browser' ? ['url', 'browser'] :
-          prefilledItem?.type === 'folder' ? ['folder', 'doc', 'app'] :
-          prefilledItem?.type === 'doc' ? ['doc', 'folder', 'app'] :
-          prefilledItem?.type === 'app' || prefilledItem?.type === 'cmd' ? ['app', 'cmd'] :
-          prefilledItem?.type === 'window' ? ['window'] :
-          prefilledItem?.type === 'text' ? ['text'] :
-          undefined
-        }
-        docExtensions={data.settings.documentExtensions}
-        onSave={handleSaveItem}
-        onRequestAdvanced={handleRequestAdvanced}
-        startAdvanced={itemDialogStartAdvanced}
-        onPickOnScreen={handlePickOnScreen}
-        showToast={showToast}
-      />
+      {/* ItemDialog is now hosted in a satellite BrowserWindow — see the
+          three useEffects above (trigger / action listener / closed
+          listener) and plans/satellite-dialogs.md. */}
       <ItemWizard
         open={dialog === 'quickadd'}
         mode="quick"

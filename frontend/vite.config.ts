@@ -38,6 +38,7 @@ export default defineConfig({
         floating:    path.resolve(__dirname, 'floating.html'),
         badges:      path.resolve(__dirname, 'badges.html'),
         dialogPopup: path.resolve(__dirname, 'dialog-popup.html'),
+        itemDialog:  path.resolve(__dirname, 'item-dialog.html'),
       },
     },
   },

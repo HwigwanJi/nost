@@ -1737,6 +1737,119 @@ function createDialogPopupWindow(rect, dialogTitle) {
   return dialogPopupWin;
 }
 
+// ── Satellite ItemDialog window (v1.3.44+) ───────────────────────
+//
+// The card-edit dialog (ItemDialog component) was getting clipped by
+// the main nost BrowserWindow's rectangle in pair-split / narrow-window
+// scenarios. Hosting it in its own satellite window lets it span the
+// whole monitor regardless of where the launcher is. Pattern mirrors
+// the dialog-popup companion (createDialogPopupWindow above) but with
+// focusable:true and centered anchoring instead of monitor-1/6 + drag.
+// See plans/satellite-dialogs.md.
+
+let itemDialogWin   = null;
+let itemDialogState = null;  // latest payload pushed from main app
+
+const ITEM_DIALOG_WIDTH  = 720;
+const ITEM_DIALOG_HEIGHT = 640;
+
+function destroyItemDialogWindow() {
+  if (itemDialogWin && !itemDialogWin.isDestroyed()) itemDialogWin.destroy();
+  itemDialogWin = null;
+  itemDialogState = null;
+}
+
+function pushItemDialogState() {
+  if (!itemDialogWin || itemDialogWin.isDestroyed() || !itemDialogState) return;
+  itemDialogWin.webContents.send('item-dialog-state', itemDialogState);
+}
+
+function createItemDialogWindow(initialState) {
+  // Single-instance: if already open, just push the new state (lets
+  // the user re-trigger edit on a different card without window churn).
+  if (itemDialogWin && !itemDialogWin.isDestroyed()) {
+    itemDialogState = initialState;
+    pushItemDialogState();
+    itemDialogWin.show();
+    itemDialogWin.focus();
+    return itemDialogWin;
+  }
+
+  itemDialogState = initialState;
+
+  // Anchor: centered on the monitor that currently hosts the main
+  // nost window. This decouples from mainWindow.getBounds (which can
+  // be off-screen if user pair-split it) — same DPI SSOT pattern as
+  // dialog-popup uses for placement.
+  const screen = getScreen();
+  let waX = 0, waY = 0, waW = 1920, waH = 1080;
+  try {
+    const mb = mainWindow?.getBounds?.();
+    const display = mb
+      ? screen.getDisplayMatching(mb)
+      : screen.getPrimaryDisplay();
+    waX = display.workArea.x;
+    waY = display.workArea.y;
+    waW = display.workArea.width;
+    waH = display.workArea.height;
+  } catch (_) { /* fall back to 1920x1080 */ }
+
+  const x = Math.round(waX + (waW - ITEM_DIALOG_WIDTH)  / 2);
+  const y = Math.round(waY + (waH - ITEM_DIALOG_HEIGHT) / 2);
+
+  // Per-window memory session — caches stay isolated from the main
+  // launcher's session (favicon downloads etc. still go through main
+  // process IPC so this matters mostly for cookie/localstorage hygiene).
+  const idSession = session.fromPartition('item-dialog-memory');
+
+  itemDialogWin = new BrowserWindow({
+    width: ITEM_DIALOG_WIDTH,
+    height: ITEM_DIALOG_HEIGHT,
+    x, y,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: true,
+    hasShadow: false,
+    show: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-item-dialog.js'),
+      contextIsolation: true,
+      session: idSession,
+    },
+  });
+  itemDialogWin.setAlwaysOnTop(true, 'screen-saver');
+
+  const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
+  if (rendererUrl) {
+    itemDialogWin.loadURL(`${rendererUrl}/item-dialog.html`);
+  } else {
+    itemDialogWin.loadFile(path.join(__dirname, 'frontend', 'dist', 'item-dialog.html'));
+  }
+
+  itemDialogWin.once('ready-to-show', () => {
+    pushItemDialogState();
+    itemDialogWin.show();
+    itemDialogWin.focus();
+  });
+
+  itemDialogWin.on('closed', () => {
+    itemDialogWin = null;
+    itemDialogState = null;
+    // Notify the main renderer so App.tsx can clean up state
+    // (setDialog('none'), clear editItem/prefilledItem, fire the
+    // tutorial 'item-dialog-cancelled' trigger).
+    try { mainWindow?.webContents?.send('item-dialog-closed'); } catch (_) {}
+  });
+
+  return itemDialogWin;
+}
+
 /**
  * Tick the dialog poll. Fired every DIALOG_POLL_MS. Decides whether to
  * spawn / reposition / destroy the popup based on what's currently in the
@@ -4329,6 +4442,43 @@ function registerIpcHandlers() {
       dialogPopupWin.setIgnoreMouseEvents(false);
     } else {
       dialogPopupWin.setIgnoreMouseEvents(true, { forward: true });
+    }
+  });
+
+  // ── Satellite ItemDialog IPC (v1.3.44+) ──────────────────────────
+  // open-item-dialog: main renderer (App.tsx) asks main to spawn the
+  //   satellite window with the given initial state (editItem, spaces,
+  //   presets, settings, …).
+  // item-dialog-request-state: race-fix — satellite renderer signals
+  //   mount complete, main pushes the cached state.
+  // item-dialog-action: satellite → main forward to mainWindow renderer
+  //   where the existing App.tsx handlers (handleSaveItem etc.) run.
+  ipcMain.on('open-item-dialog', (_e, payload) => {
+    createItemDialogWindow(payload || {});
+  });
+  ipcMain.on('item-dialog-request-state', () => {
+    pushItemDialogState();
+  });
+  ipcMain.on('item-dialog-action', (_e, action) => {
+    if (!action || typeof action !== 'object') return;
+    // 'close' is special — handled here directly so the satellite
+    // tears down even if the main renderer is unresponsive. The
+    // closed event then notifies mainWindow for state cleanup.
+    if (action.kind === 'close') {
+      destroyItemDialogWindow();
+      return;
+    }
+    // Other actions (save / request-advanced / pick-on-screen / toast)
+    // need App.tsx state — forward to the main renderer.
+    try { mainWindow?.webContents?.send('item-dialog-action', action); } catch (_) {}
+    // 'save' implicitly closes the satellite (the main app updates
+    // its store and the dialog is done). request-advanced re-opens
+    // with startAdvanced via the main app re-issuing open-item-dialog,
+    // so we close here too — the next openItemDialog will re-create.
+    // pick-on-screen also closes — main app enters screen-pick mode
+    // and re-opens after the user clicks a space.
+    if (action.kind === 'save' || action.kind === 'request-advanced' || action.kind === 'pick-on-screen') {
+      destroyItemDialogWindow();
     }
   });
 
