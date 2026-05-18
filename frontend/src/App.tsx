@@ -2000,31 +2000,29 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog, activeMode, tileOverlayGroup, nodeEditMode, nodeBuilding, editingNodeGroupId, deckBuilding, cmdOpen]);
 
-  // ── Tab key cycles through available presets ─────────────
+  // ── Tab key cycles through all 3 presets ──────────────────────
   //
   // Press Tab anywhere (outside of inputs / modals) to advance to the
-  // next preset the user has access to. Pro-locked presets are skipped
-  // silently rather than triggering a paywall every time the user taps
-  // Tab — discovery happens via the explicit preset toggle click,
-  // which DOES open the paywall with full context. We also bail when
-  // any modal/dialog is busy so Tab still works as expected for form
-  // navigation inside dialogs.
+  // next preset. ALL 3 presets are in the cycle regardless of
+  // entitlement — landing on a Pro-locked preset opens the paywall
+  // with `preset-lock` context (same as clicking the locked toggle).
+  //
+  // v1.3.44: restored from "silent skip" (introduced in v1.3.41 with
+  // Pro gating). User feedback: the silent skip felt like the feature
+  // had disappeared — Tab is muscle memory and now only cycles 2 of 3
+  // presets on Free, which reads as "broken" not "gated". Better UX
+  // is full cycle + paywall when reaching the locked one, mirroring
+  // the explicit preset toggle click. The paywall close action
+  // returns the user to their previous preset, so accidental
+  // Tab-into-paywall isn't disruptive.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
-      // Modifier-tabs are reserved for the browser / OS (Ctrl+Tab, Alt+Tab,
-      // Shift+Tab traversal). We only claim plain Tab.
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-      // Don't hijack while the user is typing or interacting with a control.
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (t?.isContentEditable) return;
-      // Funnel through the central conflict-avoidance policy. Earlier
-      // code did `if (isUserBusy()) return; if (cmdOpen) return;` —
-      // fine for those two states but missed tool mode (Tab while in
-      // node-build would silently cycle the preset and nuke the
-      // in-progress group). canPerform covers every gating state.
       const verdict = canPerform('preset.cycle', {
         activeMode, nodeEditMode, deckBuilding,
         editingMemoId: editingMemoId ? editingMemoId.itemId : null,
@@ -2034,22 +2032,23 @@ export default function App() {
       });
       if (verdict !== true) return;
 
-      // Build the cycle from accessible presets only. Free tier ⇒ ['1'],
-      // so cycling is a no-op for that user and we don't even
-      // preventDefault (lets focus traversal still work). Pro ⇒ all three.
       const order: Array<'1' | '2' | '3'> = ['1', '2', '3'];
-      const accessible = order.filter(id => entitlement.canUsePreset(id));
-      if (accessible.length <= 1) return;
       e.preventDefault();
-      const idx = accessible.indexOf(store.activePresetId as '1' | '2' | '3');
-      const next = accessible[(idx + 1) % accessible.length];
+      const idx = order.indexOf(store.activePresetId as '1' | '2' | '3');
+      const next = order[(idx + 1) % order.length];
+      if (!entitlement.canUsePreset(next)) {
+        // Locked preset — surface paywall with the same context the
+        // explicit toggle click uses. Don't switch the active preset.
+        openPaywall('preset-lock');
+        return;
+      }
       store.setActivePreset(next);
       tutorialTriggers.fire('preset-switched', { from: store.activePresetId, to: next, via: 'tab' });
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cmdOpen, entitlement, store, activeMode, nodeEditMode, deckBuilding, dialog, tileOverlayGroup, editingMemoId]);
+  }, [cmdOpen, entitlement, store, activeMode, nodeEditMode, deckBuilding, dialog, tileOverlayGroup, editingMemoId, openPaywall]);
 
   // ── Dialog helpers ────────────────────────────────────────
   const openEditItem = useCallback((item: LauncherItem, spaceId: string) => {
