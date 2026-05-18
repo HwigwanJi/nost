@@ -1805,24 +1805,22 @@ function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, ini
   const win = new BrowserWindow({
     width, height, x, y,
     frame: false,
-    // v1.3.44: dropped transparent:true after report that satellites
-    // "didn't open at all". Root cause: transparent windows are fully
-    // invisible until the renderer paints — if the renderer crashes
-    // during module load (broken import / lazy CSS error / etc.) the
-    // window stays a hollow alpha rectangle and the user sees nothing,
-    // even with show:true. Opaque background guarantees the window
-    // chrome itself is visible so the user can at least tell that
-    // SOMETHING opened, and the dialog content paints over it.
-    transparent: false,
-    backgroundColor: '#1a1b1f',
+    // Transparent so the area AROUND the dialog content card shows
+    // whatever is underneath (desktop / other apps) instead of an
+    // opaque rectangle. The dialog card itself paints its own
+    // background via the DialogContent's bg-popover class.
+    transparent: true,
     resizable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     focusable: true,
     hasShadow: false,
-    // Show immediately. The minor blank-flash before the renderer
-    // mounts is preferable to never seeing the window at all when
-    // ready-to-show silently fails to fire (the v1.3.44 ship bug).
+    // show:true (was false pre-v1.3.44). Earlier we relied on
+    // ready-to-show to flip to show — but if the renderer threw during
+    // module load (sandbox-induced require failure), ready-to-show
+    // never fired and the window stayed permanently hidden. show:true
+    // gives a brief blank/transparent flash before paint, but the
+    // window is always visible at least.
     show: true,
     minimizable: false,
     maximizable: false,
