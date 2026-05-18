@@ -47,7 +47,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // hideApp() which is an explicit user-intent override.
   requestCloseAfter: () => ipcRenderer.send('request-close-after'),
   setOpacity: (opacity) => ipcRenderer.send('set-opacity', opacity),
-  setWindowSizePct: (pct) => ipcRenderer.send('set-window-size-pct', pct),
+  setWindowSizePct: (pct, anchor) => ipcRenderer.send('set-window-size-pct', pct, anchor),
   getResourceStats: () => ipcRenderer.invoke('get-resource-stats'),
   setSuppressAutoHide: (suppress, source) => ipcRenderer.send('set-suppress-autohide', !!suppress, source ?? 'default'),
   setAutoHide: (autoHide) => ipcRenderer.send('set-auto-hide', !!autoHide),

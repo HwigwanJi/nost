@@ -40,6 +40,19 @@ export function useSatelliteTheme(state: { theme?: 'light' | 'dark'; accentColor
       /* Hide the dialog primitive's full-viewport backdrop in satellites
          — the satellite window itself replaces the inline backdrop. */
       [data-slot="dialog-overlay"] { display: none !important; }
+
+      /* Native drag — click anywhere outside an interactive control to
+         move the satellite window. Mirrors macOS title-bar-drag UX
+         without needing a visible handle. Interactive elements opt out
+         so clicks land in inputs / buttons properly. */
+      html, body { -webkit-app-region: drag; }
+      button, input, textarea, select, a, label,
+      [role="button"], [role="combobox"], [role="slider"], [role="menu"],
+      [role="menuitem"], [role="tab"], [role="dialog"],
+      [contenteditable="true"], [data-popup-interactive],
+      [data-slot="dialog-content"] [role="presentation"] {
+        -webkit-app-region: no-drag;
+      }
     `;
     document.head.appendChild(s);
   }, []);

@@ -5043,7 +5043,24 @@ export default function App() {
         {/* ── Persistent status bar — spans full glass-card width ───── */}
         <StatusBar
           sizePct={data.settings.windowSizePct ?? DEFAULT_WINDOW_SIZE_PCT}
-          onSizePctChange={(p) => store.updateSettings({ ...data.settings, windowSizePct: p })}
+          onSizePctChange={(p, anchor) => {
+            if (anchor === 'bottom') {
+              // Slider drag — go direct to main so applyWindowSizePct
+              // can anchor the resize on the window's bottom edge (the
+              // slider thumb stays under the cursor). Bypass
+              // updateSettings to avoid the watcher echoing back with
+              // the default center anchor on the same frame, which
+              // would yo-yo the window mid-drag. Local store still
+              // gets the new pct via replaceAll for UI continuity.
+              electronAPI.setWindowSizePct(p, 'bottom');
+              const cur = syncDataRef.current;
+              if (cur.settings.windowSizePct !== p) {
+                store.replaceAll({ ...cur, settings: { ...cur.settings, windowSizePct: p } });
+              }
+            } else {
+              store.updateSettings({ ...data.settings, windowSizePct: p });
+            }
+          }}
         />
 
         </div>{/* close glass-card */}

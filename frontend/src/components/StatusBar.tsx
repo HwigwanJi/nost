@@ -35,7 +35,11 @@ interface Props {
   /** Launcher size as % of work area (25..100). Same SSOT as
    *  `/N` slash commands and the settings dialog. */
   sizePct: number;
-  onSizePctChange: (p: number) => void;
+  /** Commit a new size. `anchor` lets the slider drag stick to the
+   *  bottom edge (so the thumb under the cursor doesn't drift) while
+   *  the +/− buttons and preset dropdown keep the legacy center-anchor
+   *  behaviour. */
+  onSizePctChange: (p: number, anchor?: 'center' | 'bottom') => void;
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -70,9 +74,9 @@ export function StatusBar({ sizePct, onSizePctChange }: Props) {
     };
   }, []);
 
-  const commit = (p: number) => {
+  const commit = (p: number, anchor?: 'center' | 'bottom') => {
     const clamped = Math.max(WINDOW_SIZE_PCT_MIN, Math.min(WINDOW_SIZE_PCT_MAX, Math.round(p)));
-    onSizePctChange(clamped);
+    onSizePctChange(clamped, anchor);
   };
 
   return (
@@ -143,7 +147,7 @@ export function StatusBar({ sizePct, onSizePctChange }: Props) {
             min={WINDOW_SIZE_PCT_MIN}
             max={WINDOW_SIZE_PCT_MAX}
             step={1}
-            onValueChange={(v) => commit(Array.isArray(v) ? (v as number[])[0] : (v as number))}
+            onValueChange={(v) => commit(Array.isArray(v) ? (v as number[])[0] : (v as number), 'bottom')}
           />
         </div>
         <button onClick={() => commit(sizePct + 5)} title="5% 확대" style={zoomBtnStyle}>+</button>

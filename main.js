@@ -1292,7 +1292,7 @@ function centeredBounds(pct = 75) {
  * `pct >= 100` collapses to "fill work area" so the slash `/100`
  * still produces an exactly-fit window with no rounding wobble.
  */
-function applyWindowSizePct(win, pct) {
+function applyWindowSizePct(win, pct, anchor = 'center') {
   if (!win || win.isDestroyed()) return;
   const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
   let wa;
@@ -1307,11 +1307,29 @@ function applyWindowSizePct(win, pct) {
   }
   const w = Math.round(wa.width  * clamped / 100);
   const h = Math.round(wa.height * clamped / 100);
-  win.setBounds({
-    x: wa.x + Math.round((wa.width  - w) / 2),
-    y: wa.y + Math.round((wa.height - h) / 2),
-    width: w, height: h,
-  }, true);
+
+  // Anchor 'bottom': keep the window's bottom-Y where it is. Used by
+  // the status-bar slider so the slider thumb (which sits at the
+  // window's bottom edge) doesn't drift away from the user's cursor
+  // mid-drag — the previous always-center behaviour caused the slider
+  // to "두두두둑" because every IPC tick moved the thumb's screen
+  // position, breaking the drag-tracking loop.
+  // Anchor 'center' (default): unchanged — used by /N slash, preset
+  // dropdown, settings dialog presets, cold start.
+  let x, y;
+  if (anchor === 'bottom') {
+    const prev = win.getBounds();
+    x = wa.x + Math.round((wa.width - w) / 2);
+    y = prev.y + prev.height - h;
+    // Clamp into workArea so a tall slider drag near the screen top
+    // doesn't push the window off the top of the monitor.
+    if (y < wa.y) y = wa.y;
+    if (y + h > wa.y + wa.height) y = wa.y + wa.height - h;
+  } else {
+    x = wa.x + Math.round((wa.width  - w) / 2);
+    y = wa.y + Math.round((wa.height - h) / 2);
+  }
+  win.setBounds({ x, y, width: w, height: h }, true);
 }
 
 /**
@@ -3091,12 +3109,12 @@ function registerIpcHandlers() {
   // updateSettings round-trip so /N (which originates in the
   // renderer's command bar but lands here via resize-active-window
   // too) and settings stay perfectly in sync.
-  ipcMain.on('set-window-size-pct', (_, pct) => {
+  ipcMain.on('set-window-size-pct', (_, pct, anchor) => {
     const clamped = Math.max(25, Math.min(100, Math.round(Number(pct) || 100)));
     cachedWindowSizePct = clamped;
     persistWindowSizePct(clamped);
     if (mainWindow && !mainWindow.isDestroyed()) {
-      applyWindowSizePct(mainWindow, clamped);
+      applyWindowSizePct(mainWindow, clamped, anchor === 'bottom' ? 'bottom' : 'center');
     }
   });
   ipcMain.on('set-suppress-autohide', (_, suppress, source = 'default') => {
