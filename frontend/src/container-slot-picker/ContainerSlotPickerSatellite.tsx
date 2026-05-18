@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ContainerSlotPicker, type PendingRemoval, type PendingNewItem } from '../components/ContainerSlotPicker';
+import { useSatelliteTheme } from '../lib/satelliteTheme';
 import type { LauncherItem, Space, ContainerSlots } from '../types';
 
 export interface ContainerSlotPickerSatelliteState {
@@ -8,6 +9,7 @@ export interface ContainerSlotPickerSatelliteState {
   defaultDir?: string;
   allSpaces: Space[];
   accentColor?: string;
+  theme?: 'light' | 'dark';
 }
 
 type Action =
@@ -31,11 +33,7 @@ export function ContainerSlotPickerSatellite() {
     return off;
   }, []);
 
-  useEffect(() => {
-    const accent = state?.accentColor || '#6366f1';
-    document.documentElement.style.setProperty('--accent', accent);
-    document.documentElement.style.setProperty('--accent-dim', accent + '33');
-  }, [state?.accentColor]);
+  useSatelliteTheme(state);
 
   if (!state) return null;
 

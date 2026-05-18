@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BatchDropDialog, type PendingDrop } from '../components/BatchDropDialog';
+import { useSatelliteTheme } from '../lib/satelliteTheme';
 import type { LauncherItem, Space } from '../types';
 
 export interface BatchDropDialogSatelliteState {
@@ -7,6 +8,7 @@ export interface BatchDropDialogSatelliteState {
   spaces: Space[];
   defaultSpaceId: string;
   accentColor?: string;
+  theme?: 'light' | 'dark';
 }
 
 type Action =
@@ -30,11 +32,7 @@ export function BatchDropDialogSatellite() {
     return off;
   }, []);
 
-  useEffect(() => {
-    const accent = state?.accentColor || '#6366f1';
-    document.documentElement.style.setProperty('--accent', accent);
-    document.documentElement.style.setProperty('--accent-dim', accent + '33');
-  }, [state?.accentColor]);
+  useSatelliteTheme(state);
 
   if (!state) return null;
 

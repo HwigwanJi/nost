@@ -3706,11 +3706,12 @@ export default function App() {
       docExtensions: data.settings.documentExtensions,
       startAdvanced: itemDialogStartAdvanced,
       accentColor: data.settings.accentColor,
+      theme: data.settings.theme,
     });
   }, [
     dialog, editItem, prefilledItem, itemDialogStartAdvanced, editSpaceId,
     monitorCount, data.spaces, store.presets, store.activePresetId,
-    data.settings.documentExtensions, data.settings.accentColor,
+    data.settings.documentExtensions, data.settings.accentColor, data.settings.theme,
   ]);
 
   // Listen for actions from the satellite (save / request-advanced /
@@ -3775,10 +3776,11 @@ export default function App() {
       defaultSpaceId: editSpaceId,
       docExtensions: data.settings.documentExtensions,
       accentColor: data.settings.accentColor,
+      theme: data.settings.theme,
     });
   }, [
     dialog, editSpaceId, data.spaces,
-    data.settings.documentExtensions, data.settings.accentColor,
+    data.settings.documentExtensions, data.settings.accentColor, data.settings.theme,
   ]);
 
   useEffect(() => {
@@ -3827,6 +3829,7 @@ export default function App() {
       downloadProgress,
       initialTab: settingsInitialTab,
       accentColor: data.settings.accentColor,
+      theme: data.settings.theme,
     });
   }, [dialog, data.settings, updateDownloaded, downloadProgress, settingsInitialTab]);
 
@@ -3881,8 +3884,9 @@ export default function App() {
       enabledPresets: cohortSettings.enabledPresets,
       labelOrder: cohortSettings.labelOrder,
       accentColor: data.settings.accentColor,
+      theme: data.settings.theme,
     });
-  }, [cohortTarget, data.spaces, data.settings.docCohort, data.settings.accentColor]);
+  }, [cohortTarget, data.spaces, data.settings.docCohort, data.settings.accentColor, data.settings.theme]);
 
   useEffect(() => {
     const off = electronAPI.onDocCohortDialogAction((action) => {
@@ -3909,8 +3913,9 @@ export default function App() {
       spaces: data.spaces,
       defaultSpaceId: batchDrop.spaceId,
       accentColor: data.settings.accentColor,
+      theme: data.settings.theme,
     });
-  }, [batchDrop, data.spaces, data.settings.accentColor]);
+  }, [batchDrop, data.spaces, data.settings.accentColor, data.settings.theme]);
 
   useEffect(() => {
     const off = electronAPI.onBatchDropDialogAction((action) => {
@@ -3940,8 +3945,9 @@ export default function App() {
       defaultDir: containerSlotItem.defaultDir,
       allSpaces: data.spaces,
       accentColor: data.settings.accentColor,
+      theme: data.settings.theme,
     });
-  }, [dialog, containerSlotItem, allItems, data.spaces, data.settings.accentColor]);
+  }, [dialog, containerSlotItem, allItems, data.spaces, data.settings.accentColor, data.settings.theme]);
 
   useEffect(() => {
     const off = electronAPI.onContainerSlotPickerAction((action) => {

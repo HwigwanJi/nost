@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import { ItemWizard } from '../components/ItemWizard';
+import { useSatelliteTheme } from '../lib/satelliteTheme';
 import type { LauncherItem, Space } from '../types';
 
 export interface ItemWizardSatelliteState {
@@ -16,6 +17,7 @@ export interface ItemWizardSatelliteState {
   defaultSpaceId: string;
   docExtensions?: string[];
   accentColor?: string;
+  theme?: 'light' | 'dark';
 }
 
 type Action =
@@ -40,11 +42,7 @@ export function ItemWizardSatellite() {
     return off;
   }, []);
 
-  useEffect(() => {
-    const accent = state?.accentColor || '#6366f1';
-    document.documentElement.style.setProperty('--accent', accent);
-    document.documentElement.style.setProperty('--accent-dim', accent + '33');
-  }, [state?.accentColor]);
+  useSatelliteTheme(state);
 
   // ESC safety net (when click lands on transparent window background)
   useEffect(() => {

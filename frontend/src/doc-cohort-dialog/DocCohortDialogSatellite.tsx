@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { DocCohortDialog } from '../components/DocCohortDialog';
+import { useSatelliteTheme } from '../lib/satelliteTheme';
 import type { LauncherItem, TokenPreset } from '../types';
 
 export interface DocCohortDialogSatelliteState {
@@ -7,6 +8,7 @@ export interface DocCohortDialogSatelliteState {
   enabledPresets: TokenPreset[];
   labelOrder: string[];
   accentColor?: string;
+  theme?: 'light' | 'dark';
 }
 
 type Action =
@@ -30,11 +32,7 @@ export function DocCohortDialogSatellite() {
     return off;
   }, []);
 
-  useEffect(() => {
-    const accent = state?.accentColor || '#6366f1';
-    document.documentElement.style.setProperty('--accent', accent);
-    document.documentElement.style.setProperty('--accent-dim', accent + '33');
-  }, [state?.accentColor]);
+  useSatelliteTheme(state);
 
   if (!state) return null;
 

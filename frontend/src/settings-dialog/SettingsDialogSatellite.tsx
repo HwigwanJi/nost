@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from 'react';
 import { SettingsDialog } from '../components/SettingsDialog';
+import { useSatelliteTheme } from '../lib/satelliteTheme';
 import type { AppSettings } from '../types';
 
 export interface SettingsDialogSatelliteState {
@@ -22,6 +23,7 @@ export interface SettingsDialogSatelliteState {
   downloadProgress?: number | null;
   initialTab?: string;
   accentColor?: string;
+  theme?: 'light' | 'dark';
 }
 
 type Action =
@@ -49,11 +51,7 @@ export function SettingsDialogSatellite() {
     return off;
   }, []);
 
-  useEffect(() => {
-    const accent = state?.accentColor || '#6366f1';
-    document.documentElement.style.setProperty('--accent', accent);
-    document.documentElement.style.setProperty('--accent-dim', accent + '33');
-  }, [state?.accentColor]);
+  useSatelliteTheme(state);
 
   if (!state) return null;
 

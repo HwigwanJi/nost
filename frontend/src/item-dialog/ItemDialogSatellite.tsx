@@ -17,6 +17,7 @@
 
 import { useEffect, useState } from 'react';
 import { ItemDialog } from '../components/ItemDialog';
+import { useSatelliteTheme } from '../lib/satelliteTheme';
 import type { LauncherItem, Space } from '../types';
 
 interface PresetSummary {
@@ -41,6 +42,7 @@ export interface ItemDialogSatelliteState {
   /** Theme — applied as CSS variables on :root so the dialog matches
    *  the user's main-app accent. */
   accentColor?: string;
+  theme?: 'light' | 'dark';
 }
 
 type Action =
@@ -67,14 +69,7 @@ export function ItemDialogSatellite() {
     return off;
   }, []);
 
-  // Apply accent color to :root so the same CSS variables (--accent,
-  // --accent-dim) the dialog reads are present in this satellite window.
-  // Mirrors the App.tsx effect at App.tsx:1862.
-  useEffect(() => {
-    const accent = state?.accentColor || '#6366f1';
-    document.documentElement.style.setProperty('--accent', accent);
-    document.documentElement.style.setProperty('--accent-dim', accent + '33');
-  }, [state?.accentColor]);
+  useSatelliteTheme(state);
 
   // ESC outside any focused input → close. ItemDialog's own Radix
   // Dialog wires ESC, but if the user clicks the empty backdrop area
