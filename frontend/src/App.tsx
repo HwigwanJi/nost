@@ -4004,7 +4004,10 @@ export default function App() {
             backdropFilter: 'blur(40px) saturate(140%)',
             borderRadius: 'var(--radius)',
             border: fileDragOver ? '1px solid var(--accent)' : '1px solid var(--border-rgba)',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.18)',
+            // No outer shadow — sibling `hasShadow:false` on the
+            // BrowserWindow removes the OS-level DWM shadow; this CSS
+            // shadow was the second source ("앱 창 가 그림자 안 하기로
+            // 한 거 기억나" — yes, finally fully off here too).
             overflow: 'hidden',
             color: 'var(--text-color)',
             transition: 'border-color 0.15s',
