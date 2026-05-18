@@ -181,7 +181,14 @@ const glassNavBtnReset: React.CSSProperties = {
 export function ItemDialog({
   open, onClose, spaces, editItem, defaultSpaceId, monitorCount = 1,
   allowedTypes, docExtensions, presets, currentPresetId, onSave,
-  onRequestAdvanced, startAdvanced, onPickOnScreen, showToast,
+  startAdvanced, onPickOnScreen,
+  // onRequestAdvanced + showToast were prop-drilled in to fire the
+  // post-save "꾸미기" nudge toast from inside the dialog. That toast
+  // now lives in App.tsx's satellite action listener (the IPC bridge
+  // can't carry closure-onClick actions, and App's scope owns
+  // handleRequestAdvanced anyway). Props kept in the interface for
+  // back-compat / external callers; ItemDialog itself no longer reads
+  // them.
 }: ItemDialogProps) {
   useBusyMark('modal:item-edit', open);
   const isEdit = !!(editItem && 'id' in editItem && editItem.id);
@@ -236,7 +243,9 @@ export function ItemDialog({
   const [cropSrc, setCropSrc] = useState<string | null>(null);
   const [autoFavicon, setAutoFavicon] = useState(false);
   const [clipboardHint, setClipboardHint] = useState<{ type: LauncherItem['type']; label: string } | null>(null);
-  const advancedTouchedRef = useRef(!!startAdvanced || isEdit);
+  // advancedTouchedRef was the gate for the post-save 꾸미기 toast —
+  // toast moved to App.tsx and the gate was dropped (App always shows
+  // the nudge for new cards now). Ref removed to silence unused-var.
   const fileRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const cropRef = useRef<{ x: number; y: number; size: number } | null>(null);
@@ -721,16 +730,10 @@ export function ItemDialog({
       onSave(useSpace, payload as LauncherItem, presetMoved ? form.presetId : undefined);
     } else {
       onSave(useSpace, payload as Omit<LauncherItem, 'id'>);
-      if (!advancedTouchedRef.current && onRequestAdvanced && showToast) {
-        showToast('카드 추가됨 · 아이콘이나 색상을 바꿔볼까요?', {
-          actions: [{
-            label: '꾸미기',
-            icon: 'palette',
-            onClick: () => onRequestAdvanced(useSpace),
-          }],
-          duration: 5000,
-        });
-      }
+      // The "꾸미기" post-save nudge toast lives in App.tsx now —
+      // satellite IPC can't carry closure-onClick actions across the
+      // bridge. App's 'save' action listener shows the toast for new
+      // cards with handleRequestAdvanced closure intact.
     }
     onClose();
   }

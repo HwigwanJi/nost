@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react';
-import { toast } from 'sonner';
 import { electronAPI } from '../electronBridge';
 import { Icon } from '@/components/ui/Icon';
 
@@ -194,12 +193,18 @@ function ActionButton({
   );
 }
 
-// ── Copy field (text box + icon + toast) ─────────────────────────
+// ── Copy field (text box + copy button with inline ✓ feedback) ──
+// Inline ✓ tick replaces the prior `toast(`${label} 복사됨`)` call —
+// this wizard is rendered inside the SettingsDialog satellite window
+// where sonner's <Toaster> isn't mounted, so the toast was invisible.
+// "Confirmation right at the click point" reads more clearly anyway.
 
-function CopyField({ value, label }: { value: string; label: string }) {
+function CopyField({ value, label: _label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
   const handleCopy = () => {
     navigator.clipboard.writeText(value).then(() => {
-      toast(`${label} 복사됨`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
     });
   };
 
@@ -231,43 +236,55 @@ function CopyField({ value, label }: { value: string; label: string }) {
       </span>
       <button
         onClick={handleCopy}
-        title="복사"
+        title={copied ? '복사됨' : '복사'}
         style={{
           flexShrink: 0,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          width: 32,
+          gap: 4,
+          minWidth: 32,
+          padding: copied ? '0 10px' : 0,
           height: 32,
-          background: 'transparent',
+          background: copied ? 'var(--accent-dim)' : 'transparent',
           border: 'none',
           borderLeft: '1px solid var(--border-rgba)',
-          color: 'var(--text-muted)',
+          color: copied ? 'var(--accent)' : 'var(--text-muted)',
           cursor: 'pointer',
-          transition: 'background 0.12s, color 0.12s',
+          fontSize: 11,
+          fontWeight: 600,
+          fontFamily: 'inherit',
+          transition: 'background 0.12s, color 0.12s, padding 0.12s',
         }}
         onMouseEnter={e => {
+          if (copied) return;
           e.currentTarget.style.background = 'var(--surface-hover)';
           e.currentTarget.style.color = 'var(--text-color)';
         }}
         onMouseLeave={e => {
+          if (copied) return;
           e.currentTarget.style.background = 'transparent';
           e.currentTarget.style.color = 'var(--text-muted)';
         }}
       >
-        <Icon name="content_copy" size={14} />
+        <Icon name={copied ? 'check' : 'content_copy'} size={14} />
+        {copied && <span>복사됨</span>}
       </button>
     </div>
   );
 }
 
-// 클립보드에 있는 값(extensionDir)을 재복사
+// 클립보드에 있는 값(extensionDir)을 재복사. Inline ✓ tick replaces
+// the prior sonner toast — same satellite-no-Toaster reason as
+// CopyField above. 1.5s post-click label swap to "복사됨".
 function ClipboardReCopy() {
+  const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
     const text = await electronAPI.readClipboard();
     if (text) {
       navigator.clipboard.writeText(text).then(() => {
-        toast('확장 폴더 경로 복사됨');
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
       });
     }
   };
@@ -290,8 +307,8 @@ function ClipboardReCopy() {
         fontFamily: 'inherit',
       }}
     >
-      <Icon name="content_paste" size={13} />
-      경로 다시 복사
+      <Icon name={copied ? 'check' : 'content_paste'} size={13} />
+      {copied ? '복사됨' : '경로 다시 복사'}
     </button>
   );
 }
@@ -365,7 +382,12 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
     setPhase({ kind: 'store-installing' });
   }, []);
 
+  // Inline error banner — replaces the prior sonner toast.error which
+  // was invisible inside the SettingsDialog satellite window.
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
   const handleVerifyStoreInstall = useCallback(async () => {
+    setVerifyError(null);
     setPhase({ kind: 'checking' });
     const status = await electronAPI.getExtensionBridgeStatus();
     const connected = status.connected || status.tabsCount > 0;
@@ -373,11 +395,11 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
       setPhase({ kind: 'success' });
       setTimeout(() => onSuccess(), 1200);
     } else {
-      // Stay on store-installing; surface a soft toast instead of
-      // bouncing back to error — the user might just need 1-2s for the
-      // SSE handshake after Chrome auto-loads the extension.
+      // Stay on store-installing; show an inline error instead of
+      // bouncing to the error phase — the user might just need 1-2s
+      // for the SSE handshake after Chrome auto-loads the extension.
       setPhase({ kind: 'store-installing' });
-      toast.error('아직 연결되지 않았습니다. 설치 완료 후 잠시 기다린 다음 다시 시도해주세요.');
+      setVerifyError('아직 연결되지 않았습니다. 설치 완료 후 잠시 기다린 다음 다시 시도해주세요.');
     }
   }, [onSuccess]);
 
@@ -567,6 +589,19 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
           title="자동 설치도 시도했습니다"
           description="Chrome을 열어두셨다면 우상단에 '확장 프로그램이 추가됨' 알림이 뜰 수 있습니다. 알림에서 한 번만 활성화하면 됩니다."
         />
+
+        {verifyError && (
+          <div style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8,
+            padding: '10px 12px', borderRadius: 8,
+            background: 'rgba(239,68,68,0.08)',
+            border: '1px solid rgba(239,68,68,0.25)',
+            fontSize: 11, color: '#dc2626', lineHeight: 1.5,
+          }}>
+            <Icon name="error_outline" size={14} color="#dc2626" style={{ flexShrink: 0, marginTop: 1 }} />
+            <span>{verifyError}</span>
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           <ActionButton

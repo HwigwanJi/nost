@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { toast } from 'sonner';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -270,7 +269,9 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
       ...(iconUrl ? { icon: iconUrl, iconType: iconKind } : {}),
     };
     onSave(spaceId, item);
-    toast(`"${name.trim()}" 추가됨`);
+    // "X 추가됨" toast moved to App.tsx's save-action listener —
+    // satellite renderer has no <Toaster> mount so sonner here would
+    // have been invisible. App's Toaster shows it.
     onClose();
   }, [selectedSpaceId, spaces, iconUrl, onSave, onClose]);
 

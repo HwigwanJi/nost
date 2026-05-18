@@ -3725,6 +3725,25 @@ export default function App() {
       switch (action.kind) {
         case 'save':
           handleSaveItem(action.spaceId, action.item, action.targetPresetId);
+          // Post-save "꾸미기" nudge for NEW cards (no id on the
+          // payload means add, not edit). Moved here from inside
+          // ItemDialog because the satellite IPC bridge can't carry
+          // closure-onClick actions — and handleRequestAdvanced lives
+          // in this scope anyway. lastAddedItemRef was just set by
+          // handleSaveItem so the closure has the right card to act on.
+          if (!('id' in action.item)) {
+            const ref = lastAddedItemRef.current;
+            if (ref) {
+              showToast('카드 추가됨 · 아이콘이나 색상을 바꿔볼까요?', {
+                actions: [{
+                  label: '꾸미기',
+                  icon: 'palette',
+                  onClick: () => handleRequestAdvanced(ref.spaceId),
+                }],
+                duration: 5000,
+              });
+            }
+          }
           // Synchronous state reset — without this, the data.spaces
           // mutation handleSaveItem just did would re-fire the trigger
           // useEffect (dialog still 'item') and re-spawn the satellite
@@ -3787,6 +3806,12 @@ export default function App() {
     const off = electronAPI.onItemWizardAction((action) => {
       if (action.kind === 'save') {
         handleSaveItem(action.spaceId, action.item);
+        // "X 추가됨" toast — moved from inside ItemWizard (which used
+        // sonner directly, and sonner's <Toaster> isn't mounted in the
+        // satellite window so it was invisible). Title fallback covers
+        // wizard flows where the title is auto-derived at save time.
+        const titleStr = ('title' in action.item && action.item.title) || '카드';
+        showToast(`"${titleStr}" 추가됨`);
         setDialog('none');  // race-fix — data.spaces change re-trigger guard
       } else if (action.kind === 'save-as-memo') {
         // SSOT parity with the top gateway banner — clipboard text gets
@@ -3800,11 +3825,17 @@ export default function App() {
             undo: () => store.deleteItem(action.spaceId, newItem.id),
             redo: () => store.restoreItem(action.spaceId, newItem),
           });
-          showToast(`메모로 저장됨${space ? ` · ${space.name}` : ''}`, { duration: 4000 });
-          // NOTE: the original inline render passed an "열기" toast
-          // action button that called setEditingMemoId. Closures can't
-          // cross IPC — same Phase 2-polish limitation noted for
-          // ItemDialog's 꾸미기 toast.
+          // "열기" closure runs in App scope — setEditingMemoId is in
+          // scope here, so the action survives the satellite hop. The
+          // toast itself is shown by the main window's Toaster.
+          showToast(`메모로 저장됨${space ? ` · ${space.name}` : ''}`, {
+            actions: [{
+              label: '열기',
+              icon: 'open_in_new',
+              onClick: () => setEditingMemoId({ spaceId: action.spaceId, itemId: newItem.id }),
+            }],
+            duration: 4000,
+          });
         }
         setDialog('none');
       }
