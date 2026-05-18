@@ -1308,22 +1308,25 @@ function applyWindowSizePct(win, pct, anchor = 'center') {
   const w = Math.round(wa.width  * clamped / 100);
   const h = Math.round(wa.height * clamped / 100);
 
-  // Anchor 'bottom': keep the window's bottom-Y where it is. Used by
-  // the status-bar slider so the slider thumb (which sits at the
-  // window's bottom edge) doesn't drift away from the user's cursor
-  // mid-drag — the previous always-center behaviour caused the slider
-  // to "두두두둑" because every IPC tick moved the thumb's screen
-  // position, breaking the drag-tracking loop.
+  // Anchor 'bottom-right': keep the window's bottom-right CORNER
+  // where it is. Used by the status-bar slider — the slider lives in
+  // the bottom-right area of the launcher, so pinning that corner
+  // keeps the thumb under the user's cursor mid-drag. The previous
+  // attempt anchored only the bottom-Y while centring X each tick,
+  // which made the window flip horizontally to wa.center on every
+  // slider step (the "피카츄 전광석화" report).
   // Anchor 'center' (default): unchanged — used by /N slash, preset
   // dropdown, settings dialog presets, cold start.
   let x, y;
-  if (anchor === 'bottom') {
+  if (anchor === 'bottom-right') {
     const prev = win.getBounds();
-    x = wa.x + Math.round((wa.width - w) / 2);
+    x = prev.x + prev.width  - w;
     y = prev.y + prev.height - h;
-    // Clamp into workArea so a tall slider drag near the screen top
-    // doesn't push the window off the top of the monitor.
+    // Clamp into workArea so a drag near the screen edges doesn't
+    // push the window off-monitor.
+    if (x < wa.x) x = wa.x;
     if (y < wa.y) y = wa.y;
+    if (x + w > wa.x + wa.width)  x = wa.x + wa.width  - w;
     if (y + h > wa.y + wa.height) y = wa.y + wa.height - h;
   } else {
     x = wa.x + Math.round((wa.width  - w) / 2);
@@ -3114,7 +3117,8 @@ function registerIpcHandlers() {
     cachedWindowSizePct = clamped;
     persistWindowSizePct(clamped);
     if (mainWindow && !mainWindow.isDestroyed()) {
-      applyWindowSizePct(mainWindow, clamped, anchor === 'bottom' ? 'bottom' : 'center');
+      const a = anchor === 'bottom-right' || anchor === 'bottom' ? 'bottom-right' : 'center';
+      applyWindowSizePct(mainWindow, clamped, a);
     }
   });
   ipcMain.on('set-suppress-autohide', (_, suppress, source = 'default') => {

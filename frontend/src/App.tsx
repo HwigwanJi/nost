@@ -5044,15 +5044,15 @@ export default function App() {
         <StatusBar
           sizePct={data.settings.windowSizePct ?? DEFAULT_WINDOW_SIZE_PCT}
           onSizePctChange={(p, anchor) => {
-            if (anchor === 'bottom') {
+            if (anchor === 'bottom-right') {
               // Slider drag — go direct to main so applyWindowSizePct
-              // can anchor the resize on the window's bottom edge (the
-              // slider thumb stays under the cursor). Bypass
-              // updateSettings to avoid the watcher echoing back with
-              // the default center anchor on the same frame, which
-              // would yo-yo the window mid-drag. Local store still
-              // gets the new pct via replaceAll for UI continuity.
-              electronAPI.setWindowSizePct(p, 'bottom');
+              // can anchor the resize on the window's bottom-right
+              // corner (where the slider lives). Bypass updateSettings
+              // to avoid the watcher echoing back with the default
+              // center anchor on the same frame, which would yo-yo the
+              // window mid-drag. Local store still gets the new pct
+              // via replaceAll for UI continuity.
+              electronAPI.setWindowSizePct(p, 'bottom-right');
               const cur = syncDataRef.current;
               if (cur.settings.windowSizePct !== p) {
                 store.replaceAll({ ...cur, settings: { ...cur.settings, windowSizePct: p } });

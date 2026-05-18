@@ -24,12 +24,12 @@ export interface ElectronAPI {
    *  Main clamps + persists into settings.windowSizePct + applies
    *  setBounds so every code path stays in sync. */
   /** Resize the launcher to `pct` % of the active monitor's work area.
-   *  `anchor` controls which edge stays fixed:
+   *  `anchor` controls which corner/edge stays fixed:
    *    - 'center' (default): grow/shrink from center (history default)
-   *    - 'bottom': keep bottom-Y fixed — used by the status-bar slider
-   *      so the slider thumb doesn't drift away from the user's cursor
-   *      mid-drag. */
-  setWindowSizePct: (pct: number, anchor?: 'center' | 'bottom') => void;
+   *    - 'bottom-right': keep bottom-right corner fixed — used by the
+   *      status-bar slider (which sits in the bottom-right area) so
+   *      the thumb doesn't drift away from the user's cursor mid-drag. */
+  setWindowSizePct: (pct: number, anchor?: 'center' | 'bottom-right') => void;
   /** Snapshot of the launcher's process-tree resource usage. cpuPct
    *  is normalised to % of total system CPU (0..100) so the number
    *  is comparable to Task Manager. perProc breaks down the same
