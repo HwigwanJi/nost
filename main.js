@@ -1805,13 +1805,25 @@ function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, ini
   const win = new BrowserWindow({
     width, height, x, y,
     frame: false,
-    transparent: true,
+    // v1.3.44: dropped transparent:true after report that satellites
+    // "didn't open at all". Root cause: transparent windows are fully
+    // invisible until the renderer paints — if the renderer crashes
+    // during module load (broken import / lazy CSS error / etc.) the
+    // window stays a hollow alpha rectangle and the user sees nothing,
+    // even with show:true. Opaque background guarantees the window
+    // chrome itself is visible so the user can at least tell that
+    // SOMETHING opened, and the dialog content paints over it.
+    transparent: false,
+    backgroundColor: '#1a1b1f',
     resizable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     focusable: true,
     hasShadow: false,
-    show: false,
+    // Show immediately. The minor blank-flash before the renderer
+    // mounts is preferable to never seeing the window at all when
+    // ready-to-show silently fails to fire (the v1.3.44 ship bug).
+    show: true,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
@@ -1823,6 +1835,16 @@ function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, ini
   });
   win.setAlwaysOnTop(true, 'screen-saver');
 
+  // Diagnostic: surface renderer load failures into main.log. Pre
+  // v1.3.44 these were silent — satellites just didn't appear and
+  // the user had no signal as to why.
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    log.error(`[satellite:${name}] did-fail-load code=${code} desc=${desc} url=${url}`);
+  });
+  win.webContents.on('render-process-gone', (_e, details) => {
+    log.error(`[satellite:${name}] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
   if (rendererUrl) {
     win.loadURL(`${rendererUrl}/${htmlFile}`);
@@ -1832,9 +1854,12 @@ function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, ini
 
   satellites.set(name, { win, state: initialState });
 
-  win.once('ready-to-show', () => {
+  // Push initial state when the renderer reports it mounted (request-
+  // state IPC). Pre-mount pushes were getting dropped because the
+  // listener wasn't attached yet — the renderer's own requestState
+  // call after onState subscription handles this race naturally.
+  win.webContents.on('did-finish-load', () => {
     pushSatelliteState(name);
-    win.show();
     win.focus();
   });
 
