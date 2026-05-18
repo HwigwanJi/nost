@@ -1963,6 +1963,22 @@ function startDialogPoll() {
 // leaves. Capture toggles are routed by sender so each overlay tracks
 // its own pointer independently.
 
+// Dangling-badge warnings used to spam main.log because buildBadgePayload
+// runs on every store sync (badges-sync IPC fires per item edit / sort /
+// drop). Dedupe via this Set — log once per (badgeId, refId) tuple per
+// session. Reset on badge restoration so a future re-orphan re-logs.
+const _loggedDanglingBadges = new Set();
+function _warnDanglingOnce(kind, badgeId, refId) {
+  const key = `${kind}|${badgeId}|${refId}`;
+  if (_loggedDanglingBadges.has(key)) return;
+  _loggedDanglingBadges.add(key);
+  if (kind === 'space') {
+    log.warn(`[badges] dangling space ref — badgeId=${badgeId} refId=${refId} (badge hidden, store entry kept)`);
+  } else {
+    log.warn(`[badges] dangling ${kind} ref — badgeId=${badgeId} refId=${refId}`);
+  }
+}
+
 /**
  * Resolve every FloatingBadge in the store to the display-ready BadgeData
  * the overlay renderer expects. Filters out dangling entries whose referenced
@@ -2008,7 +2024,7 @@ function buildBadgePayload(data) {
         // guesswork. The badge entry stays in store (lazy hide), so
         // restoring the referenced space (e.g. via undo) automatically
         // brings it back on the next sync.
-        log.warn(`[badges] dangling space ref — badgeId=${b.id} refId=${b.refId} (badge hidden, store entry kept)`);
+        _warnDanglingOnce('space', b.id, b.refId);
         continue;
       }
       // Hide container-absorbed cards (hiddenInSpace) and sort pinned first
@@ -2032,7 +2048,7 @@ function buildBadgePayload(data) {
     } else if (b.refType === 'node') {
       const n = nodes.find(x => x.id === b.refId);
       if (!n) {
-        log.warn(`[badges] dangling node ref — badgeId=${b.id} refId=${b.refId}`);
+        _warnDanglingOnce('node', b.id, b.refId);
         continue;
       }
       const items = (n.itemIds ?? [])
@@ -2055,7 +2071,7 @@ function buildBadgePayload(data) {
     } else if (b.refType === 'deck') {
       const d = decks.find(x => x.id === b.refId);
       if (!d) {
-        log.warn(`[badges] dangling deck ref — badgeId=${b.id} refId=${b.refId}`);
+        _warnDanglingOnce('deck', b.id, b.refId);
         continue;
       }
       const items = (d.itemIds ?? [])
