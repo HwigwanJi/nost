@@ -1848,9 +1848,21 @@ function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, ini
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
   if (rendererUrl) {
     win.loadURL(`${rendererUrl}/${htmlFile}`);
+    // Dev-mode: pop devtools so renderer errors are visible. Otherwise
+    // a satellite that fails to mount shows as a black box with no
+    // signal as to why.
+    win.webContents.openDevTools({ mode: 'detach' });
   } else {
     win.loadFile(path.join(__dirname, 'frontend', 'dist', htmlFile));
   }
+
+  // Forward renderer console messages into main.log so even closed-
+  // devtools builds leave a paper trail.
+  win.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    if (level >= 2 /* warning or error */) {
+      log.warn(`[satellite:${name}] console L${level}: ${message} @ ${sourceId}:${line}`);
+    }
+  });
 
   satellites.set(name, { win, state: initialState });
 

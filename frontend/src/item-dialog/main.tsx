@@ -1,30 +1,51 @@
 // Satellite entry for the ItemDialog (card add/edit) BrowserWindow.
-//
-// Why a satellite: when the user pair-splits nost narrow, an inline
-// Radix Dialog gets clipped to the BrowserWindow rectangle. Hosting the
-// dialog in its own window lets it span the whole monitor regardless of
-// where the main launcher is positioned. See plans/satellite-dialogs.md.
-//
-// Lifecycle: main.js creates this window via createItemDialogWindow()
-// with an initial state payload. We mount ItemDialogSatellite which
-// pulls state via `itemDialog.onState` (same pattern as the dialog-popup
-// companion) and forwards user actions back via `itemDialog.action`.
+// See plans/satellite-dialogs.md.
 
-import 'pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css';
-import '../index.css';
+// Visible marker BEFORE any import runs — proves the script reached the
+// renderer even when subsequent imports throw. Removed once mount succeeds.
+(() => {
+  const m = document.createElement('div');
+  m.id = '__nost_satellite_boot';
+  m.textContent = '[satellite] boot…';
+  m.style.cssText = 'position:fixed;top:8px;left:8px;z-index:99999;color:#fff;font:12px monospace;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;pointer-events:none;';
+  document.body?.appendChild(m);
+})();
 
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { ItemDialogSatellite } from './ItemDialogSatellite';
+// Surface any unhandled error visibly so a black-screen satellite at least
+// tells the user WHAT broke instead of staring at an empty window.
+function showVisibleError(label: string, err: unknown) {
+  const msg = err instanceof Error ? `${err.name}: ${err.message}\n${err.stack ?? ''}` : String(err);
+  let el = document.getElementById('__nost_satellite_err');
+  if (!el) {
+    el = document.createElement('pre');
+    el.id = '__nost_satellite_err';
+    el.style.cssText = 'position:fixed;inset:0;margin:0;padding:16px;background:#7f1d1d;color:#fff;font:11px/1.4 monospace;overflow:auto;white-space:pre-wrap;z-index:99998;';
+    document.body?.appendChild(el);
+  }
+  el.textContent += `\n--- ${label} ---\n${msg}\n`;
+  console.error('[satellite]', label, err);
+}
+window.addEventListener('error', (e) => showVisibleError('window.error', e.error ?? e.message));
+window.addEventListener('unhandledrejection', (e) => showVisibleError('unhandledrejection', e.reason));
 
-// Material Symbols on-demand (mirrors main.tsx's deferred load).
-import('@fontsource-variable/material-symbols-rounded/full.css').catch(() => {
-  console.warn('[material-symbols] dynamic import failed in item-dialog satellite');
-});
+(async () => {
+  try {
+    await import('pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');
+    await import('../index.css');
+    import('@fontsource-variable/material-symbols-rounded/full.css').catch(() => {});
 
-const root = document.getElementById('root')!;
-createRoot(root).render(
-  <StrictMode>
-    <ItemDialogSatellite />
-  </StrictMode>,
-);
+    const { StrictMode } = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { ItemDialogSatellite } = await import('./ItemDialogSatellite');
+
+    const root = document.getElementById('root')!;
+    createRoot(root).render(
+      <StrictMode>
+        <ItemDialogSatellite />
+      </StrictMode>,
+    );
+    document.getElementById('__nost_satellite_boot')?.remove();
+  } catch (err) {
+    showVisibleError('boot', err);
+  }
+})();
