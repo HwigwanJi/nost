@@ -1579,46 +1579,66 @@ function destroyDialogPopupWindow() {
   dialogPopupWin = null;
 }
 
-// Gap between the popup strip's bottom edge and the dialog's top edge.
-// The strip sits ABOVE the dialog window entirely — user preference is
-// to keep it just outside so it visually reads as an external toolbar
-// attached to the dialog rather than overlapping its chrome.
-const DIALOG_POPUP_GAP_PX = 6;
+// Popup width is now fixed (was dialog.width + 240 when the popup
+// anchored to the dialog). Since v1.3.43+ the popup floats at a
+// monitor-relative position decoupled from the dialog, so dialog width
+// no longer informs popup width. 880 px fits the chip strip + preset
+// dropdown comfortably without dominating the screen.
+const DIALOG_POPUP_WIDTH = 880;
+
+// Per-monitor saved position storage. Key = workArea signature so the
+// position survives across sessions and is tied to a specific physical
+// monitor arrangement. Value = { x, y } in DIP (setBounds coords).
+function getMonitorKey(workArea) {
+  return `${workArea.x},${workArea.y},${workArea.width}x${workArea.height}`;
+}
+
+function defaultPopupPosition(workArea) {
+  // Horizontally centred, vertically at the 3/4-down mark — i.e. 1/4
+  // of the work-area height up from the bottom. The strip's vertical
+  // centre sits at that 3/4 line so the user perceives "bottom quarter
+  // of the monitor". The transparent room below the strip extends
+  // into the bottom 1/4 region for dropdown menus.
+  const x = Math.round(workArea.x + (workArea.width - DIALOG_POPUP_WIDTH) / 2);
+  const y = Math.round(workArea.y + Math.floor(workArea.height * 3 / 4) - DIALOG_POPUP_STRIP_HEIGHT / 2);
+  return { x, y };
+}
+
+function clampPopupBounds(pos, workArea) {
+  // Keep the popup window fully inside the monitor's work area so the
+  // user can't lose it by dragging past an edge — or via a workArea
+  // shrink (taskbar moved, resolution changed) since last save.
+  const x = Math.max(workArea.x, Math.min(pos.x, workArea.x + workArea.width  - DIALOG_POPUP_WIDTH));
+  const y = Math.max(workArea.y, Math.min(pos.y, workArea.y + workArea.height - DIALOG_POPUP_HEIGHT));
+  return { x, y };
+}
 
 function positionDialogPopup(rect) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
   dialogLastRect = rect;
-  // Popup width — independent of dialog width.
-  //   - floor 720 px: a typical 520 px Save-As used to give us a 520 px
-  //     popup and chips clipped silently behind a hidden scrollbar
-  //   - ceiling 1100 px: anything wider feels disproportionate to the
-  //     dialog and visually competes with it for attention
-  //   - dialog.width + 240 in between gives a slight buffer so the
-  //     chip strip extends a little past the dialog right edge
-  //     (mirrors most macOS-style toolbar overhang patterns)
-  const width  = Math.max(720, Math.min(rect.width + 240, 1100));
-  // LEFT-ALIGN with the dialog — and ONLY that. Earlier design
-  // centred the popup inside the dialog, which created a visible
-  // gap on the popup's left when the dialog was wider than the
-  // popup. Left-aligning makes the chip strip share a hard edge
-  // with the dialog's left side, regardless of either's width.
-  //
-  // Deliberately NO horizontal work-area clamp: an earlier clamp
-  // tried to slide the popup left when it would overflow the right
-  // edge of the screen, but doing so reintroduces the exact
-  // misalignment we're trying to kill (popup moves; dialog
-  // doesn't → mis-anchored toolbar). If the popup truly extends
-  // past the screen edge, the inner chip row's own
-  // `overflowX: auto` handles horizontal scroll for the chips
-  // themselves. Robust left-anchor > clever clamp.
-  const x = Math.round(rect.x);
-  // Anchor the chip strip's bottom edge just above the dialog top edge.
-  // The strip sits entirely outside the dialog window (no chrome overlap)
-  // with a small visual gap — feels like an attached external toolbar.
-  const y = Math.round(rect.y - DIALOG_POPUP_STRIP_HEIGHT - DIALOG_POPUP_GAP_PX);
+
+  // DPI SSOT: Electron decides "which monitor" via getDisplayMatching
+  // against the dialog rect; the matched display's workArea (DIP) is
+  // the source of truth for placement math because setBounds expects
+  // DIP. Note we are NOT positioning via PS here — this is a native
+  // Electron BrowserWindow, so the SSOT for its coords is Electron's
+  // own screen API (consistent DIP coords for setBounds).
+  const screen = getScreen();
+  const display = screen.getDisplayMatching({
+    x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+  });
+  const wa = display.workArea;
+
+  const monitorKey = getMonitorKey(wa);
+  const saved = (store.get('dialogPopupPositions') || {})[monitorKey];
+  const pos = clampPopupBounds(saved || defaultPopupPosition(wa), wa);
+
   try {
-    dialogPopupWin.setBounds({ x, y, width, height: DIALOG_POPUP_HEIGHT });
-  } catch (_) { /* dialog moved off-screen mid-set; ignore */ }
+    dialogPopupWin.setBounds({
+      x: pos.x, y: pos.y,
+      width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
+    });
+  } catch (_) { /* monitor went away mid-set; ignore */ }
 }
 
 function createDialogPopupWindow(rect, dialogTitle) {
@@ -1633,7 +1653,7 @@ function createDialogPopupWindow(rect, dialogTitle) {
   } catch (_) {}
 
   dialogPopupWin = new BrowserWindow({
-    width: Math.max(420, Math.min(rect?.width ?? 480, 900)),
+    width: DIALOG_POPUP_WIDTH,
     height: DIALOG_POPUP_HEIGHT,
     x: 0, y: 0,
     frame: false, transparent: true, resizable: false,
@@ -4256,6 +4276,74 @@ function registerIpcHandlers() {
     } else {
       dialogPopupWin.setIgnoreMouseEvents(true, { forward: true });
     }
+  });
+
+  // ── Drag-to-move (user repositions the popup) ─────────────────────
+  // Three-phase IPC: start records initial cursor + window pos, move
+  // applies the delta on each pointermove, end persists the final
+  // position keyed by the current monitor's workArea signature.
+  // Cursor positions come from Electron's screen API (DIP) so they
+  // share a coordinate space with setBounds — no PS detour needed.
+  let dialogDragOrigin = null;
+
+  ipcMain.on('dialog-popup-drag-start', () => {
+    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+    const cur = getScreen().getCursorScreenPoint();
+    const b   = dialogPopupWin.getBounds();
+    dialogDragOrigin = { cx: cur.x, cy: cur.y, wx: b.x, wy: b.y };
+  });
+
+  ipcMain.on('dialog-popup-drag-move', () => {
+    if (!dialogDragOrigin || !dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+    const cur = getScreen().getCursorScreenPoint();
+    const nx  = dialogDragOrigin.wx + (cur.x - dialogDragOrigin.cx);
+    const ny  = dialogDragOrigin.wy + (cur.y - dialogDragOrigin.cy);
+    try {
+      dialogPopupWin.setBounds({
+        x: Math.round(nx), y: Math.round(ny),
+        width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
+      });
+    } catch (_) { /* monitor disappeared mid-drag */ }
+  });
+
+  ipcMain.on('dialog-popup-drag-end', () => {
+    if (!dialogDragOrigin) return;
+    dialogDragOrigin = null;
+    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+    // Persist by whichever monitor the popup ended up on (user might
+    // have dragged across a monitor boundary). Clamp before saving so
+    // we never persist an off-screen position.
+    const b = dialogPopupWin.getBounds();
+    const display = getScreen().getDisplayMatching(b);
+    const wa = display.workArea;
+    const clamped = clampPopupBounds({ x: b.x, y: b.y }, wa);
+    if (clamped.x !== b.x || clamped.y !== b.y) {
+      try {
+        dialogPopupWin.setBounds({
+          x: clamped.x, y: clamped.y,
+          width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
+        });
+      } catch (_) {}
+    }
+    const positions = store.get('dialogPopupPositions') || {};
+    positions[getMonitorKey(wa)] = clamped;
+    store.set('dialogPopupPositions', positions);
+  });
+
+  ipcMain.on('dialog-popup-reset-position', () => {
+    if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !dialogLastRect) return;
+    const display = getScreen().getDisplayMatching({
+      x: dialogLastRect.x, y: dialogLastRect.y,
+      width: dialogLastRect.width, height: dialogLastRect.height,
+    });
+    const wa  = display.workArea;
+    const key = getMonitorKey(wa);
+    const positions = store.get('dialogPopupPositions') || {};
+    if (positions[key]) {
+      delete positions[key];
+      store.set('dialogPopupPositions', positions);
+    }
+    positionDialogPopup(dialogLastRect);
   });
 
   // Start the dialog detection poll. Runs for the app lifetime — cheap

@@ -4805,6 +4805,7 @@ export default function App() {
             exportFolder={exportFolder}
             showToast={showToast}
             canUseMarkdownEditor={entitlement.canUseMemoMarkdownEditor()}
+            canUseMarkdownCleanup={entitlement.canUseMemoMarkdownCleanup()}
             canUseMdExport={entitlement.canUseMemoMdExport()}
             onUpgradePrompt={(reason) => {
               if (reason === 'md-export') openPaywall('memo-md-export-lock');

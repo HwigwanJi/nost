@@ -38,6 +38,7 @@ export interface Entitlement {
     presets: number;
     containerEnabled: boolean;
     memoMarkdownEditor: boolean;
+    memoMarkdownCleanup: boolean;
     memoMdExport: boolean;
     memoFolderSync: boolean;
   };
@@ -55,6 +56,9 @@ export interface Entitlement {
   canUseContainer:     () => boolean;
   /** Memo Pro features. UI surfaces a lock indicator + opens paywall when false. */
   canUseMemoMarkdownEditor: () => boolean;
+  /** Cleanup palette (markdownify / format / bullets / compact / plain).
+   *  Currently Free — text-transform tools work standalone. */
+  canUseMemoMarkdownCleanup: () => boolean;
   canUseMemoMdExport:       () => boolean;
   canUseMemoFolderSync:     () => boolean;
 }
@@ -69,6 +73,7 @@ const PRO_LIMITS = {
   presets: 3,
   containerEnabled: true,
   memoMarkdownEditor: true,
+  memoMarkdownCleanup: true,
   memoMdExport: true,
   memoFolderSync: true,
 } as const;
@@ -153,12 +158,16 @@ export function useEntitlement(data: AppData): Entitlement {
       canAddDeck:          (n) => n < limits.decks,
       canAddFloatingBadge: (n) => n < limits.floatingBadges,
       canAddWidget:        (n) => n < limits.widgets,
-      // Preset 1 is always free; 2/3 need pro tier.
-      canUsePreset: (id) => id === '1' ? true : isPro,
+      // Preset N is free iff N <= limits.presets. Free = 2 → '1' and '2'
+      // accessible; '3' blocked. Pro = 3 → all accessible. Generalised
+      // (was hardcoded to id==='1') so flipping FREE_LIMITS.presets is
+      // a one-place change.
+      canUsePreset: (id) => Number(id) <= limits.presets,
       canUseContainer: () => limits.containerEnabled,
-      canUseMemoMarkdownEditor: () => limits.memoMarkdownEditor,
-      canUseMemoMdExport:       () => limits.memoMdExport,
-      canUseMemoFolderSync:     () => limits.memoFolderSync,
+      canUseMemoMarkdownEditor:  () => limits.memoMarkdownEditor,
+      canUseMemoMarkdownCleanup: () => limits.memoMarkdownCleanup,
+      canUseMemoMdExport:        () => limits.memoMdExport,
+      canUseMemoFolderSync:      () => limits.memoFolderSync,
     };
   }, [data.settings.license]);
 }

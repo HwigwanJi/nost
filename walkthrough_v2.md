@@ -32,7 +32,13 @@
 | v1.3.34 | 환경설정 Option C 재구조화 (4 groups × 2-3 sub-tabs), **doc 코호트 first-class type 승격**, ItemWizard segmented tab (카드/메모), **공식 Google/GitHub 브랜드 마크**, **Auth CSP allowlist + PKCE verifier safeStorage 영속화**, Phase 2 sync 범위 합의 + cohort SSOT 골격 |
 | v1.3.35 | **Single-instance lock 강화** (second instance `process.exit(0)`) + **DocCohortDialog 깨짐 fix** + **Dialog 너비 SSOT 도입** (`dialog.tsx` 의 `DIALOG_SIZE` 토큰 + `<DialogContent size="sm\|md\|lg\|xl">` 패턴, ssot-index §A.17) |
 | v1.3.36 | **Auth loopback HTTP callback** — `nost://` protocol 대신 `http://127.0.0.1:14502/auth/callback` 사용. 새 electron 인스턴스 spawn 없음 (single-instance race 우회). 사용자에게 "로그인 완료" HTML 페이지 직접 응답. **로그인 토스트** 추가 (sessionStorage flag 패턴). **Dialog minWidth** 도입 (좁은 pair-split 윈도우에서도 contents 안 깨짐). **DocCohort suffix wildcard** — mask 의 per-revision suffix 가 `{*}` placeholder 가 되어 `_260513.pptx` / `_260512_콘진.pptx` / `_260511_F.pptx` 같은 변형이 모두 같은 cohort 로 인식 + 옛 binding 자동 reset |
-| v1.3.37 (미커밋) | **path → type 분류기 SSOT 회귀 fix** — `handleFileDrop` 의 URL/text 폴백 + `/clipboard` 슬래시 명령어 2곳에서 `isPath ? 'folder' : ...` 하드코딩이 `inferItemFromPath` SSOT 를 우회. .pptx 등 OneDrive virtual file 처럼 `dataTransfer.files` 가 비고 text/uri-list 로만 들어올 때 확장자 검사 없이 'folder' 로 저장되던 v1.3.34 회귀. **Save-As 컨텍스트바 위치** — title bar 18px 오버랩에서 dialog 위 6px 여백 외부로 이동 (사용자 선호 환원) |
+| v1.3.37 | **path → type 분류기 SSOT 회귀 fix** — `handleFileDrop` 의 URL/text 폴백 + `/clipboard` 슬래시 명령어 2곳에서 `isPath ? 'folder' : ...` 하드코딩이 `inferItemFromPath` SSOT 를 우회. .pptx 등 OneDrive virtual file 처럼 `dataTransfer.files` 가 비고 text/uri-list 로만 들어올 때 확장자 검사 없이 'folder' 로 저장되던 v1.3.34 회귀. **Save-As 컨텍스트바 위치** — title bar 18px 오버랩에서 dialog 위 6px 여백 외부로 이동 (사용자 선호 환원). **Save-As 컨텍스트바 정밀도** — `#32770` 자식 walk (`GetWindow` GW_CHILD/HWNDNEXT) 로 "저장/Save"+"취소/Cancel" Button 쌍 검사 → `isFileDialog` 산출. Slack/Discord 등 third-party `#32770` 차단 |
+| v1.3.38 | **Phase 2.A 수동 동기화 MVP** — Supabase 기반, 사용자 클릭 시에만 (백그라운드 push 없음). lib/sync/{device, snapshot, index}.ts 신규. Local-first union 머지 (로컬 카드 절대 안 덮어쓰임). 디바이스 등록/조회/삭제 UI. **창 모서리 드래그 → 슬라이더 % 자동 반영** (main 'resized' → IPC → renderer settings 패치) |
+| v1.3.39 | **성능 측정 probe** — IPC 채널별 호출수, electron-store 쓰기 빈도, 타이머 tick, React 리렌더 횟수를 10초 윈도우로 main.log 에 집계. `[perf]` prefix. 자세히 `plans/perf-probe.md` |
+| v1.3.40 | **렉 fix** — `ItemCard`/`MemoCard`/`SpaceAccordion` 에 `React.memo` + 커스텀 comparator (콜백 ref 무시, 데이터 필드만 비교). 클립보드 분류 캐시 (analyze-clipboard IPC 가 텍스트 hash 동일 시 cached return). App 1회 리렌더에 카드 41개 다 따라가던 패턴 해결 |
+| v1.3.41 | **doc 드롭 fix (커스텀 docExtensions 반영)** — `plausibleTypes(v, docExts?)` 시그너처 변경, App.tsx 가 `data.settings.documentExtensions` 전달. **SortableSpace transform 'none' 정책** — dnd-kit 자동 shift 폐기 (페어 모델과 mismatch 로 3-열 시각 글리치). **컨텍스트바 BFS** — depth 5 walk 로 modern Common Item Dialog (DirectUIHWND 중첩) 의 버튼 발견. 타이틀 fallback 안전망. **Free/Pro 게이팅 활성화** — `BETA_FORCE_PRO=false` flip. quotaChecks 활성화, PaywallModal 11 reason, 프리셋/스페이스/카드 잠금 UI |
+| v1.3.42 (hotfix) | **`updateSettings` idempotent — 창 크기 조정 시 렌더러 크래시 fix**. base-ui Slider 가 array reference 변경에 onValueChange 발사 → updateSettings → 5개 IPC + save 무조건 발사 → setRawData → 재렌더 → 슬라이더 재발사 → 무한 루프. IPC 100회+/10s, 4.5MB 디스크 쓰기, 결국 renderer 크래시. fix: updateSettings 가 각 IPC 를 해당 필드 실제 변경 시에만 발사 + settings JSON 동일 시 save skip. perf-probe 가 진단 결정적이었음 (v1.3.39 의 보람) |
+| Free/Pro 조정 (미커밋, 2026-05-16) | 카드 16→40, 프리셋 1→2, 플로팅 뱃지 1→2, 위젯 1→2. 메모 정리도구 (markdownify 등) Pro→Free 전환 (preview 만 Pro 유지). `canUsePreset` 로직 데이터-드리븐으로 일반화. 자세히 `plans/free-pro-policy.md` |
 
 ---
 
@@ -593,49 +599,51 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 
 ---
 
-## 10. 현재 WIP 상태 (v1.3.37 미커밋)
+## 10. 현재 WIP 상태 (v1.3.42 출시 완료, Free/Pro 조정 미커밋)
 
 > 매 세션마다 갱신 — `git status --short`로 직접 확인하세요.
+> v1.3.37 ~ v1.3.42 전부 출시됨 (GitHub Releases). 자세히는 §0 변경 요약 + §11 해결됨.
 
-### v1.3.37 미커밋 작업 (2026-05-14)
+### 미커밋 변경 (2026-05-16)
 
-1. **path → type SSOT 회귀 fix** (`frontend/src/App.tsx`)
-   - `handleFileDrop` URL/text 폴백 (line ~2853): `isPath ? 'folder' : 'text'` → `inferItemFromPath` 경유
-   - `handleCmd` `clipboard` 분기 (line ~3014): 동일 패턴 → `inferItemFromPath` 경유
-   - 증상: `D:\02_Projects\54_이스포츠 실태조사\02_착수보고\(KG)...pptx` 드롭 시 'doc' 이 아닌 'folder' 로 저장되던 v1.3.36 회귀
-   - root cause: `dataTransfer.files` 가 비고 text/uri-list 만 들어오는 케이스 (OneDrive virtual / 클라우드 동기 폴더) 에서 폴백 분기가 SSOT 우회
-   - 분류기 inventory 8 → 10 으로 갱신 (`plans/checklists.md` §1)
-   - anti-pattern grep 추가 (`plans/anti-pattern-grep.md` §3.5)
+**Free/Pro 정책 조정** — 한도 너그럽게, 명확한 paywall 라인 유지:
 
-2. **Save-As 컨텍스트바 위치 — dialog 외부로 환원** (`main.js`)
-   - `DIALOG_POPUP_TITLEBAR_PX = 32` (title bar 18px 오버랩) → `DIALOG_POPUP_GAP_PX = 6` (dialog 위 6px 여백)
-   - `y = rect.y + 32 - STRIP_HEIGHT` → `y = rect.y - STRIP_HEIGHT - 6`
-   - 사용자 피드백: 창 안에 걸쳐 있으면 시선 분산. 외부에 떠 있는 게 "툴바가 dialog 에 부착된" 인상
+| 자원 | 이전 | 지금 |
+|---|---|---|
+| 카드 | 16 / preset | **40** / preset |
+| 프리셋 | 1 | **2** (3만 잠금) |
+| 플로팅 뱃지 | 1 | **2** |
+| 위젯 카드 | 1 / preset | **2** / preset |
+| 메모 정리도구 (markdownify 등) | Pro | **Free** (텍스트 변환은 단독 유용) |
 
-3. **Save-As 컨텍스트바 정밀도 개선 — 자식 버튼 검사** (`foreground-window.js` + `main.js`)
-   - 이전: `#32770` 클래스 + 제목 블랙리스트(`속성|Properties|인쇄|...`) → Slack/Discord 등 third-party `#32770` 통과
-   - 변경: 자식 윈도우 walk (`GetWindow` GW_CHILD + GW_HWNDNEXT, 콜백 없는 경량 iteration) → "Button" 클래스 자식 중 accept(`저장|열기|확인|Save|Open|OK|...`)와 cancel(`취소|닫기|Cancel|Close`) 텍스트가 **둘 다 존재**할 때만 `isFileDialog: true`
-   - Windows Common Item Dialog (IFileOpenDialog/IFileSaveDialog) 사용하는 모든 앱은 두 버튼 쌍 보장 — Chrome 업로드, VS Code, Office native, WinForms SaveFileDialog 모두 매칭
-   - 비용: 한 다이얼로그당 ~50~200μs (#32770 일 때만, 600ms 폴 cadence)
-   - PS 폴백(`detect-dialog.ps1`)은 `isFileDialog` 필드 미세팅 → main.js 에서 `=== undefined` 시 기존 동작으로 fallback (koffi init 실패 시에만 트리거되므로 정상 케이스 영향 없음)
+변경 파일: `types.ts FREE_LIMITS`, `useEntitlement.ts` (`canUseMemoMarkdownCleanup` 신규, `canUsePreset` 데이터-드리븐), `PaywallModal.tsx` (카피 4건), `MemoEditor.tsx` (정리기 게이트 분리), `App.tsx` (prop 전달).
+
+자세히 `plans/free-pro-policy.md` (Free/Pro 정책 SSOT, 결정 로그, 추가 게이트 체크리스트).
 
 ### 다음 라운드 작업 후보
 
-- **PS 폴백 detect-dialog.ps1 에 자식 버튼 검사 미러링** (정밀도 개선 완성용, koffi init 실패 케이스 대비)
-- **Phase 2 sync 본격 구현**
-  - `lib/sync.ts` — push/pull 외부 store + LWW per-field 머지
-  - `useAppData.save()` 에 sync 트리거 hook (cohort A 만)
-  - Realtime channel 구독 (memos + app_data_snapshots)
-  - AccountTab 에 sync 토글 + 디바이스 목록 UI
-  - 첫 sync 시 cohort C 자동 강등 + 안내 토스트 (`plans/sync-and-auth.md` §14 #3)
+**우선순위 1 — 결제 인프라 (Pro 실제 발급)**
+- Supabase Function — license verify endpoint (key + deviceFingerprint → JWT 서명)
+- Stripe / Toss webhook → license 발급
+- PaywallModal "Pro로 업그레이드" 버튼 → checkout flow 연결
+- 무료 체험 (trial) 자동 발급 — `newTrialLicense()` 호출 site 추가 (첫 Pro 게이트 hit 시)
 
-### 다음 라운드 작업 후보 (Phase 2 sync 구현)
+**우선순위 2 — Phase 2.B Realtime + memos 분리**
+- Supabase Realtime channel 구독 (`app_data_snapshots` + `memos`)
+- 메모 body → `memos` 별도 테이블 (large body 분리, 향후 full-text search)
+- (`plans/sync-and-auth.md` §11 Phase 2 의 미완 부분)
 
-- `lib/sync.ts` — push/pull 외부 store + LWW per-field 머지
-- `useAppData.save()` 에 sync 트리거 hook (cohort A 만)
-- Realtime channel 구독 (memos + app_data_snapshots)
-- AccountTab 에 sync 토글 + 디바이스 목록 UI
-- 첫 sync 시 cohort C 자동 강등 + 안내 토스트 (`plans/sync-and-auth.md` §14 #3)
+**우선순위 3 — 메모 폴더 sync 실제 구현**
+- 게이트 (`canUseMemoFolderSync`) 만 깔려있고 실제 sync 로직 미구현
+- `exportFolder` 설정 옆에 "자동 동기화" 토글 (Pro)
+- memo body 변경 watcher → 폴더에 .md 파일 mirror
+- 단방향 (memo → folder). Obsidian Vault 호환
+
+**우선순위 4 — 튜토리얼 Pro 뱃지**
+- quest 에 "Pro" 표시
+- Free 사용자가 Pro quest 시도 → "구경하기 모드" (실제 기능 잠금)
+
+**우선순위 5 — PS 폴백 detect-dialog.ps1 에 BFS 미러링** (정밀도 개선 완성용, koffi init 실패 케이스 대비)
 
 ### v1.3.34 출시분 (참고용 — 자세히는 §0 변경 요약 + §11 해결됨)
 
@@ -746,9 +754,19 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 - ✅ 로그인 성공 시 토스트 누락 (v1.3.36 — `auth.ts` 가 signed-out → signed-in 전환 시 sessionStorage flag, App.tsx 첫 mount 에서 1회 showToast)
 - ✅ pair-split 좁은 mainWindow 에서 dialog contents 깨짐 (v1.3.36 — `DIALOG_SIZE` 의 sizeStyle 에 minWidth 추가, 320px floor)
 - ✅ DocCohort 가 같은 폴더의 버전 1개만 인식 (v1.3.36 — `rebuildMask` 가 suffix 를 `{*}` 와일드카드로 처리. main.js 의 mask→regex 변환에서 `{*}` 도 `.*?` 으로. 옛 binding 은 `maybeResetStaleCohortBinding` 마이그레이션이 자동 reset)
-- ✅ .pptx 드롭이 'folder' 로 오분류 (v1.3.37 미커밋 — `handleFileDrop` 의 text-fallback 분기와 `/clipboard` 슬래시 명령어 2곳에서 `isPath ? 'folder' : ...` 하드코딩이 `inferItemFromPath` SSOT 우회. 둘 다 SSOT 경유로 교체)
-- ✅ Save-As 컨텍스트바가 dialog title bar 에 걸침 (v1.3.37 미커밋 — `y = rect.y - STRIP - 6` 으로 dialog 외부 위치로 환원, 사용자 선호)
-- ✅ Save-As 컨텍스트바가 Slack/Discord 등 비-파일-dialog 에서도 뜸 (v1.3.37 미커밋 — `foreground-window.js` 에서 #32770 자식 walk + Button "accept+cancel" 쌍 검사로 `isFileDialog` 판정. 제목 블랙리스트 폐기)
+- ✅ .pptx 드롭이 'folder' 로 오분류 (v1.3.37 — `handleFileDrop` 의 text-fallback 분기와 `/clipboard` 슬래시 명령어 2곳에서 `isPath ? 'folder' : ...` 하드코딩이 `inferItemFromPath` SSOT 우회. 둘 다 SSOT 경유로 교체)
+- ✅ Save-As 컨텍스트바가 dialog title bar 에 걸침 (v1.3.37 — `y = rect.y - STRIP - 6` 으로 dialog 외부 위치로 환원, 사용자 선호)
+- ✅ Save-As 컨텍스트바가 Slack/Discord 등 비-파일-dialog 에서도 뜸 (v1.3.37 — `foreground-window.js` 에서 #32770 자식 walk + Button "accept+cancel" 쌍 검사로 `isFileDialog` 판정. 제목 블랙리스트 폐기)
+- ✅ 창 모서리 드래그 후에도 슬라이더 % 가 옛 값에 머무름 (v1.3.38 — main 'resized' 이벤트에서 pct 재계산 + IPC `window-size-pct-changed` → renderer settings 패치. 200ms debounce + 1pct 가드로 echo 방지)
+- ✅ Phase 2.A 수동 동기화 MVP — Supabase 기반, manual-only 모델 (v1.3.38). lib/sync/{device, snapshot, index}.ts. Local-first union 머지로 로컬 카드 절대 안 덮어쓰임. AccountTab 의 [현재 기기 추가] [동기화하기] 2-버튼 + 디바이스 목록 + 해제
+- ✅ 성능 진단 부재 (v1.3.39 — IPC/store/timer/render 10초 윈도우 집계 main.log 에 자동 기록. `[perf]` prefix. `plans/perf-probe.md` 참조)
+- ✅ App 1회 리렌더에 카드 41개 다 따라 리렌더되는 패턴 (v1.3.40 — `ItemCard`/`MemoCard`/`SpaceAccordion` 에 React.memo + 커스텀 comparator. 콜백 무시 + 데이터 필드만 비교. perf log 의 ItemCard×897 → 수십 단위로 감소)
+- ✅ 클립보드 분류기 idle 시에도 1.5초마다 full 재계산 (v1.3.40 — main.js analyze-clipboard 에 텍스트 hash + docExts 캐시. 동일 입력 시 즉시 cached return)
+- ✅ 커스텀 docExtensions 무시되는 plausibleTypes (v1.3.41 — `plausibleTypes(v, docExts?)` 시그너처 변경. App.tsx 가 `data.settings.documentExtensions` 전달. epub 등 사용자 추가 확장자도 doc 인식)
+- ✅ 스페이스 페어 드래그 시 3-열 시각 글리치 (v1.3.41 — `SortableSpace` 의 dnd-kit auto-shift transform 폐기 (`transform: 'none'`). drag overlay + drop indicator 만으로 정확한 신호 전달. Notion/Linear 패턴)
+- ✅ Modern Save-As (DirectUIHWND 중첩) 에서 컨텍스트바 안 뜸 (v1.3.41 — `foreground-window.js` 의 자식 walk 를 BFS depth 5 로 확장. 타이틀 fallback 안전망 추가)
+- ✅ Free/Pro 게이팅 비활성 (v1.3.41 — `BETA_FORCE_PRO=false`. PaywallModal 11 reason 연결. 프리셋 탭 / +스페이스 / +카드 / 메모 마크다운 / .md 저장 잠금 UI)
+- ✅ 창 크기 조정 시 렌더러 크래시 + 창 멈춤 (v1.3.42 hotfix — `updateSettings` 가 5개 IPC 무조건 발사하던 게 base-ui Slider 와 무한 루프 형성. fix: 각 IPC 가 해당 필드 실제 변경 시에만 발사 + settings JSON 동일 시 save skip. perf-probe 가 진단 결정적이었음)
 
 ### 진행 중
 - 🔄 **인증 Phase 1 E2E** — `plans/auth-status.md` §3·§4 (외부 console 작업)

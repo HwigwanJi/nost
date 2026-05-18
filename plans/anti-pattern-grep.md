@@ -120,6 +120,19 @@ grep -rn 'setZoomFactor' main.js frontend/src preload.js
 **Expected**: `did-finish-load` 의 강제 1.0 리셋 한 줄만 (`main.js`)
 **Fix**: 크기는 `windowSizePct` 만 사용
 
+### 3.2b 무가드 settings-push IPC (v1.3.42 회귀 가드)
+
+`updateSettings` / 설정 push 함수가 IPC 를 **무조건** 발사하면 → controlled-input + state update 가 만나는 순간 무한 루프 → 렌더러 크래시. v1.3.42 hotfix 의 원인.
+
+```bash
+# settings IPC 가 idempotent 가드 없이 발사되는 곳 검출
+grep -rEn "electronAPI\.(setOpacity|setAutoHide|setWindowOpenAt|updateShortcut|setWindowSizePct)\(" frontend/src
+```
+
+**Expected**: 모든 호출이 "값이 변경됐을 때만 발사" 가드 안에 있어야 함 (`useAppData.updateSettings` 의 idempotent 패턴 참조)
+**Fix**: `if (next.X !== prev.X) electronAPI.setX(next.X);`
+**진단**: 의심되면 `plans/perf-probe.md` §3 의 비정상 신호 표 — `set-opacity / set-auto-hide / setWindowOpenAt / updateShortcut` 이 동시에 동일 횟수로 폭주하면 본 패턴
+
 ### 3.3 컴포넌트마다 `keydown` 직접 (escapeStack 우회)
 
 ```bash

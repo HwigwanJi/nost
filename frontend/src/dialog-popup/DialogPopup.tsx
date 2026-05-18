@@ -60,6 +60,10 @@ interface Api {
    *  the transparent extra area must be click-through, hence this
    *  toggle. */
   setCapture:   (capture: boolean) => void;
+  dragStart:    () => void;
+  dragMove:     () => void;
+  dragEnd:      () => void;
+  resetPosition: () => void;
 }
 const api = (window as unknown as { dialogPopup: Api }).dialogPopup;
 
@@ -148,6 +152,29 @@ export function DialogPopup() {
     return () => window.removeEventListener('keydown', fn);
   }, [drillSpaceId]);
 
+  // Drag-to-move handle. Fires dragStart on pointerdown, throttles
+  // pointermove through rAF to avoid IPC flood (~16/frame is plenty for
+  // setBounds), and dragEnd on pointerup. Main records the cursor delta
+  // and persists the final position per-monitor.
+  const onDragHandleDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    api.dragStart();
+    let pending = false;
+    const onMove = () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => { pending = false; api.dragMove(); });
+    };
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      api.dragEnd();
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }, []);
+
   const onClickFolder = useCallback((folderId: string, path: string) => {
     setPendingFolderId(folderId);
     api.jumpTo(path);
@@ -219,6 +246,28 @@ export function DialogPopup() {
         transition: 'background 180ms ease, border-color 180ms ease',
       }}
     >
+      {/* Drag handle — pointerdown initiates monitor-anchored
+          drag-to-move. Cursor switches to `grab` so the affordance is
+          discoverable; click-through is off here because the strip is
+          inside the interactive zone. */}
+      <div
+        onPointerDown={onDragHandleDown}
+        title="끌어서 이동"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 22,
+          height: 26,
+          color: muted,
+          cursor: 'grab',
+          flexShrink: 0,
+          userSelect: 'none',
+        }}
+      >
+        <span className="ms-rounded" style={{ fontSize: 16, pointerEvents: 'none' }}>drag_indicator</span>
+      </div>
+
       {/* Left section: brand + back/title */}
       {drillSpace ? (
         <button
@@ -322,6 +371,18 @@ export function DialogPopup() {
           />
         </>
       )}
+
+      {/* Overflow menu — reset position (and room for future toolbar
+          settings). Sits BEFORE close because close is the more frequent
+          action and stays at the rightmost edge per platform convention. */}
+      <OverflowMenu
+        light={light}
+        text={text}
+        muted={muted}
+        border={border}
+        bg={bg}
+        onReset={() => api.resetPosition()}
+      />
 
       {/* Close (this dialog only — popup reattaches to the next dialog) */}
       <button
@@ -579,6 +640,101 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
               </button>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Three-dot overflow menu. Currently houses only "원래 위치로" (reset to
+ * default monitor-anchored position), but the menu shape is here so
+ * future per-popup toolbar prefs (auto-hide, alignment, etc.) can land
+ * without another button slot.
+ */
+function OverflowMenu({ light, text, muted, border, bg, onReset }: {
+  light: boolean;
+  text: string;
+  muted: string;
+  border: string;
+  bg: string;
+  onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest('[data-overflow-menu]')) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown',  onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown',  onKey);
+    };
+  }, [open]);
+
+  return (
+    <div data-overflow-menu style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        title="옵션"
+        style={{
+          ...chipStyle(border, text, muted, true),
+          padding: '0 6px',
+          width: 26,
+          justifyContent: 'center',
+          background: open ? (light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)') : 'transparent',
+        }}
+      >
+        <span className="ms-rounded" style={{ fontSize: 14 }}>more_vert</span>
+      </button>
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            minWidth: 140,
+            padding: 4,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            background: bg,
+            border: `1px solid ${border}`,
+            borderRadius: 8,
+            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.32)',
+            backdropFilter: 'blur(20px) saturate(160%)',
+            zIndex: 10,
+          }}
+        >
+          <button
+            onClick={() => { onReset(); setOpen(false); }}
+            onMouseEnter={e => { e.currentTarget.style.background = light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.07)'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '7px 10px',
+              background: 'transparent',
+              border: 'none',
+              borderRadius: 5,
+              color: text,
+              fontSize: 11,
+              fontFamily: 'inherit',
+              fontWeight: 500,
+              cursor: 'pointer',
+              textAlign: 'left',
+              transition: 'background 120ms ease',
+            }}
+          >
+            <span className="ms-rounded" style={{ fontSize: 14, color: muted }}>restart_alt</span>
+            <span>원래 위치로</span>
+          </button>
         </div>
       )}
     </div>

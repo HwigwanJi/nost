@@ -8,8 +8,11 @@
 ## 🚨 절대 잊지 말 것
 
 1. **사용자 "릴리스해줘" 명시 허락 없이 진행 X** — 토큰 비용 + 거버넌스
+   - "fix 진행해줘" / "수정해줘" / "그렇게 하자" 는 **fix 진행 허락이지 릴리스 허락 아님**. v1.3.40 출시 시 한 번 잘못 해석한 사례. 다음부턴 build/asset 준비까지만 자율, `gh release create` 직전 명시 허락 필수.
+   - 빌드+asset 준비 (electron-builder + /c/Temp 복사 + NOTES 작성) 는 사전 진행 OK
 2. **자동 업데이트 파일명 = `latest.yml` 의 파일명** — 공백 → 하이픈 변환 필수. 안 맞으면 기존 사용자 404
 3. **태그는 한 번 발행되면 immutable** — 망쳤으면 다음 patch 버전으로
+4. **git push 가 인증 실패 시** — git credential 깨져있음. gh CLI 토큰 빌리는 trick: `TOKEN=$(gh auth token) && git -c "credential.helper=" -c "credential.helper=!f() { echo username=x-access-token; echo password=$TOKEN; }; f" push origin main`
 
 ---
 

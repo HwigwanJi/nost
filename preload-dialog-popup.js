@@ -41,4 +41,18 @@ contextBridge.exposeInMainWorld('dialogPopup', {
    *  the dropdown room to open without dynamic resize, so we need
    *  click-through on the transparent extra area. */
   setCapture: (capture) => ipcRenderer.send('dialog-popup-set-capture', !!capture),
+
+  /** Drag-to-move protocol. The popup is monitor-anchored (not
+   *  dialog-anchored), so the user can drag it anywhere within the
+   *  current monitor's work area; the final position is persisted
+   *  per-monitor in the store. dragStart/move/end fire on pointerdown,
+   *  rAF-throttled pointermove, and pointerup respectively. */
+  dragStart: () => ipcRenderer.send('dialog-popup-drag-start'),
+  dragMove:  () => ipcRenderer.send('dialog-popup-drag-move'),
+  dragEnd:   () => ipcRenderer.send('dialog-popup-drag-end'),
+
+  /** Reset to default position (centred horizontally, 1/4 from the
+   *  bottom edge of the current monitor's work area). Clears the
+   *  saved position for that monitor. */
+  resetPosition: () => ipcRenderer.send('dialog-popup-reset-position'),
 });

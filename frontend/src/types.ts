@@ -484,16 +484,20 @@ export interface License {
 }
 
 /** Free-plan limits. A Pro subscription removes every cap.
- *  Tuned 2026-05-15 per founder decision:
- *    - totalCards 16 (was 20) — tighter to push earlier upgrade signal
- *    - 노드/덱/플로팅뱃지/위젯 1 — "맛보기 1개씩" 일관 정책
- *    - presets 1 — 프리셋 2/3 잠금
- *    - containerEnabled false — 컨테이너 슬롯 Pro 전용
- *    - memo: 마크다운 에디터 / .md 저장 / 폴더 sync 모두 Pro 전용 (false)
+ *  Tuned 2026-05-16 — 너그러운 free, 명확한 paywall 라인:
+ *    - totalCards 40 (was 16) — 일상 사용 충분히 가능
+ *    - presets 2 (was 1) — 일/개인 분리 정도는 free
+ *    - floatingBadges 2 (was 1) — 자주 쓰는 묶음 2개 핀 가능
+ *    - widgets 2 (was 1) — 미디어 + 컬러스와치 정도 동시 가능
+ *    - spaces / nodes / decks 그대로
+ *    - containerEnabled / memoMarkdownEditor (preview) / memoMdExport /
+ *      memoFolderSync — 여전히 Pro 전용
+ *    - memoMarkdownCleanup — Free 전환 (markdownify·format·bullets·compact·
+ *      plain 정리 도구는 단독으로도 유용해서 일상 사용에 풀어놓음)
  */
 export const FREE_LIMITS = {
   /** Max cards across ALL spaces in the active preset. */
-  totalCards: 16,
+  totalCards: 40,
   /** Max spaces in the active preset. */
   spaces: 4,
   /** Max nodes in the active preset. */
@@ -501,15 +505,19 @@ export const FREE_LIMITS = {
   /** Max decks in the active preset. */
   decks: 1,
   /** Max floating badges (any type). */
-  floatingBadges: 1,
+  floatingBadges: 2,
   /** Max widget cards (media, future kinds). */
-  widgets: 1,
-  /** Presets 2 and 3 are Pro-only; preset 1 is always free. */
-  presets: 1,
+  widgets: 2,
+  /** Preset 3 is Pro-only; presets 1 and 2 are free. */
+  presets: 2,
   /** Container feature (slot-based cards) is Pro-only. */
   containerEnabled: false,
-  /** Markdown rich editor for memo body (live preview + toolbar). Pro. */
+  /** Markdown rich editor for memo body — live preview + toolbar. Pro. */
   memoMarkdownEditor: false,
+  /** Markdown cleanup palette (markdownify / format / bullets / compact /
+   *  plain). Free since these tools are useful standalone (text transforms,
+   *  no preview required). */
+  memoMarkdownCleanup: true,
   /** Save memo body as .md file. Pro. */
   memoMdExport: false,
   /** Auto-mirror memos to a user-chosen folder (Obsidian vault style). Pro. */

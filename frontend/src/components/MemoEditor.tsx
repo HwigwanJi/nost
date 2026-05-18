@@ -65,13 +65,14 @@ interface MemoEditorProps {
   /** Called by the empty-on-close auto-trash logic. */
   onAutoDeleteIfEmpty: () => void;
   showToast?: (msg: string, opts?: { actions?: Array<{ label: string; icon: string; onClick: () => void }>; duration?: number }) => void;
-  /** Pro 게이트 (2026-05-16). Free 사용자에겐:
-   *    - preview toggle 숨김 (마크다운 렌더링 미리보기는 Pro 전용)
-   *    - cleanup tool 팔레트 숨김 (markdownify / format 등 고급 정리는 Pro)
-   *    - Ctrl+M 단축키도 no-op
-   *  Free 는 plain textarea + copy 만으로 메모 작성. 마크다운 문법 자체는
-   *  당연히 입력 가능 (그건 그냥 텍스트). "랜더링" 만 Pro 영역. */
+  /** Pro 게이트 — 마크다운 미리보기 (Ctrl+M / 눈 아이콘). Free 면 자물쇠.
+   *  Free 는 plain textarea + copy + 정리도구로 메모 작성. 마크다운 문법
+   *  자체는 그냥 텍스트로 입력 가능. "렌더링" 만 Pro 영역. */
   canUseMarkdownEditor?: boolean;
+  /** 정리 도구 팔레트 (markdownify / format / bullets / compact / plain).
+   *  2026-05-16 Free 로 전환 — 텍스트 변환 도구는 미리보기 없이도 유용
+   *  하므로 일상 사용에 풀어놓음. */
+  canUseMarkdownCleanup?: boolean;
   /** .md 파일로 저장 (Pro 전용). save palette 의 .md 옵션이 잠긴 표시로
    *  뜸 — 클릭 시 paywall (memo-md-export-lock). */
   canUseMdExport?: boolean;
@@ -87,6 +88,7 @@ export function MemoEditor({
   onChangeBody, onClose, onExtend, onTogglePin, onTrash,
   onAutoDeleteIfEmpty, showToast,
   canUseMarkdownEditor = true,  // 기본 true — 호출자 누락 시 기존 동작 유지
+  canUseMarkdownCleanup = true,
   canUseMdExport = true,
   onUpgradePrompt,
 }: MemoEditorProps) {
@@ -879,20 +881,21 @@ export function MemoEditor({
             title="복사 (Ctrl+Shift+C)"
             onClick={handleCopy}
           />
-          {/* ── Cleanup tool palette (Adobe-style) — Pro 전용 ─────
-              마크다운 변환 / 정리 도구는 마크다운 편집 사용자 전용 가치
-              라서 Pro 게이트에 묶임. Free 사용자는 이 자리에 자물쇠
-              버튼만 보임 (클릭 시 paywall).
+          {/* ── Cleanup tool palette (Adobe-style) ────────────
+              2026-05-16: Free 로 전환 (canUseMarkdownCleanup). 텍스트
+              변환 도구(markdownify / format / bullets / compact / plain)는
+              미리보기 없이도 단독으로 유용해서 일상 사용에 풀어놓음.
+              미리보기 토글은 여전히 Pro (canUseMarkdownEditor).
               The toolbar slot mirrors WHATEVER tool is currently
               armed. Hover reveals the full palette so the user
               can swap the armed tool — clicking a palette entry
               ONLY arms it (icon swaps). Actually running the
               cleanup happens by clicking the main slot afterwards. */}
-          {!canUseMarkdownEditor ? (
+          {!canUseMarkdownCleanup ? (
             <HeaderBtn
               icon="lock"
               title="마크다운 정리 도구는 Pro 전용 — 클릭하면 안내가 뜹니다"
-              onClick={() => onUpgradePrompt?.()}
+              onClick={() => onUpgradePrompt?.('markdown')}
             />
           ) : (
           <div
