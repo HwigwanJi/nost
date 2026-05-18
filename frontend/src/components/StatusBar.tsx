@@ -23,7 +23,6 @@ import { electronAPI } from '../electronBridge';
 import {
   WINDOW_SIZE_PCT_MIN, WINDOW_SIZE_PCT_MAX, WINDOW_SIZE_PCT_PRESETS, DEFAULT_WINDOW_SIZE_PCT,
 } from '../types';
-import { Slider } from '@/components/ui/slider';
 import { Icon } from '@/components/ui/Icon';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
@@ -138,18 +137,17 @@ export function StatusBar({ sizePct, onSizePctChange }: Props) {
       {/* spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* ── Window-size controls (right) — PowerPoint-style ───────── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {/* ── Window-size controls (right) — numeric input ─────────────
+          Slider was replaced (v1.3.44) — the continuous slider drag
+          fired setBounds at every tick, and no anchor combo (center /
+          bottom-Y / bottom-right + animate flag tuning) made it feel
+          stable. The user reported "꾸우우우웅 / 전광석화" depending on
+          which knob we tried. A typed % input commits on Enter / blur
+          which is one-and-done — no resize churn, no anchor edge cases.
+          +/− still nudge by 5%; the % chip opens the preset dropdown. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         <button onClick={() => commit(sizePct - 5)} title="5% 축소" style={zoomBtnStyle}>−</button>
-        <div style={{ width: 100 }}>
-          <Slider
-            value={[sizePct]}
-            min={WINDOW_SIZE_PCT_MIN}
-            max={WINDOW_SIZE_PCT_MAX}
-            step={1}
-            onValueChange={(v) => commit(Array.isArray(v) ? (v as number[])[0] : (v as number), 'bottom-right')}
-          />
-        </div>
+        <PctInput value={sizePct} onCommit={(p) => commit(p)} />
         <button onClick={() => commit(sizePct + 5)} title="5% 확대" style={zoomBtnStyle}>+</button>
 
         {/* Click % label → preset dropdown — same SSOT as `/N` slash. */}
@@ -159,19 +157,18 @@ export function StatusBar({ sizePct, onSizePctChange }: Props) {
             style={{
               fontFamily: 'monospace',
               fontVariantNumeric: 'tabular-nums',
-              fontWeight: 700,
+              fontWeight: 600,
               fontSize: 10,
-              color: 'var(--text-color)',
+              color: 'var(--text-muted)',
               background: 'transparent',
               border: 'none',
               cursor: 'pointer',
-              minWidth: 36,
-              textAlign: 'right',
-              padding: '2px 4px',
+              padding: '2px 6px',
               borderRadius: 4,
+              marginLeft: 2,
             }}
           >
-            {Math.round(sizePct)}%
+            프리셋
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={6}>
             {WINDOW_SIZE_PCT_PRESETS.map(p => {
@@ -196,6 +193,83 @@ export function StatusBar({ sizePct, onSizePctChange }: Props) {
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Numeric % input. Local draft state while focused; commits to parent
+ * on Enter or blur. Esc reverts to the prop value. Up/Down arrows
+ * nudge by 1% (Shift = 5%) — keyboard parity with spreadsheet cells.
+ */
+function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) => void }) {
+  const [draft, setDraft] = useState<string>(String(Math.round(value)));
+  const [focused, setFocused] = useState(false);
+
+  // Sync external changes (preset click, /N slash, etc.) into the input
+  // when it's NOT being edited — avoids stomping the user's in-progress
+  // typing if the prop happens to change underneath.
+  useEffect(() => {
+    if (!focused) setDraft(String(Math.round(value)));
+  }, [value, focused]);
+
+  const commitDraft = () => {
+    const n = parseInt(draft.replace(/[^\d]/g, ''), 10);
+    if (Number.isFinite(n)) onCommit(n);
+    else setDraft(String(Math.round(value)));
+  };
+
+  return (
+    <div
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        height: 20,
+        padding: '0 6px',
+        borderRadius: 4,
+        border: `1px solid ${focused ? 'var(--accent)' : 'var(--border-rgba)'}`,
+        background: 'var(--surface)',
+        transition: 'border-color 120ms ease',
+      }}
+    >
+      <input
+        type="text"
+        inputMode="numeric"
+        value={draft}
+        onFocus={(e) => { setFocused(true); e.currentTarget.select(); }}
+        onBlur={() => { setFocused(false); commitDraft(); }}
+        onChange={(e) => setDraft(e.target.value.replace(/[^\d]/g, '').slice(0, 3))}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.currentTarget.blur(); }
+          else if (e.key === 'Escape') {
+            setDraft(String(Math.round(value)));
+            e.currentTarget.blur();
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const step = e.shiftKey ? 5 : 1;
+            onCommit(Math.round(value) + step);
+          } else if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            const step = e.shiftKey ? 5 : 1;
+            onCommit(Math.round(value) - step);
+          }
+        }}
+        style={{
+          width: 28,
+          background: 'transparent',
+          border: 'none',
+          outline: 'none',
+          color: 'var(--text-color)',
+          fontFamily: 'monospace',
+          fontVariantNumeric: 'tabular-nums',
+          fontSize: 11,
+          fontWeight: 600,
+          textAlign: 'right',
+          padding: 0,
+          MozAppearance: 'textfield' as never,
+        }}
+      />
+      <span style={{ color: 'var(--text-muted)', fontSize: 10, marginLeft: 2 }}>%</span>
     </div>
   );
 }
