@@ -1737,50 +1737,53 @@ function createDialogPopupWindow(rect, dialogTitle) {
   return dialogPopupWin;
 }
 
-// ── Satellite ItemDialog window (v1.3.44+) ───────────────────────
+// ── Generic satellite-dialog infrastructure (v1.3.44+) ───────────
 //
-// The card-edit dialog (ItemDialog component) was getting clipped by
-// the main nost BrowserWindow's rectangle in pair-split / narrow-window
-// scenarios. Hosting it in its own satellite window lets it span the
-// whole monitor regardless of where the launcher is. Pattern mirrors
-// the dialog-popup companion (createDialogPopupWindow above) but with
-// focusable:true and centered anchoring instead of monitor-1/6 + drag.
+// Many of nost's dialogs (ItemDialog, ItemWizard, SettingsDialog, …)
+// were rendered inline as Radix DialogContents in the main renderer.
+// On narrow / pair-split main windows they got clipped by the
+// BrowserWindow rectangle (Chromium can't draw outside its own
+// window). Hosting each in its own satellite BrowserWindow fixes the
+// clipping AND keeps the dialog discoverable on multi-monitor setups.
+//
+// One Map keyed by name (e.g. 'item-dialog', 'item-wizard'). Each
+// satellite is single-instance — re-triggering with a new payload
+// updates state instead of spawning a duplicate. IPC channels are
+// derived from the name: ${name}-state (push), ${name}-request-state
+// (race-fix), ${name}-action (renderer → main → mainWindow), and
+// ${name}-closed (window destroyed → mainWindow cleanup).
+//
 // See plans/satellite-dialogs.md.
 
-let itemDialogWin   = null;
-let itemDialogState = null;  // latest payload pushed from main app
+const satellites = new Map();  // name → { win, state }
 
-const ITEM_DIALOG_WIDTH  = 720;
-const ITEM_DIALOG_HEIGHT = 640;
-
-function destroyItemDialogWindow() {
-  if (itemDialogWin && !itemDialogWin.isDestroyed()) itemDialogWin.destroy();
-  itemDialogWin = null;
-  itemDialogState = null;
+function destroySatellite(name) {
+  const sat = satellites.get(name);
+  if (sat?.win && !sat.win.isDestroyed()) sat.win.destroy();
+  satellites.delete(name);
 }
 
-function pushItemDialogState() {
-  if (!itemDialogWin || itemDialogWin.isDestroyed() || !itemDialogState) return;
-  itemDialogWin.webContents.send('item-dialog-state', itemDialogState);
+function pushSatelliteState(name) {
+  const sat = satellites.get(name);
+  if (!sat?.win || sat.win.isDestroyed() || !sat.state) return;
+  sat.win.webContents.send(`${name}-state`, sat.state);
 }
 
-function createItemDialogWindow(initialState) {
-  // Single-instance: if already open, just push the new state (lets
-  // the user re-trigger edit on a different card without window churn).
-  if (itemDialogWin && !itemDialogWin.isDestroyed()) {
-    itemDialogState = initialState;
-    pushItemDialogState();
-    itemDialogWin.show();
-    itemDialogWin.focus();
-    return itemDialogWin;
+function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, initialState }) {
+  const existing = satellites.get(name);
+  if (existing?.win && !existing.win.isDestroyed()) {
+    // Re-use: just refresh state and refocus.
+    existing.state = initialState;
+    pushSatelliteState(name);
+    existing.win.show();
+    existing.win.focus();
+    return existing.win;
   }
 
-  itemDialogState = initialState;
-
-  // Anchor: centered on the monitor that currently hosts the main
-  // nost window. This decouples from mainWindow.getBounds (which can
-  // be off-screen if user pair-split it) — same DPI SSOT pattern as
-  // dialog-popup uses for placement.
+  // Anchor: centered on the monitor that hosts the main nost window
+  // (NOT on mainWindow.getBounds, which can be pair-split into the
+  // corner — we want the dialog in the middle of the user's screen).
+  // DPI SSOT via screen.getDisplayMatching → workArea (DIP).
   const screen = getScreen();
   let waX = 0, waY = 0, waW = 1920, waH = 1080;
   try {
@@ -1792,20 +1795,15 @@ function createItemDialogWindow(initialState) {
     waY = display.workArea.y;
     waW = display.workArea.width;
     waH = display.workArea.height;
-  } catch (_) { /* fall back to 1920x1080 */ }
+  } catch (_) { /* keep defaults */ }
 
-  const x = Math.round(waX + (waW - ITEM_DIALOG_WIDTH)  / 2);
-  const y = Math.round(waY + (waH - ITEM_DIALOG_HEIGHT) / 2);
+  const x = Math.round(waX + (waW - width)  / 2);
+  const y = Math.round(waY + (waH - height) / 2);
 
-  // Per-window memory session — caches stay isolated from the main
-  // launcher's session (favicon downloads etc. still go through main
-  // process IPC so this matters mostly for cookie/localstorage hygiene).
-  const idSession = session.fromPartition('item-dialog-memory');
+  const sess = session.fromPartition(`${name}-memory`);
 
-  itemDialogWin = new BrowserWindow({
-    width: ITEM_DIALOG_WIDTH,
-    height: ITEM_DIALOG_HEIGHT,
-    x, y,
+  const win = new BrowserWindow({
+    width, height, x, y,
     frame: false,
     transparent: true,
     resizable: false,
@@ -1818,36 +1816,63 @@ function createItemDialogWindow(initialState) {
     maximizable: false,
     fullscreenable: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload-item-dialog.js'),
+      preload: path.join(__dirname, preloadFile),
       contextIsolation: true,
-      session: idSession,
+      session: sess,
     },
   });
-  itemDialogWin.setAlwaysOnTop(true, 'screen-saver');
+  win.setAlwaysOnTop(true, 'screen-saver');
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL?.trim();
   if (rendererUrl) {
-    itemDialogWin.loadURL(`${rendererUrl}/item-dialog.html`);
+    win.loadURL(`${rendererUrl}/${htmlFile}`);
   } else {
-    itemDialogWin.loadFile(path.join(__dirname, 'frontend', 'dist', 'item-dialog.html'));
+    win.loadFile(path.join(__dirname, 'frontend', 'dist', htmlFile));
   }
 
-  itemDialogWin.once('ready-to-show', () => {
-    pushItemDialogState();
-    itemDialogWin.show();
-    itemDialogWin.focus();
+  satellites.set(name, { win, state: initialState });
+
+  win.once('ready-to-show', () => {
+    pushSatelliteState(name);
+    win.show();
+    win.focus();
   });
 
-  itemDialogWin.on('closed', () => {
-    itemDialogWin = null;
-    itemDialogState = null;
-    // Notify the main renderer so App.tsx can clean up state
-    // (setDialog('none'), clear editItem/prefilledItem, fire the
-    // tutorial 'item-dialog-cancelled' trigger).
-    try { mainWindow?.webContents?.send('item-dialog-closed'); } catch (_) {}
+  win.on('closed', () => {
+    satellites.delete(name);
+    try { mainWindow?.webContents?.send(`${name}-closed`); } catch (_) {}
   });
 
-  return itemDialogWin;
+  return win;
+}
+
+/**
+ * Register the standard 4-channel IPC for a satellite: open, request-
+ * state (race-fix), action (forward → mainWindow), implicit close
+ * (handled by the renderer sending action { kind: 'close' }, or the
+ * window being killed externally). Returns the registered satellite
+ * name for symmetry.
+ *
+ * `closingActions` lists action kinds that should tear down the
+ * satellite after forwarding to mainWindow (typically save / pick-
+ * on-screen / save-as-memo — terminal actions that end the dialog).
+ */
+function registerSatelliteIpc(name, { width, height, preloadFile, htmlFile, closingActions = ['save'] }) {
+  ipcMain.on(`open-${name}`, (_e, payload) => {
+    createSatelliteWindow(name, { width, height, preloadFile, htmlFile, initialState: payload || {} });
+  });
+  ipcMain.on(`${name}-request-state`, () => pushSatelliteState(name));
+  ipcMain.on(`${name}-action`, (_e, action) => {
+    if (!action || typeof action !== 'object') return;
+    if (action.kind === 'close') {
+      destroySatellite(name);
+      return;
+    }
+    try { mainWindow?.webContents?.send(`${name}-action`, action); } catch (_) {}
+    if (closingActions.includes(action.kind)) {
+      destroySatellite(name);
+    }
+  });
 }
 
 /**
@@ -4445,41 +4470,23 @@ function registerIpcHandlers() {
     }
   });
 
-  // ── Satellite ItemDialog IPC (v1.3.44+) ──────────────────────────
-  // open-item-dialog: main renderer (App.tsx) asks main to spawn the
-  //   satellite window with the given initial state (editItem, spaces,
-  //   presets, settings, …).
-  // item-dialog-request-state: race-fix — satellite renderer signals
-  //   mount complete, main pushes the cached state.
-  // item-dialog-action: satellite → main forward to mainWindow renderer
-  //   where the existing App.tsx handlers (handleSaveItem etc.) run.
-  ipcMain.on('open-item-dialog', (_e, payload) => {
-    createItemDialogWindow(payload || {});
+  // ── Satellite dialogs (v1.3.44+) ─────────────────────────────────
+  // Each satellite shares the generic 4-channel IPC pattern (open /
+  // request-state / action / closed). Closing actions list the action
+  // kinds that should auto-destroy the satellite after forwarding to
+  // mainWindow — terminal "I'm done" events like save / save-as-memo.
+  // See plans/satellite-dialogs.md.
+  registerSatelliteIpc('item-dialog', {
+    width: 720, height: 640,
+    preloadFile: 'preload-item-dialog.js',
+    htmlFile: 'item-dialog.html',
+    closingActions: ['save', 'request-advanced', 'pick-on-screen'],
   });
-  ipcMain.on('item-dialog-request-state', () => {
-    pushItemDialogState();
-  });
-  ipcMain.on('item-dialog-action', (_e, action) => {
-    if (!action || typeof action !== 'object') return;
-    // 'close' is special — handled here directly so the satellite
-    // tears down even if the main renderer is unresponsive. The
-    // closed event then notifies mainWindow for state cleanup.
-    if (action.kind === 'close') {
-      destroyItemDialogWindow();
-      return;
-    }
-    // Other actions (save / request-advanced / pick-on-screen / toast)
-    // need App.tsx state — forward to the main renderer.
-    try { mainWindow?.webContents?.send('item-dialog-action', action); } catch (_) {}
-    // 'save' implicitly closes the satellite (the main app updates
-    // its store and the dialog is done). request-advanced re-opens
-    // with startAdvanced via the main app re-issuing open-item-dialog,
-    // so we close here too — the next openItemDialog will re-create.
-    // pick-on-screen also closes — main app enters screen-pick mode
-    // and re-opens after the user clicks a space.
-    if (action.kind === 'save' || action.kind === 'request-advanced' || action.kind === 'pick-on-screen') {
-      destroyItemDialogWindow();
-    }
+  registerSatelliteIpc('item-wizard', {
+    width: 560, height: 580,
+    preloadFile: 'preload-item-wizard.js',
+    htmlFile: 'item-wizard.html',
+    closingActions: ['save', 'save-as-memo'],
   });
 
   // Reset to default position. Drag-to-move itself now goes through

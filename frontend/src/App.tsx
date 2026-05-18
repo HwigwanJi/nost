@@ -24,7 +24,9 @@ import type { Template } from './onboarding/templates';
 // BrowserWindow. The component file is still imported by
 // src/item-dialog/ItemDialogSatellite.tsx (satellite renderer).
 import { DocCohortDialog } from './components/DocCohortDialog';
-import { ItemWizard } from './components/ItemWizard';
+// ItemWizard is no longer rendered inline — it runs in a satellite
+// BrowserWindow. The component file is still imported by
+// src/item-wizard/ItemWizardSatellite.tsx.
 import { MemoEditor } from './components/MemoEditor';
 import { MemoTrashDialog } from './components/MemoTrashDialog';
 import { MemoExpiringBanner } from './components/MemoExpiringBanner';
@@ -3712,6 +3714,15 @@ export default function App() {
       switch (action.kind) {
         case 'save':
           handleSaveItem(action.spaceId, action.item, action.targetPresetId);
+          // Synchronous state reset — without this, the data.spaces
+          // mutation handleSaveItem just did would re-fire the trigger
+          // useEffect (dialog still 'item') and re-spawn the satellite
+          // before main's 'item-dialog-closed' IPC arrives. The closed
+          // listener below is then a no-op (dialog already 'none').
+          setDialog('none');
+          setEditItem(null);
+          setPrefilledItem(null);
+          setItemDialogStartAdvanced(false);
           break;
         case 'request-advanced':
           handleRequestAdvanced(action.spaceId);
@@ -3738,6 +3749,61 @@ export default function App() {
       setEditItem(null);
       setPrefilledItem(null);
       setItemDialogStartAdvanced(false);
+    });
+    return off;
+  }, [dialog]);
+
+  // ── Satellite ItemWizard bridge (v1.3.44+) ──────────────────────
+  // The quick-add ('quickadd') and manual-add ('wizard') flows used to
+  // be two separate inline <ItemWizard> renders. Both now go through
+  // the same satellite — mode='quick' vs 'manual' threaded via payload.
+  useEffect(() => {
+    if (dialog !== 'quickadd' && dialog !== 'wizard') return;
+    electronAPI.openItemWizard({
+      mode: dialog === 'quickadd' ? 'quick' : 'manual',
+      spaces: data.spaces,
+      defaultSpaceId: editSpaceId,
+      docExtensions: data.settings.documentExtensions,
+      accentColor: data.settings.accentColor,
+    });
+  }, [
+    dialog, editSpaceId, data.spaces,
+    data.settings.documentExtensions, data.settings.accentColor,
+  ]);
+
+  useEffect(() => {
+    const off = electronAPI.onItemWizardAction((action) => {
+      if (action.kind === 'save') {
+        handleSaveItem(action.spaceId, action.item);
+        setDialog('none');  // race-fix — data.spaces change re-trigger guard
+      } else if (action.kind === 'save-as-memo') {
+        // SSOT parity with the top gateway banner — clipboard text gets
+        // two commit destinations (card or memo) everywhere.
+        const newItem = store.addMemo(action.spaceId, action.body);
+        if (newItem) {
+          const space = data.spaces.find(s => s.id === action.spaceId);
+          tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId: action.spaceId, fromClipboard: true });
+          pushUndo({
+            description: '메모 추가 (클립보드)',
+            undo: () => store.deleteItem(action.spaceId, newItem.id),
+            redo: () => store.restoreItem(action.spaceId, newItem),
+          });
+          showToast(`메모로 저장됨${space ? ` · ${space.name}` : ''}`, { duration: 4000 });
+          // NOTE: the original inline render passed an "열기" toast
+          // action button that called setEditingMemoId. Closures can't
+          // cross IPC — same Phase 2-polish limitation noted for
+          // ItemDialog's 꾸미기 toast.
+        }
+        setDialog('none');
+      }
+    });
+    return off;
+  }, [handleSaveItem, store, data.spaces, showToast, pushUndo]);
+
+  useEffect(() => {
+    const off = electronAPI.onItemWizardClosed(() => {
+      if (dialog !== 'quickadd' && dialog !== 'wizard') return;
+      setDialog('none');
     });
     return off;
   }, [dialog]);
@@ -4952,46 +5018,9 @@ export default function App() {
       {/* ItemDialog is now hosted in a satellite BrowserWindow — see the
           three useEffects above (trigger / action listener / closed
           listener) and plans/satellite-dialogs.md. */}
-      <ItemWizard
-        open={dialog === 'quickadd'}
-        mode="quick"
-        spaces={data.spaces}
-        defaultSpaceId={editSpaceId}
-        docExtensions={data.settings.documentExtensions}
-        onClose={() => setDialog('none')}
-        onSave={(spaceId, item) => { handleSaveItem(spaceId, item); setDialog('none'); }}
-        // SSOT parity with the top gateway banner — clipboard text gets
-        // two commit destinations (card or memo) everywhere. Same toast
-        // chrome + undo handle as handleClipPromptToMemo.
-        onSaveAsMemo={(spaceId, body) => {
-          const newItem = store.addMemo(spaceId, body);
-          if (!newItem) return;
-          const space = data.spaces.find(s => s.id === spaceId);
-          tutorialTriggers.fire('memo-created', { itemId: newItem.id, spaceId, fromClipboard: true });
-          pushUndo({
-            description: '메모 추가 (클립보드)',
-            undo: () => store.deleteItem(spaceId, newItem.id),
-            redo: () => store.restoreItem(spaceId, newItem),
-          });
-          showToast(`메모로 저장됨${space ? ` · ${space.name}` : ''}`, {
-            actions: [{
-              label: '열기',
-              icon: 'open_in_new',
-              onClick: () => setEditingMemoId({ spaceId, itemId: newItem.id }),
-            }],
-            duration: 4000,
-          });
-        }}
-      />
-      <ItemWizard
-        open={dialog === 'wizard'}
-        mode="manual"
-        spaces={data.spaces}
-        defaultSpaceId={editSpaceId}
-        docExtensions={data.settings.documentExtensions}
-        onClose={() => setDialog('none')}
-        onSave={(spaceId, item) => { handleSaveItem(spaceId, item); setDialog('none'); }}
-      />
+      {/* ItemWizard (quickadd / wizard) is now hosted in a satellite —
+          see the three useEffects above (ItemWizard bridge) and
+          plans/satellite-dialogs.md. */}
       <ScanDialog
         open={dialog === 'scan'}
         onClose={() => setDialog('none')}

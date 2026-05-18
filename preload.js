@@ -265,4 +265,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('item-dialog-closed', handler);
     return () => ipcRenderer.removeListener('item-dialog-closed', handler);
   },
+
+  // ── Satellite ItemWizard (quick-add / manual-add) ───────────────
+  /** Open the satellite quick-add/manual-add wizard. Payload: mode
+   *  ('quick' | 'manual'), spaces, defaultSpaceId, docExtensions,
+   *  accentColor. */
+  openItemWizard: (payload) => ipcRenderer.send('open-item-wizard', payload),
+  /** Subscribe to wizard actions (save / save-as-memo). */
+  onItemWizardAction: (cb) => {
+    const handler = (_e, action) => cb(action);
+    ipcRenderer.on('item-wizard-action', handler);
+    return () => ipcRenderer.removeListener('item-wizard-action', handler);
+  },
+  /** Fires when the satellite window is destroyed. */
+  onItemWizardClosed: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('item-wizard-closed', handler);
+    return () => ipcRenderer.removeListener('item-wizard-closed', handler);
+  },
 });

@@ -224,7 +224,18 @@ export interface ElectronAPI {
   /** Fires when the satellite window is destroyed. App.tsx uses this
    *  to reset its local dialog state. Returns unsubscribe. */
   onItemDialogClosed: (cb: () => void) => () => void;
+
+  // ── Satellite ItemWizard (quick-add / manual-add) ───────────────
+  openItemWizard: (payload: unknown) => void;
+  onItemWizardAction: (cb: (action: ItemWizardAction) => void) => () => void;
+  onItemWizardClosed: (cb: () => void) => () => void;
 }
+
+/** ItemWizard satellite actions. save: full item commit (handleSaveItem).
+ *  save-as-memo: clipboard text routed to addMemo store path. */
+export type ItemWizardAction =
+  | { kind: 'save'; spaceId: string; item: Omit<import('./types').LauncherItem, 'id'> }
+  | { kind: 'save-as-memo'; spaceId: string; body: string };
 
 /** Action payloads emitted by the ItemDialog satellite. Each kind maps
  *  1-to-1 to a callback prop the inline dialog used to receive. */
@@ -341,4 +352,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   openItemDialog: noop,
   onItemDialogAction: () => () => {},
   onItemDialogClosed: () => () => {},
+  openItemWizard: noop,
+  onItemWizardAction: () => () => {},
+  onItemWizardClosed: () => () => {},
 };

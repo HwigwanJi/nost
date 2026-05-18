@@ -39,6 +39,7 @@ export default defineConfig({
         badges:      path.resolve(__dirname, 'badges.html'),
         dialogPopup: path.resolve(__dirname, 'dialog-popup.html'),
         itemDialog:  path.resolve(__dirname, 'item-dialog.html'),
+        itemWizard:  path.resolve(__dirname, 'item-wizard.html'),
       },
     },
   },
