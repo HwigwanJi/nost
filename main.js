@@ -1830,6 +1830,17 @@ function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, ini
     webPreferences: {
       preload: path.join(__dirname, preloadFile),
       contextIsolation: true,
+      // sandbox:false is required because each satellite's preload uses
+      // `require('./preload.js')` to reuse the main app's electronAPI
+      // surface (avoids duplicating 240 lines × 6 satellites). In
+      // sandboxed preloads, relative-path require throws Module not
+      // found — the satellite preload would silently fail to load,
+      // window.itemDialog/etc would be undefined, and the renderer
+      // would mount-then-error on the first api.onState call. This was
+      // the root cause of the "black screen" / "TypeError: Cannot read
+      // properties of undefined (reading 'onState')" report. Security
+      // posture matches the main window which also runs sandbox-off.
+      sandbox: false,
       session: sess,
     },
   });
