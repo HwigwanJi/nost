@@ -1594,13 +1594,13 @@ function getMonitorKey(workArea) {
 }
 
 function defaultPopupPosition(workArea) {
-  // Horizontally centred, vertically at the 3/4-down mark — i.e. 1/4
+  // Horizontally centred, vertically at the 5/6-down mark — i.e. 1/6
   // of the work-area height up from the bottom. The strip's vertical
-  // centre sits at that 3/4 line so the user perceives "bottom quarter
-  // of the monitor". The transparent room below the strip extends
-  // into the bottom 1/4 region for dropdown menus.
+  // centre sits at that line so the user perceives "near the bottom
+  // of the monitor" without overlapping the taskbar (workArea already
+  // excludes it).
   const x = Math.round(workArea.x + (workArea.width - DIALOG_POPUP_WIDTH) / 2);
-  const y = Math.round(workArea.y + Math.floor(workArea.height * 3 / 4) - DIALOG_POPUP_STRIP_HEIGHT / 2);
+  const y = Math.round(workArea.y + Math.floor(workArea.height * 5 / 6) - DIALOG_POPUP_STRIP_HEIGHT / 2);
   return { x, y };
 }
 
@@ -1613,7 +1613,16 @@ function clampPopupBounds(pos, workArea) {
   return { x, y };
 }
 
-function positionDialogPopup(rect) {
+// Memoize the last monitor we positioned for, so the dialog poll's
+// every-600ms tick doesn't re-apply setBounds unnecessarily. The popup
+// is no longer dialog-anchored (monitor-anchored since v1.3.43), so as
+// long as the dialog stays on the same monitor the popup position is
+// stable. Re-applying setBounds on every tick was both wasteful AND
+// fought the user's drag (next tick after dragstart would snap the
+// popup back to the saved position).
+let dialogPopupLastMonitorKey = null;
+
+function positionDialogPopup(rect, opts = {}) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
   dialogLastRect = rect;
 
@@ -1628,8 +1637,14 @@ function positionDialogPopup(rect) {
     x: rect.x, y: rect.y, width: rect.width, height: rect.height,
   });
   const wa = display.workArea;
-
   const monitorKey = getMonitorKey(wa);
+
+  // Skip the setBounds entirely if we've already positioned for this
+  // monitor. force=true bypasses for create / reset paths where we
+  // really do want to re-apply. This eliminates the per-tick fight
+  // with native drag-to-move.
+  if (!opts.force && monitorKey === dialogPopupLastMonitorKey) return;
+
   const saved = (store.get('dialogPopupPositions') || {})[monitorKey];
   const pos = clampPopupBounds(saved || defaultPopupPosition(wa), wa);
 
@@ -1638,6 +1653,7 @@ function positionDialogPopup(rect) {
       x: pos.x, y: pos.y,
       width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
     });
+    dialogPopupLastMonitorKey = monitorKey;
   } catch (_) { /* monitor went away mid-set; ignore */ }
 }
 
@@ -1682,12 +1698,42 @@ function createDialogPopupWindow(rect, dialogTitle) {
   }
 
   dialogPopupWin.once('ready-to-show', () => {
-    if (rect) positionDialogPopup(rect);
+    if (rect) positionDialogPopup(rect, { force: true });
     pushDialogPopupState({ dialogTitle });
     dialogPopupWin.show();
   });
 
-  dialogPopupWin.on('closed', () => { dialogPopupWin = null; });
+  // Native drag-to-move via -webkit-app-region in the renderer.
+  // BrowserWindow fires 'moved' (with debouncing built in) after each
+  // mouse-up of a native drag — that's where we persist. No per-frame
+  // IPC churn, no fight with the poll tick (the poll tick skips
+  // re-positioning while monitor is unchanged; see positionDialogPopup).
+  dialogPopupWin.on('moved', () => {
+    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
+    const b = dialogPopupWin.getBounds();
+    const display = getScreen().getDisplayMatching(b);
+    const wa = display.workArea;
+    const clamped = clampPopupBounds({ x: b.x, y: b.y }, wa);
+    if (clamped.x !== b.x || clamped.y !== b.y) {
+      try {
+        dialogPopupWin.setBounds({
+          x: clamped.x, y: clamped.y,
+          width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
+        });
+      } catch (_) {}
+    }
+    const positions = store.get('dialogPopupPositions') || {};
+    positions[getMonitorKey(wa)] = clamped;
+    store.set('dialogPopupPositions', positions);
+    // The drag may have crossed monitor boundaries — remember the new
+    // monitor so the poll tick doesn't immediately try to re-position.
+    dialogPopupLastMonitorKey = getMonitorKey(wa);
+  });
+
+  dialogPopupWin.on('closed', () => {
+    dialogPopupWin = null;
+    dialogPopupLastMonitorKey = null;
+  });
   return dialogPopupWin;
 }
 
@@ -1713,15 +1759,17 @@ async function tickDialogPoll() {
 
   // Precision gate — show the popup ONLY on actual file dialogs.
   // `isFileDialog` is set by foreground-window.js after walking the
-  // #32770 children and confirming the accept+cancel button pair (저장/
-  // 열기/Save/Open + 취소/Cancel). Falls back to `isDialog` if the
-  // native detector couldn't read children (older PS fallback path
-  // doesn't fill isFileDialog yet — we tolerate that to avoid false
-  // negatives on koffi-failed machines).
-  const looksLikeFileDialog = detected
-    && detected.isDialog
-    && (detected.isFileDialog === true
-        || (detected.isFileDialog === undefined && detected.isDialog));
+  // window's children and confirming the accept+cancel button pair
+  // (저장/열기/Save/Open + 취소/Cancel), or via the title verb-net
+  // safety net (다른 이름으로 저장 / 다운로드 / Save As / …).
+  //
+  // v1.3.44: we no longer gate on `isDialog` (className === '#32770').
+  // HWP and other apps use custom dialog window classes, and the
+  // foreground-window detector now sets isFileDialog correctly for
+  // those too. The legacy `isDialog === undefined` fallback covered
+  // the PS path that didn't fill isFileDialog — that path now also
+  // fills it, so the OR-fallback is no longer needed.
+  const looksLikeFileDialog = detected && detected.isFileDialog === true;
 
   if (!looksLikeFileDialog) {
     // Not a file dialog. Tear down if we had one up.
@@ -2238,6 +2286,12 @@ function createWindow() {
     x: initX,    y: initY,
     minWidth: 400, minHeight: 400,
     show: false, frame: false, transparent: true,
+    // v1.3.44: hasShadow:false. With transparent:true the DWM compositor
+    // had been drawing a drop shadow against the window's rectangular
+    // alpha mask — visible as a clipped rectangle around the app, and a
+    // continuous compositing cost. The app already draws its own
+    // shadows on cards / panels via CSS, so this is purely subtractive.
+    hasShadow: false,
     resizable: true, alwaysOnTop: true, skipTaskbar: false,
     // Higher z-order level than default 'floating'. Default level
     // can be pushed below another topmost window when an external
@@ -4278,58 +4332,9 @@ function registerIpcHandlers() {
     }
   });
 
-  // ── Drag-to-move (user repositions the popup) ─────────────────────
-  // Three-phase IPC: start records initial cursor + window pos, move
-  // applies the delta on each pointermove, end persists the final
-  // position keyed by the current monitor's workArea signature.
-  // Cursor positions come from Electron's screen API (DIP) so they
-  // share a coordinate space with setBounds — no PS detour needed.
-  let dialogDragOrigin = null;
-
-  ipcMain.on('dialog-popup-drag-start', () => {
-    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
-    const cur = getScreen().getCursorScreenPoint();
-    const b   = dialogPopupWin.getBounds();
-    dialogDragOrigin = { cx: cur.x, cy: cur.y, wx: b.x, wy: b.y };
-  });
-
-  ipcMain.on('dialog-popup-drag-move', () => {
-    if (!dialogDragOrigin || !dialogPopupWin || dialogPopupWin.isDestroyed()) return;
-    const cur = getScreen().getCursorScreenPoint();
-    const nx  = dialogDragOrigin.wx + (cur.x - dialogDragOrigin.cx);
-    const ny  = dialogDragOrigin.wy + (cur.y - dialogDragOrigin.cy);
-    try {
-      dialogPopupWin.setBounds({
-        x: Math.round(nx), y: Math.round(ny),
-        width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
-      });
-    } catch (_) { /* monitor disappeared mid-drag */ }
-  });
-
-  ipcMain.on('dialog-popup-drag-end', () => {
-    if (!dialogDragOrigin) return;
-    dialogDragOrigin = null;
-    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
-    // Persist by whichever monitor the popup ended up on (user might
-    // have dragged across a monitor boundary). Clamp before saving so
-    // we never persist an off-screen position.
-    const b = dialogPopupWin.getBounds();
-    const display = getScreen().getDisplayMatching(b);
-    const wa = display.workArea;
-    const clamped = clampPopupBounds({ x: b.x, y: b.y }, wa);
-    if (clamped.x !== b.x || clamped.y !== b.y) {
-      try {
-        dialogPopupWin.setBounds({
-          x: clamped.x, y: clamped.y,
-          width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
-        });
-      } catch (_) {}
-    }
-    const positions = store.get('dialogPopupPositions') || {};
-    positions[getMonitorKey(wa)] = clamped;
-    store.set('dialogPopupPositions', positions);
-  });
-
+  // Reset to default position. Drag-to-move itself now goes through
+  // Electron's native -webkit-app-region drag (BrowserWindow 'moved'
+  // event persists the result) — no per-frame IPC like v1.3.43 had.
   ipcMain.on('dialog-popup-reset-position', () => {
     if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !dialogLastRect) return;
     const display = getScreen().getDisplayMatching({
@@ -4343,7 +4348,9 @@ function registerIpcHandlers() {
       delete positions[key];
       store.set('dialogPopupPositions', positions);
     }
-    positionDialogPopup(dialogLastRect);
+    // Force re-position since the monitor key is unchanged but the
+    // intent is to overwrite the current bounds with defaults.
+    positionDialogPopup(dialogLastRect, { force: true });
   });
 
   // Start the dialog detection poll. Runs for the app lifetime — cheap

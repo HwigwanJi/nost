@@ -18,8 +18,17 @@ $class = New-Object System.Text.StringBuilder 256
 
 $isDialog = ($class.ToString() -eq "#32770")
 
+# v1.3.44: also accept non-#32770 windows whose title looks like a file
+# action — HWP / 일부 Office・Adobe 빌드 / 자체 다이얼로그를 그린 앱들. The
+# native koffi path does a proper button-walk; this PS fallback (koffi 실패
+# 시) settles for the title heuristic alone. Keep this regex in sync with
+# TITLE_FILE_VERB_RE in foreground-window.js.
+$titleStr = $title.ToString()
+$titleHasVerb = $titleStr -match '다른 이름으로 저장|이름으로 저장|저장|열기|불러오기|다운로드|업로드|첨부|파일 선택|폴더 선택|가져오기|내보내기|Save As|Save|Open|Download|Upload|Attach|Choose File|Choose Folder|Browse For|Select File|Select Folder|Import|Export'
+$isFileDialog = ($isDialog -and $titleHasVerb) -or (-not $isDialog -and $titleHasVerb)
+
 $rectObj = $null
-if ($isDialog) {
+if ($isDialog -or $isFileDialog) {
     $r = New-Object NostWin32+RECT
     if ([NostWin32]::GetWindowRect($hWnd, [ref]$r)) {
         $rectObj = @{
@@ -34,10 +43,11 @@ if ($isDialog) {
 # hwnd as decimal int — JS can compare it across polls to detect "same dialog
 # still in focus" vs "user clicked another dialog".
 $res = @{
-    title = $title.ToString()
+    title = $titleStr
     className = $class.ToString()
     isDialog = $isDialog
-    hwnd = if ($isDialog) { [int64]$hWnd } else { 0 }
+    isFileDialog = $isFileDialog
+    hwnd = if ($isDialog -or $isFileDialog) { [int64]$hWnd } else { 0 }
     rect = $rectObj
 }
 $res | ConvertTo-Json -Compress

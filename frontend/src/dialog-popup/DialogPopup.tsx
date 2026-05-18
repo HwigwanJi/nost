@@ -60,9 +60,6 @@ interface Api {
    *  the transparent extra area must be click-through, hence this
    *  toggle. */
   setCapture:   (capture: boolean) => void;
-  dragStart:    () => void;
-  dragMove:     () => void;
-  dragEnd:      () => void;
   resetPosition: () => void;
 }
 const api = (window as unknown as { dialogPopup: Api }).dialogPopup;
@@ -152,29 +149,6 @@ export function DialogPopup() {
     return () => window.removeEventListener('keydown', fn);
   }, [drillSpaceId]);
 
-  // Drag-to-move handle. Fires dragStart on pointerdown, throttles
-  // pointermove through rAF to avoid IPC flood (~16/frame is plenty for
-  // setBounds), and dragEnd on pointerup. Main records the cursor delta
-  // and persists the final position per-monitor.
-  const onDragHandleDown = useCallback((e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    api.dragStart();
-    let pending = false;
-    const onMove = () => {
-      if (pending) return;
-      pending = true;
-      requestAnimationFrame(() => { pending = false; api.dragMove(); });
-    };
-    const onUp = () => {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-      api.dragEnd();
-    };
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
-  }, []);
-
   const onClickFolder = useCallback((folderId: string, path: string) => {
     setPendingFolderId(folderId);
     api.jumpTo(path);
@@ -236,38 +210,26 @@ export function DialogPopup() {
           : bg,
         border: `1px solid ${stripBorder}`,
         borderRadius: 10,
-        boxShadow: '0 4px 18px rgba(0, 0, 0, 0.18)',
-        backdropFilter: 'blur(20px) saturate(160%)',
         color: text,
+        // The whole strip is a native drag surface (-webkit-app-region)
+        // — anywhere the user clicks except an interactive child moves
+        // the window. v1.3.44: replaced the explicit drag-handle +
+        // pointer-event IPC bridge (which fought the poll tick and
+        // burned 60Hz IPC) with this OS-level drag. Buttons / chips
+        // below opt out via WebkitAppRegion: 'no-drag'.
+        WebkitAppRegion: 'drag',
+        cursor: 'grab',
         // Critical: allow the dropdown menu to escape this strip
         // vertically. Default `overflow: hidden` clipped the menu inside
         // the strip's own bounds.
         overflow: 'visible',
+        // backdrop-filter blur(20px) was removed in v1.3.44 — it forced
+        // the compositor to re-blur the underlying dialog on every
+        // frame and was the dominant lag source. The strip background
+        // is already 96% opaque so visual loss is minimal.
         transition: 'background 180ms ease, border-color 180ms ease',
-      }}
+      } as React.CSSProperties}
     >
-      {/* Drag handle — pointerdown initiates monitor-anchored
-          drag-to-move. Cursor switches to `grab` so the affordance is
-          discoverable; click-through is off here because the strip is
-          inside the interactive zone. */}
-      <div
-        onPointerDown={onDragHandleDown}
-        title="끌어서 이동"
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 22,
-          height: 26,
-          color: muted,
-          cursor: 'grab',
-          flexShrink: 0,
-          userSelect: 'none',
-        }}
-      >
-        <span className="ms-rounded" style={{ fontSize: 16, pointerEvents: 'none' }}>drag_indicator</span>
-      </div>
-
       {/* Left section: brand + back/title */}
       {drillSpace ? (
         <button
@@ -421,8 +383,11 @@ function chipStyle(border: string, text: string, muted: string, ghost: boolean):
     fontWeight: 500,
     cursor: 'pointer',
     whiteSpace: 'nowrap',
+    // Opt out of the strip's native drag — buttons / chips must
+    // receive their own click instead of moving the window.
+    WebkitAppRegion: 'no-drag',
     transition: 'background 120ms ease, border-color 120ms ease',
-  };
+  } as React.CSSProperties;
 }
 
 function Chip({ label, icon, onClick, tint, muted, text, border, count, loading }: {
@@ -599,9 +564,9 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
             border: `1px solid ${border}`,
             borderRadius: 8,
             boxShadow: '0 6px 20px rgba(0, 0, 0, 0.32)',
-            backdropFilter: 'blur(20px) saturate(160%)',
             zIndex: 10,
-          }}
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
         >
           {presets.map(p => {
             const isPicked = p.id === viewId;
@@ -622,12 +587,13 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
                   borderRadius: 5,
                   color: text,
                   fontSize: 11,
+                  WebkitAppRegion: 'no-drag',
                   fontFamily: 'inherit',
                   fontWeight: isPicked ? 700 : 500,
                   cursor: 'pointer',
                   textAlign: 'left',
                   transition: 'background 120ms ease',
-                }}
+                } as React.CSSProperties}
               >
                 <span style={{ fontSize: 9, fontWeight: 700, color: muted, fontFamily: 'monospace' }}>P{p.id}</span>
                 <span style={{ flex: 1 }}>{p.label}</span>
@@ -707,9 +673,9 @@ function OverflowMenu({ light, text, muted, border, bg, onReset }: {
             border: `1px solid ${border}`,
             borderRadius: 8,
             boxShadow: '0 6px 20px rgba(0, 0, 0, 0.32)',
-            backdropFilter: 'blur(20px) saturate(160%)',
             zIndex: 10,
-          }}
+            WebkitAppRegion: 'no-drag',
+          } as React.CSSProperties}
         >
           <button
             onClick={() => { onReset(); setOpen(false); }}
@@ -729,8 +695,9 @@ function OverflowMenu({ light, text, muted, border, bg, onReset }: {
               fontWeight: 500,
               cursor: 'pointer',
               textAlign: 'left',
+              WebkitAppRegion: 'no-drag',
               transition: 'background 120ms ease',
-            }}
+            } as React.CSSProperties}
           >
             <span className="ms-rounded" style={{ fontSize: 14, color: muted }}>restart_alt</span>
             <span>원래 위치로</span>

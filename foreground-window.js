@@ -59,7 +59,7 @@ const CANCEL_BUTTON_RE = /^(?:취소|닫기|Cancel|Close)(?:\([A-Za-z]\))?$/;
  *  a locale our button regex hasn't seen). Overincluding non-file
  *  dialogs here is the trade-off we accept to never silently miss a
  *  Save-As. Slack/Discord notification titles don't match these verbs. */
-const TITLE_FILE_VERB_RE = /(?:다른 이름으로 저장|이름으로 저장|저장|열기|불러오기|업로드|첨부|파일 선택|폴더 선택|가져오기|내보내기|Save As|Save|Open|Upload|Attach|Choose File|Choose Folder|Browse For|Select File|Select Folder|Import|Export)/i;
+const TITLE_FILE_VERB_RE = /(?:다른 이름으로 저장|이름으로 저장|저장|열기|불러오기|다운로드|업로드|첨부|파일 선택|폴더 선택|가져오기|내보내기|Save As|Save|Open|Download|Upload|Attach|Choose File|Choose Folder|Browse For|Select File|Select Folder|Import|Export)/i;
 
 function init() {
   if (initialised) return supported;
@@ -145,6 +145,14 @@ function detect() {
 
     const isDialog = (className === '#32770');
 
+    // v1.3.44: also run the BFS when the title looks like a file action,
+    // even on non-#32770 windows. HWP / 일부 Office・Adobe 빌드 / 자체
+    // 다이얼로그를 그린 앱들은 표준 Common Item Dialog 셸을 안 쓰고 자기
+    // 윈도우 클래스를 쓰는데, 버튼 정규식(저장/열기/Save/…) + 타이틀
+    // verb-net으로 그 케이스도 잡힌다. className 게이트만 풀면 false
+    // positive가 늘어나니, verb-net 매치를 사전 조건으로 둠.
+    const titleHasVerb = TITLE_FILE_VERB_RE.test(title);
+
     // File-dialog precision check — walk descendants (BFS up to depth 5,
     // 1000 windows cap) looking for the accept+cancel button pair.
     //
@@ -161,7 +169,7 @@ function detect() {
     // anyway. Restoring the title heuristic this way is strictly
     // additive — overinclusion is preferable to silent missing-popup.
     let isFileDialog = false;
-    if (isDialog) {
+    if (isDialog || titleHasVerb) {
       try {
         let sawAccept = false;
         let sawCancel = false;
@@ -225,7 +233,7 @@ function detect() {
     }
 
     let rect = null;
-    if (isDialog) {
+    if (isDialog || isFileDialog) {
       // Allocate a RECT-sized buffer and let user32 fill it; then
       // decode the bytes back into a JS object via the registered
       // struct type. This pattern works on every koffi 2.x build
