@@ -23,7 +23,7 @@ import type { Template } from './onboarding/templates';
 // ItemDialog is no longer rendered inline — it runs in a satellite
 // BrowserWindow. The component file is still imported by
 // src/item-dialog/ItemDialogSatellite.tsx (satellite renderer).
-import { DocCohortDialog } from './components/DocCohortDialog';
+// DocCohortDialog now runs in a satellite (src/doc-cohort-dialog/).
 // ItemWizard is no longer rendered inline — it runs in a satellite
 // BrowserWindow. The component file is still imported by
 // src/item-wizard/ItemWizardSatellite.tsx.
@@ -36,14 +36,18 @@ import type { AppNotification } from './types';
 import { runTopEscape } from './lib/escapeStack';
 import { canPerform } from './lib/conflictPolicy';
 import { ScanDialog } from './components/ScanDialog';
-import { SettingsDialog } from './components/SettingsDialog';
+// SettingsDialog now runs in a satellite; component file is imported
+// by src/settings-dialog/SettingsDialogSatellite.tsx.
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
 import { RecommendPanel } from './components/RecommendPanel';
 import { useGhostCards } from './hooks/useGhostCards';
 import { NodePanel } from './components/NodePanel';
-import { ContainerSlotPicker, type PendingRemoval, type PendingNewItem } from './components/ContainerSlotPicker';
-import { BatchDropDialog, type PendingDrop } from './components/BatchDropDialog';
+// ContainerSlotPicker now runs in a satellite (src/container-slot-picker/).
+// We still import the supporting types — they're used by handleSaveSlots.
+import type { PendingRemoval, PendingNewItem } from './components/ContainerSlotPicker';
+// BatchDropDialog now runs in a satellite (src/batch-drop-dialog/).
+import type { PendingDrop } from './components/BatchDropDialog';
 import { CommandBar, parseCommand, buildSuggestions } from './components/CommandBar';
 import { ToastOverlay } from './components/ToastOverlay';
 import { WelcomeModal } from './components/WelcomeModal';
@@ -3808,6 +3812,151 @@ export default function App() {
     return off;
   }, [dialog]);
 
+  // ── Satellite SettingsDialog bridge (v1.3.44+) ─────────────────
+  useEffect(() => {
+    if (dialog !== 'settings') return;
+    electronAPI.openSettingsDialog({
+      settings: data.settings,
+      updateDownloaded,
+      downloadProgress,
+      initialTab: settingsInitialTab,
+      accentColor: data.settings.accentColor,
+    });
+  }, [dialog, data.settings, updateDownloaded, downloadProgress, settingsInitialTab]);
+
+  useEffect(() => {
+    const off = electronAPI.onSettingsDialogAction((action) => {
+      switch (action.kind) {
+        case 'save':
+          // Live-preview path — slider drags, switch toggles. Frequency
+          // ~60Hz during drags but payload is small. store.updateSettings
+          // is idempotent (v1.3.42 hotfix) so no infinite-loop risk.
+          store.updateSettings(action.settings);
+          break;
+        case 'start-tutorial':
+          tutorialApiRef.current?.start(action.quest as never);
+          break;
+        case 'open-memo-trash':
+          // Open the trash dialog — close settings first (matches the
+          // inline render's behaviour).
+          setDialog('none');
+          setSettingsInitialTab(undefined);
+          setMemoTrashOpen(true);
+          break;
+        case 'extend-all-memos':
+          store.extendAllMemos();
+          break;
+        case 'empty-memo-trash':
+          store.emptyMemoTrash();
+          break;
+      }
+    });
+    return off;
+  }, [store]);
+
+  useEffect(() => {
+    const off = electronAPI.onSettingsDialogClosed(() => {
+      if (dialog !== 'settings') return;
+      setDialog('none');
+      setSettingsInitialTab(undefined);
+    });
+    return off;
+  }, [dialog]);
+
+  // ── Satellite DocCohortDialog bridge ────────────────────────────
+  useEffect(() => {
+    if (!cohortTarget) return;
+    const space = data.spaces.find(s => s.id === cohortTarget.spaceId);
+    const item  = space?.items.find(i => i.id === cohortTarget.itemId);
+    if (!item) return;
+    const cohortSettings = data.settings.docCohort ?? { enabledPresets: [], labelOrder: [] };
+    electronAPI.openDocCohortDialog({
+      item,
+      enabledPresets: cohortSettings.enabledPresets,
+      labelOrder: cohortSettings.labelOrder,
+      accentColor: data.settings.accentColor,
+    });
+  }, [cohortTarget, data.spaces, data.settings.docCohort, data.settings.accentColor]);
+
+  useEffect(() => {
+    const off = electronAPI.onDocCohortDialogAction((action) => {
+      if (action.kind === 'commit') {
+        handleCohortCommit(action.next);
+        setCohortTarget(null);
+      }
+    });
+    return off;
+  }, [handleCohortCommit]);
+
+  useEffect(() => {
+    const off = electronAPI.onDocCohortDialogClosed(() => {
+      setCohortTarget(null);
+    });
+    return off;
+  }, []);
+
+  // ── Satellite BatchDropDialog bridge ────────────────────────────
+  useEffect(() => {
+    if (!batchDrop) return;
+    electronAPI.openBatchDropDialog({
+      items: batchDrop.items,
+      spaces: data.spaces,
+      defaultSpaceId: batchDrop.spaceId,
+      accentColor: data.settings.accentColor,
+    });
+  }, [batchDrop, data.spaces, data.settings.accentColor]);
+
+  useEffect(() => {
+    const off = electronAPI.onBatchDropDialogAction((action) => {
+      if (action.kind === 'confirm') {
+        handleBatchConfirm(action.spaceId, action.items);
+        setBatchDrop(null);
+      }
+    });
+    return off;
+  }, [handleBatchConfirm]);
+
+  useEffect(() => {
+    const off = electronAPI.onBatchDropDialogClosed(() => {
+      setBatchDrop(null);
+    });
+    return off;
+  }, []);
+
+  // ── Satellite ContainerSlotPicker bridge ────────────────────────
+  useEffect(() => {
+    if (dialog !== 'container-slots' || !containerSlotItem) return;
+    const item = allItems.find(i => i.id === containerSlotItem.itemId);
+    if (!item) return;
+    electronAPI.openContainerSlotPicker({
+      containerItem: item,
+      containerSpaceId: containerSlotItem.spaceId,
+      defaultDir: containerSlotItem.defaultDir,
+      allSpaces: data.spaces,
+      accentColor: data.settings.accentColor,
+    });
+  }, [dialog, containerSlotItem, allItems, data.spaces, data.settings.accentColor]);
+
+  useEffect(() => {
+    const off = electronAPI.onContainerSlotPickerAction((action) => {
+      if (action.kind === 'save') {
+        handleSaveSlots(action.slots, action.removals, action.newItems);
+        setDialog('none');
+        setContainerSlotItem(null);
+      }
+    });
+    return off;
+  }, [handleSaveSlots]);
+
+  useEffect(() => {
+    const off = electronAPI.onContainerSlotPickerClosed(() => {
+      if (dialog !== 'container-slots') return;
+      setDialog('none');
+      setContainerSlotItem(null);
+    });
+    return off;
+  }, [dialog]);
+
   return (
     <AppStateProvider value={appState}>
     <AppActionsProvider value={appActions}>
@@ -5026,62 +5175,12 @@ export default function App() {
         onClose={() => setDialog('none')}
         onSelect={handleScanSelect}
       />
-      <SettingsDialog
-        open={dialog === 'settings'}
-        onClose={() => { setDialog('none'); setSettingsInitialTab(undefined); }}
-        settings={data.settings}
-        onSave={store.updateSettings}
-        updateDownloaded={updateDownloaded}
-        downloadProgress={downloadProgress}
-        initialTab={settingsInitialTab}
-        onOpenMemoTrash={() => { setDialog('none'); setMemoTrashOpen(true); }}
-        onExtendAllMemos={() => store.extendAllMemos()}
-        onEmptyMemoTrash={() => store.emptyMemoTrash()}
-        onStartTutorial={(q) => tutorialApiRef.current?.start(q)}
-      />
-      {batchDrop && (
-        <BatchDropDialog
-          open={!!batchDrop}
-          items={batchDrop.items}
-          spaces={data.spaces}
-          defaultSpaceId={batchDrop.spaceId}
-          onClose={() => setBatchDrop(null)}
-          onConfirm={handleBatchConfirm}
-        />
-      )}
-      {containerSlotItem && (
-        <ContainerSlotPicker
-          open={dialog === 'container-slots'}
-          onClose={() => { setDialog('none'); setContainerSlotItem(null); }}
-          containerItem={allItems.find(i => i.id === containerSlotItem.itemId)!}
-          containerSpaceId={containerSlotItem.spaceId}
-          defaultDir={containerSlotItem.defaultDir}
-          allSpaces={data.spaces}
-          onSave={handleSaveSlots}
-        />
-      )}
-
-      {/* Doc cohort quick-action dialog — only mounted while target is set
-          so the scan effect runs exactly once per open + binding lookups
-          read fresh from data.spaces (the user might have edited the card
-          between right-click and dialog flush). */}
-      {cohortTarget && (() => {
-        const space = data.spaces.find(s => s.id === cohortTarget.spaceId);
-        const item  = space?.items.find(i => i.id === cohortTarget.itemId);
-        if (!item) return null;
-        const cohortSettings = data.settings.docCohort
-          ?? { enabledPresets: [], labelOrder: [] };
-        return (
-          <DocCohortDialog
-            open={true}
-            item={item}
-            enabledPresets={cohortSettings.enabledPresets}
-            labelOrder={cohortSettings.labelOrder}
-            onCommit={handleCohortCommit}
-            onClose={() => setCohortTarget(null)}
-          />
-        );
-      })()}
+      {/* SettingsDialog is hosted in a satellite — see the 3 useEffects
+          (SettingsDialog bridge) below the ItemWizard ones, and
+          plans/satellite-dialogs.md. */}
+      {/* BatchDropDialog / ContainerSlotPicker / DocCohortDialog are
+          all hosted in satellite BrowserWindows — see their respective
+          useEffect bridges above and plans/satellite-dialogs.md. */}
 
       {/* ── Command Bar (Spotlight-style) ──────────── */}
       <CommandBar

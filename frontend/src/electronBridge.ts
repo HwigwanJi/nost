@@ -229,13 +229,51 @@ export interface ElectronAPI {
   openItemWizard: (payload: unknown) => void;
   onItemWizardAction: (cb: (action: ItemWizardAction) => void) => () => void;
   onItemWizardClosed: (cb: () => void) => () => void;
+
+  // ── Satellite SettingsDialog ────────────────────────────────────
+  openSettingsDialog: (payload: unknown) => void;
+  onSettingsDialogAction: (cb: (action: SettingsDialogAction) => void) => () => void;
+  onSettingsDialogClosed: (cb: () => void) => () => void;
+
+  // ── Satellite DocCohortDialog ───────────────────────────────────
+  openDocCohortDialog: (payload: unknown) => void;
+  onDocCohortDialogAction: (cb: (action: DocCohortDialogAction) => void) => () => void;
+  onDocCohortDialogClosed: (cb: () => void) => () => void;
+
+  // ── Satellite BatchDropDialog ───────────────────────────────────
+  openBatchDropDialog: (payload: unknown) => void;
+  onBatchDropDialogAction: (cb: (action: BatchDropDialogAction) => void) => () => void;
+  onBatchDropDialogClosed: (cb: () => void) => () => void;
+
+  // ── Satellite ContainerSlotPicker ───────────────────────────────
+  openContainerSlotPicker: (payload: unknown) => void;
+  onContainerSlotPickerAction: (cb: (action: ContainerSlotPickerAction) => void) => () => void;
+  onContainerSlotPickerClosed: (cb: () => void) => () => void;
 }
+
+export type DocCohortDialogAction =
+  | { kind: 'commit'; next: { value: string; pattern: string; tokenType: import('./types').TokenPreset; directory: string } };
+
+export type BatchDropDialogAction =
+  | { kind: 'confirm'; spaceId: string; items: Omit<import('./types').LauncherItem, 'id'>[] };
+
+export type ContainerSlotPickerAction =
+  | { kind: 'save'; slots: import('./types').ContainerSlots; removals: import('./components/ContainerSlotPicker').PendingRemoval[]; newItems: import('./components/ContainerSlotPicker').PendingNewItem[] };
 
 /** ItemWizard satellite actions. save: full item commit (handleSaveItem).
  *  save-as-memo: clipboard text routed to addMemo store path. */
 export type ItemWizardAction =
   | { kind: 'save'; spaceId: string; item: Omit<import('./types').LauncherItem, 'id'> }
   | { kind: 'save-as-memo'; spaceId: string; body: string };
+
+/** SettingsDialog satellite actions. save fires LIVE during slider
+ *  drags and toggle clicks — high frequency, small payload. */
+export type SettingsDialogAction =
+  | { kind: 'save'; settings: import('./types').AppSettings }
+  | { kind: 'start-tutorial'; quest: unknown }
+  | { kind: 'open-memo-trash' }
+  | { kind: 'extend-all-memos' }
+  | { kind: 'empty-memo-trash' };
 
 /** Action payloads emitted by the ItemDialog satellite. Each kind maps
  *  1-to-1 to a callback prop the inline dialog used to receive. */
@@ -355,4 +393,16 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   openItemWizard: noop,
   onItemWizardAction: () => () => {},
   onItemWizardClosed: () => () => {},
+  openSettingsDialog: noop,
+  onSettingsDialogAction: () => () => {},
+  onSettingsDialogClosed: () => () => {},
+  openDocCohortDialog: noop,
+  onDocCohortDialogAction: () => () => {},
+  onDocCohortDialogClosed: () => () => {},
+  openBatchDropDialog: noop,
+  onBatchDropDialogAction: () => () => {},
+  onBatchDropDialogClosed: () => () => {},
+  openContainerSlotPicker: noop,
+  onContainerSlotPickerAction: () => () => {},
+  onContainerSlotPickerClosed: () => () => {},
 };

@@ -283,4 +283,56 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('item-wizard-closed', handler);
     return () => ipcRenderer.removeListener('item-wizard-closed', handler);
   },
+
+  // ── Satellite SettingsDialog ────────────────────────────────────
+  openSettingsDialog: (payload) => ipcRenderer.send('open-settings-dialog', payload),
+  onSettingsDialogAction: (cb) => {
+    const handler = (_e, action) => cb(action);
+    ipcRenderer.on('settings-dialog-action', handler);
+    return () => ipcRenderer.removeListener('settings-dialog-action', handler);
+  },
+  onSettingsDialogClosed: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('settings-dialog-closed', handler);
+    return () => ipcRenderer.removeListener('settings-dialog-closed', handler);
+  },
+
+  // ── Satellite DocCohortDialog ───────────────────────────────────
+  openDocCohortDialog: (payload) => ipcRenderer.send('open-doc-cohort-dialog', payload),
+  onDocCohortDialogAction: (cb) => {
+    const h = (_e, a) => cb(a);
+    ipcRenderer.on('doc-cohort-dialog-action', h);
+    return () => ipcRenderer.removeListener('doc-cohort-dialog-action', h);
+  },
+  onDocCohortDialogClosed: (cb) => {
+    const h = () => cb();
+    ipcRenderer.on('doc-cohort-dialog-closed', h);
+    return () => ipcRenderer.removeListener('doc-cohort-dialog-closed', h);
+  },
+
+  // ── Satellite BatchDropDialog ───────────────────────────────────
+  openBatchDropDialog: (payload) => ipcRenderer.send('open-batch-drop-dialog', payload),
+  onBatchDropDialogAction: (cb) => {
+    const h = (_e, a) => cb(a);
+    ipcRenderer.on('batch-drop-dialog-action', h);
+    return () => ipcRenderer.removeListener('batch-drop-dialog-action', h);
+  },
+  onBatchDropDialogClosed: (cb) => {
+    const h = () => cb();
+    ipcRenderer.on('batch-drop-dialog-closed', h);
+    return () => ipcRenderer.removeListener('batch-drop-dialog-closed', h);
+  },
+
+  // ── Satellite ContainerSlotPicker ───────────────────────────────
+  openContainerSlotPicker: (payload) => ipcRenderer.send('open-container-slot-picker', payload),
+  onContainerSlotPickerAction: (cb) => {
+    const h = (_e, a) => cb(a);
+    ipcRenderer.on('container-slot-picker-action', h);
+    return () => ipcRenderer.removeListener('container-slot-picker-action', h);
+  },
+  onContainerSlotPickerClosed: (cb) => {
+    const h = () => cb();
+    ipcRenderer.on('container-slot-picker-closed', h);
+    return () => ipcRenderer.removeListener('container-slot-picker-closed', h);
+  },
 });

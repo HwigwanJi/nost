@@ -4488,6 +4488,35 @@ function registerIpcHandlers() {
     htmlFile: 'item-wizard.html',
     closingActions: ['save', 'save-as-memo'],
   });
+  // SettingsDialog: wider since it's 4 groups × 2-3 sub-tabs.
+  // save (live preview during slider drags) and start-tutorial /
+  // open-memo-trash / extend-all-memos / empty-memo-trash do NOT close
+  // the satellite — settings stays open across these. The user closes
+  // explicitly via the dialog's own X / 적용 / 취소 buttons.
+  registerSatelliteIpc('settings-dialog', {
+    width: 880, height: 680,
+    preloadFile: 'preload-settings-dialog.js',
+    htmlFile: 'settings-dialog.html',
+    closingActions: [],
+  });
+  registerSatelliteIpc('doc-cohort-dialog', {
+    width: 640, height: 600,
+    preloadFile: 'preload-doc-cohort-dialog.js',
+    htmlFile: 'doc-cohort-dialog.html',
+    closingActions: ['commit'],
+  });
+  registerSatelliteIpc('batch-drop-dialog', {
+    width: 720, height: 640,
+    preloadFile: 'preload-batch-drop-dialog.js',
+    htmlFile: 'batch-drop-dialog.html',
+    closingActions: ['confirm'],
+  });
+  registerSatelliteIpc('container-slot-picker', {
+    width: 720, height: 640,
+    preloadFile: 'preload-container-slot-picker.js',
+    htmlFile: 'container-slot-picker.html',
+    closingActions: ['save'],
+  });
 
   // Reset to default position. Drag-to-move itself now goes through
   // Electron's native -webkit-app-region drag (BrowserWindow 'moved'
