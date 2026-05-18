@@ -1301,8 +1301,15 @@ function applyWindowSizePct(win, pct, anchor = 'center') {
   } catch {
     wa = getScreen().getPrimaryDisplay().workArea;
   }
+
+  // animate flag: false for slider drags (instant — animation queues
+  // pile up under rapid IPC and feel "꾸우우우웅"). true for one-shot
+  // path (preset dropdown, /N slash, cold start) where the smooth
+  // transition reads as polish.
+  const animate = anchor !== 'bottom-right';
+
   if (clamped >= 100) {
-    win.setBounds({ x: wa.x, y: wa.y, width: wa.width, height: wa.height }, true);
+    win.setBounds({ x: wa.x, y: wa.y, width: wa.width, height: wa.height }, animate);
     return;
   }
   const w = Math.round(wa.width  * clamped / 100);
@@ -1311,10 +1318,7 @@ function applyWindowSizePct(win, pct, anchor = 'center') {
   // Anchor 'bottom-right': keep the window's bottom-right CORNER
   // where it is. Used by the status-bar slider — the slider lives in
   // the bottom-right area of the launcher, so pinning that corner
-  // keeps the thumb under the user's cursor mid-drag. The previous
-  // attempt anchored only the bottom-Y while centring X each tick,
-  // which made the window flip horizontally to wa.center on every
-  // slider step (the "피카츄 전광석화" report).
+  // keeps the thumb under the user's cursor mid-drag.
   // Anchor 'center' (default): unchanged — used by /N slash, preset
   // dropdown, settings dialog presets, cold start.
   let x, y;
@@ -1332,7 +1336,7 @@ function applyWindowSizePct(win, pct, anchor = 'center') {
     x = wa.x + Math.round((wa.width  - w) / 2);
     y = wa.y + Math.round((wa.height - h) / 2);
   }
-  win.setBounds({ x, y, width: w, height: h }, true);
+  win.setBounds({ x, y, width: w, height: h }, animate);
 }
 
 /**
