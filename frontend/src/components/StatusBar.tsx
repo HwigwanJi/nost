@@ -137,15 +137,14 @@ export function StatusBar({ sizePct, onSizePctChange }: Props) {
       {/* spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* ── Window-size controls (right) — numeric input ─────────────
-          Single outer border wraps − / [수치] / + so the group reads
-          as one segmented control (calculator-style). Previous design
-          had three separate borders side-by-side which created the
-          "이중박스" feel — outer chip frame + inner input frame. */}
-      <div style={groupStyle}>
-        <button onClick={() => commit(sizePct - 5)} title="5% 축소" style={{ ...segBtnStyle, borderLeft: 'none' }}>−</button>
+      {/* ── Window-size controls (right) — minimal inline ────────────
+          v1.3.47 재설계 — 외곽 chip 박스 + 입력 박스의 "겹 박스"
+          문제 사용자 반복 보고. 컨테이너 자체를 없애고 −/수치/+ 를
+          좌우 ghost 버튼 + 가운데 inline-editable 숫자로. 박스 0개. */}
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+        <button onClick={() => commit(sizePct - 5)} title="5% 축소" style={ghostBtnStyle}>−</button>
         <PctInput value={sizePct} onCommit={(p) => commit(p)} />
-        <button onClick={() => commit(sizePct + 5)} title="5% 확대" style={segBtnStyle}>+</button>
+        <button onClick={() => commit(sizePct + 5)} title="5% 확대" style={ghostBtnStyle}>+</button>
 
         {/* Click % label → preset dropdown — same SSOT as `/N` slash. */}
         <DropdownMenu>
@@ -217,23 +216,9 @@ function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) =>
   };
 
   return (
-    <div
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        height: '100%',
-        padding: '0 7px',
-        // No outer border / background — the parent groupStyle owns
-        // those. Focused state surfaces as a subtle inset accent line
-        // along the bottom instead of a full second border (which was
-        // the "이중박스" source).
-        border: 'none',
-        borderLeft: '1px solid var(--border-rgba)',
-        background: 'transparent',
-        boxShadow: focused ? 'inset 0 -1px 0 0 var(--accent)' : 'none',
-        transition: 'box-shadow 120ms ease',
-      }}
-    >
+    // v1.3.47: wrapper div 제거. input + % 만 직접 노출. focus 시 input
+    // 글자색이 accent 로 변하는 정도로 affordance. 박스가 0개.
+    <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 1 }}>
       <input
         type="text"
         inputMode="numeric"
@@ -257,20 +242,15 @@ function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) =>
           }
         }}
         style={{
-          width: 28,
+          width: 22,
           background: 'transparent',
           border: 'none',
           outline: 'none',
-          // Chromium ships <input type="text"> with a default inset
-          // shadow + native frame that survives border:none / outline:
-          // none. Force appearance:none on every vendor branch to
-          // collapse it — without this the visible "박스 겹쳐 보이는"
-          // artifact appears around the digits.
           appearance: 'none',
           WebkitAppearance: 'none' as never,
           MozAppearance: 'textfield' as never,
           boxShadow: 'none',
-          color: 'var(--text-color)',
+          color: focused ? 'var(--accent)' : 'var(--text-color)',
           fontFamily: 'monospace',
           fontVariantNumeric: 'tabular-nums',
           fontSize: 11,
@@ -278,36 +258,23 @@ function PctInput({ value, onCommit }: { value: number; onCommit: (p: number) =>
           textAlign: 'right',
           padding: 0,
           margin: 0,
+          transition: 'color 120ms ease',
         }}
       />
-      <span style={{ color: 'var(--text-muted)', fontSize: 10, marginLeft: 2 }}>%</span>
-    </div>
+      <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>%</span>
+    </span>
   );
 }
 
-// Outer wrapper for the size-control group ([−] [수치] [+]). Single
-// border keeps it visually one chip; inner items are borderless and
-// separated by 1px dividers.
-const groupStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'stretch',
-  height: 22,
-  border: '1px solid var(--border-rgba)',
-  borderRadius: 5,
-  background: 'var(--surface)',
-  overflow: 'hidden',
-};
-
-// Segmented button inside the group — borderless, with a divider on
-// its inner side (− has right divider, + has left). Dividers are
-// produced by group flex-gap of 1px on a tinted background.
-const segBtnStyle: React.CSSProperties = {
-  width: 22, height: '100%',
-  borderRadius: 0,
+// v1.3.47 재설계 — 외곽 chip 없앰. − / + 가 단순 ghost 버튼 (배경 / 보더
+// 없음, hover 시만 살짝 강조). PctInput 도 wrapper 박스 없이 input + %
+// 직접 노출. 단축키 input + 좌우 nudge 버튼 = 단순한 inline 컨트롤 row.
+const ghostBtnStyle: React.CSSProperties = {
+  width: 18, height: 18,
+  borderRadius: 4,
   border: 'none',
-  borderLeft: '1px solid var(--border-rgba)',
   background: 'transparent',
-  color: 'var(--text-color)',
+  color: 'var(--text-muted)',
   cursor: 'pointer',
   fontSize: 12,
   lineHeight: 1,
@@ -315,6 +282,8 @@ const segBtnStyle: React.CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
   padding: 0,
+  fontFamily: 'inherit',
+  transition: 'background 0.12s, color 0.12s',
 };
 
 /**

@@ -1575,26 +1575,38 @@ export default function App() {
     // ItemDialog entirely — the user just wants the screenshot saved
     // as a card, no fields to fill.
     if (clipPrompt.type === 'image') {
-      const key = `image:${clipPrompt.width ?? 0}x${clipPrompt.height ?? 0}:${clipPrompt.byteSize ?? 0}`;
+      const key = clipPrompt.value
+        ? `image-file:${clipPrompt.value}`
+        : `image:${clipPrompt.width ?? 0}x${clipPrompt.height ?? 0}:${clipPrompt.byteSize ?? 0}`;
       dismissedClipRef.current.add(key);
+      // v1.3.47: file-drop image (Explorer Ctrl+C on a PNG) already has
+      // value=path → skip the save-clipboard-image IPC (which only
+      // handles bitmap/SVG read from OS clipboard). Reference the
+      // existing path directly. Bitmap/SVG path goes through the IPC.
+      const filePath = clipPrompt.value;
+      const targetSpaceId = data.spaces[0]?.id ?? '';
+      if (!targetSpaceId) {
+        showToast('스페이스가 없어요', { duration: 2500 });
+        setClipPrompt(null);
+        return;
+      }
+      if (!quotaChecks.card()) {
+        setClipPrompt(null);
+        return;
+      }
       setClipPrompt(null);
-      (async () => {
-        const res = await electronAPI.saveClipboardImage();
-        if (!res.success) {
-          showToast('이미지를 저장하지 못했어요', { duration: 2500 });
-          return;
-        }
-        const targetSpaceId = data.spaces[0]?.id ?? '';
-        if (!targetSpaceId) {
-          showToast('스페이스가 없어요', { duration: 2500 });
-          return;
-        }
-        if (!quotaChecks.card()) return;
-        const autoLabel = `이미지_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`;
+      const fileLabelFromPath = (p: string) => {
+        const name = p.split(/[/\\]/).pop() || p;
+        return name.replace(/\.[^.]+$/, '');
+      };
+      const finishWithPath = (path: string, ownedByLauncher: boolean) => {
+        const autoLabel = ownedByLauncher
+          ? `이미지_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`
+          : fileLabelFromPath(path);
         const newItem = store.addItem(targetSpaceId, {
           type: 'image',
           title: autoLabel,
-          value: res.path,
+          value: path,
         });
         if (newItem) {
           markItemsAsNew([newItem.id]);
@@ -1602,14 +1614,26 @@ export default function App() {
             description: `"${autoLabel}" 추가`,
             undo: () => {
               store.deleteItem(targetSpaceId, newItem.id);
-              // Also remove the disk file on undo — keeps userData/images/
-              // tidy if the user immediately Ctrl+Z'd a paste they didn't
-              // mean to make permanent.
-              electronAPI.deleteImageFile(res.path);
+              // Only unlink files WE created (userData/images/). User's
+              // own files (file-drop case) stay on their disk.
+              if (ownedByLauncher) electronAPI.deleteImageFile(path);
             },
             redo: () => store.restoreItem(targetSpaceId, newItem),
           });
         }
+      };
+      if (filePath) {
+        // file-drop case — path already exists on disk.
+        finishWithPath(filePath, false);
+        return;
+      }
+      (async () => {
+        const res = await electronAPI.saveClipboardImage();
+        if (!res.success) {
+          showToast('이미지를 저장하지 못했어요', { duration: 2500 });
+          return;
+        }
+        finishWithPath(res.path, true);
       })();
       return;
     }

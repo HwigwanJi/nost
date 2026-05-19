@@ -3929,6 +3929,16 @@ function registerIpcHandlers() {
   // OR the text length, both cheap to read.
   let _imageProbeCache = null;
 
+  // v1.3.47: image-extension list shared across main 의 세 분류 지점
+  // (analyze-clipboard / save-clipboard-image / classifyFile). 다른
+  // 곳에서 'image' 분기 추가하려면 여기 한 줄로 끝나도록 만든 SSOT.
+  const _IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','svg','ico','avif']);
+  const _isImagePath = (p) => {
+    if (typeof p !== 'string' || !p) return false;
+    const m = /\.([a-zA-Z0-9]+)(?:[?#]|$)/.exec(p);
+    return !!m && _IMAGE_EXTS.has(m[1].toLowerCase());
+  };
+
   ipcMain.handle('analyze-clipboard', async (_event, docExtensions) => {
     // v1.3.46: image clipboard takes priority over text — when the
     // user copies a screenshot (Win+Shift+S, browser "이미지 복사"),
@@ -3997,6 +4007,40 @@ function registerIpcHandlers() {
         }
       } else {
         _imageProbeCache = null;
+      }
+      // v1.3.47: file-drop image — when user Ctrl+C's a PNG/JPG/SVG
+      // FILE in Windows Explorer, the clipboard carries a CF_HDROP
+      // (file path list) instead of an image/* bitmap. None of the
+      // bitmap/svg branches above match. Read the file-drop via the
+      // existing PS helper and classify the path; if it's an image
+      // extension, return type='image' WITH the path so the renderer
+      // can reference the existing file directly (no copy to
+      // userData/images/ needed — Cohort C still, just the source
+      // is user's own filesystem).
+      const dropped = await readClipboardFileDrop();
+      if (dropped && _isImagePath(dropped)) {
+        const sigKey = 'filedrop:' + dropped;
+        if (_imageProbeCache && _imageProbeCache.sig === sigKey) {
+          return _imageProbeCache.payload;
+        }
+        let byteSize = 0;
+        try { byteSize = fs.statSync(dropped).size; } catch (_) {}
+        const name = dropped.split(/[/\\]/).pop() || dropped;
+        const label = name.replace(/\.[^.]+$/, '');
+        const payload = {
+          type: 'image',
+          value: dropped,           // existing path — no save IPC needed
+          label,
+          // No base64 preview for file-drop (file already exists; the
+          // renderer can show file:// preview directly in the banner).
+          preview: `file:///${dropped.replace(/\\/g, '/')}`,
+          width: 0,
+          height: 0,
+          byteSize,
+          imageKind: 'filedrop',
+        };
+        _imageProbeCache = { sig: sigKey, payload };
+        return payload;
       }
     } catch (e) {
       log.debug('[analyze-clipboard] image probe failed:', e?.message);
