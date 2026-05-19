@@ -4010,37 +4010,44 @@ function registerIpcHandlers() {
       }
       // v1.3.47: file-drop image — when user Ctrl+C's a PNG/JPG/SVG
       // FILE in Windows Explorer, the clipboard carries a CF_HDROP
-      // (file path list) instead of an image/* bitmap. None of the
-      // bitmap/svg branches above match. Read the file-drop via the
-      // existing PS helper and classify the path; if it's an image
-      // extension, return type='image' WITH the path so the renderer
-      // can reference the existing file directly (no copy to
-      // userData/images/ needed — Cohort C still, just the source
-      // is user's own filesystem).
-      const dropped = await readClipboardFileDrop();
-      if (dropped && _isImagePath(dropped)) {
-        const sigKey = 'filedrop:' + dropped;
+      // (file path list) instead of an image/* bitmap. The PS-based
+      // readClipboardFileDrop() takes ~800ms/spawn so we MUST gate it
+      // — perf-patterns.md §1.1 signature cache. The clipboard
+      // formats list contains 'CF_HDROP' / 'FileNameW' / etc. when a
+      // file-drop is present; cheaply probe formats first, then
+      // sig-cache the actual PS result so repeat polls with the same
+      // clipboard state pay 0 ms instead of 800 ms.
+      const hasFileDrop = formats.some(f =>
+        f === 'CF_HDROP' || f === 'FileGroupDescriptorW' ||
+        f === 'FileNameW' || f === 'FileName'
+      );
+      if (hasFileDrop) {
+        const sigKey = 'filedrop:' + formats.join('|');
         if (_imageProbeCache && _imageProbeCache.sig === sigKey) {
-          return _imageProbeCache.payload;
+          return _imageProbeCache.payload;  // may be null-payload (non-image file)
         }
-        let byteSize = 0;
-        try { byteSize = fs.statSync(dropped).size; } catch (_) {}
-        const name = dropped.split(/[/\\]/).pop() || dropped;
-        const label = name.replace(/\.[^.]+$/, '');
-        const payload = {
-          type: 'image',
-          value: dropped,           // existing path — no save IPC needed
-          label,
-          // No base64 preview for file-drop (file already exists; the
-          // renderer can show file:// preview directly in the banner).
-          preview: `file:///${dropped.replace(/\\/g, '/')}`,
-          width: 0,
-          height: 0,
-          byteSize,
-          imageKind: 'filedrop',
-        };
-        _imageProbeCache = { sig: sigKey, payload };
-        return payload;
+        const dropped = await readClipboardFileDrop();
+        if (dropped && _isImagePath(dropped)) {
+          let byteSize = 0;
+          try { byteSize = fs.statSync(dropped).size; } catch (_) {}
+          const name = dropped.split(/[/\\]/).pop() || dropped;
+          const label = name.replace(/\.[^.]+$/, '');
+          const payload = {
+            type: 'image',
+            value: dropped,           // existing path — no save IPC needed
+            label,
+            preview: `file:///${dropped.replace(/\\/g, '/')}`,
+            width: 0,
+            height: 0,
+            byteSize,
+            imageKind: 'filedrop',
+          };
+          _imageProbeCache = { sig: sigKey, payload };
+          return payload;
+        }
+        // Cache the "not an image file-drop" outcome too so subsequent
+        // polls with the same clipboard state skip the PS spawn.
+        _imageProbeCache = { sig: sigKey, payload: null };
       }
     } catch (e) {
       log.debug('[analyze-clipboard] image probe failed:', e?.message);

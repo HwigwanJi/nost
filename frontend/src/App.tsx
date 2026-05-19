@@ -1515,12 +1515,14 @@ export default function App() {
       const r = await electronAPI.analyzeClipboard(getDocumentExtensions(data.settings.documentExtensions));
       if (cancelled) return;
       if (r.type === 'none') return;
-      // v1.3.46: image kind has no `value` until user confirms — use a
-      // signature key derived from dimensions+bytes for the cache. Same
-      // screenshot copied twice produces the same key, so we don't keep
-      // re-banner-ing the user.
+      // v1.3.46: image kind has no `value` until user confirms (bitmap/
+      // SVG case) — use dimensions+bytes for the cache key.
+      // v1.3.47: file-drop image branch carries `value=path` from main —
+      // key on path so distinct files don't collide on the 0×0×0 sig.
       const key = r.type === 'image'
-        ? `image:${r.width ?? 0}x${r.height ?? 0}:${r.byteSize ?? 0}`
+        ? (r.value
+            ? `image-file:${r.value}`
+            : `image:${r.width ?? 0}x${r.height ?? 0}:${r.byteSize ?? 0}`)
         : (r.value ?? '');
       if (!key) return;
       if (key === lastClipValueRef.current) return;
@@ -1529,7 +1531,10 @@ export default function App() {
       if (r.type === 'image') {
         setClipPrompt({
           type: 'image',
-          value: '',
+          // v1.3.47: pass through main's value — empty string for
+          // bitmap/SVG (renderer fetches via saveClipboardImage IPC),
+          // file path for file-drop (Explorer Ctrl+C → use directly).
+          value: r.value ?? '',
           label: r.label ?? '클립보드 이미지',
           preview: r.preview,
           width: r.width,
