@@ -111,7 +111,14 @@ export interface LauncherItem {
    * and the rendered icon/hover differ. Migration of existing `'app'`
    * cards happens in useAppData.migrateData.
    */
-  type: 'url' | 'folder' | 'app' | 'doc' | 'window' | 'browser' | 'text' | 'cmd' | 'widget' | 'memo';
+  /**
+   * v1.3.46 — `'image'` added. Clipboard-pasted or file-dropped image
+   * (.png/.jpg/.svg/etc.). Storage: file lives in
+   * `userData/images/{uuid}.{ext}`, `item.value` holds the absolute path.
+   * Click behaviour: copy the image back to clipboard (paste target,
+   * not launch target). Cohort C (PC-local — sync excluded).
+   */
+  type: 'url' | 'folder' | 'app' | 'doc' | 'window' | 'browser' | 'text' | 'cmd' | 'widget' | 'memo' | 'image';
   /**
    * For type !== 'widget': the launchable payload (URL, file path, cmd line, …).
    * For type === 'widget': not used — widgets render from `widget.kind` instead.

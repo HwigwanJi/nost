@@ -89,6 +89,7 @@ const TYPE_OPTIONS: Array<{ value: LauncherItem['type']; label: string; icon: st
   { value: 'folder',  label: '폴더',        icon: 'folder',         hint: 'C:\\...' },
   { value: 'app',     label: '앱',          icon: 'apps',           hint: '.exe / .lnk' },
   { value: 'doc',     label: '문서',        icon: 'description',    hint: '.docx / .pdf / .hwp …' },
+  { value: 'image',   label: '이미지',      icon: 'image',          hint: '.png / .jpg / 스크린샷' },
   { value: 'memo',    label: '메모',        icon: 'sticky_note_2',  hint: '본문 내용 직접' },
   { value: 'text',    label: '텍스트',      icon: 'content_paste',  hint: '클립보드 복사' },
   { value: 'cmd',     label: '커맨드',      icon: 'terminal',       hint: 'cmd 한 줄' },
@@ -511,6 +512,10 @@ export function ItemDialog({
         r.type === 'doc' ? 'doc' :
         r.type === 'folder' ? 'folder' :
         r.type === 'text' ? 'text' :
+        // v1.3.46: 'image' from clipboard only has value when it's
+        // a path (not a raw clipboard image — that path goes through
+        // App.tsx's clip-prompt → save-clipboard-image IPC instead).
+        r.type === 'image' && r.value ? 'image' :
         null;
       if (!mapped) return;
       setForm(prev => ({

@@ -3870,6 +3870,45 @@ function registerIpcHandlers() {
   let lastClipboardResult = null;
   let lastClipboardDocExts = '';
   ipcMain.handle('analyze-clipboard', async (_event, docExtensions) => {
+    // v1.3.46: binary image clipboard takes priority over text — when
+    // the user copies a screenshot (Win+Shift+S, browser "이미지 복사",
+    // etc.) there's no text payload but `availableFormats()` lists an
+    // image/png entry. Return a tiny base64 thumbnail (96 px) for the
+    // gateway banner preview; the actual file isn't written to disk
+    // until the user confirms with the "이미지 카드로" button.
+    try {
+      const formats = clipboard.availableFormats();
+      const hasImage = formats.some(f => f.startsWith('image/'));
+      if (hasImage) {
+        const img = clipboard.readImage();
+        if (!img.isEmpty()) {
+          const size = img.getSize();
+          const previewW = Math.min(96, size.width);
+          const previewH = Math.round(previewW * size.height / Math.max(1, size.width));
+          const preview = img.resize({ width: previewW, height: previewH });
+          // PNG keeps transparency for screenshots / icons with alpha.
+          const dataUrl = preview.toDataURL();
+          // Rough size estimate of the original (for the banner subtitle).
+          const fullPng = img.toPNG();
+          return {
+            type: 'image',
+            // No `value` yet — the file lives only in the clipboard
+            // until the user clicks "이미지 카드로" which will trigger
+            // the save-clipboard-image IPC.
+            value: '',
+            label: '클립보드 이미지',
+            preview: dataUrl,
+            width: size.width,
+            height: size.height,
+            byteSize: fullPng.length,
+          };
+        }
+      }
+    } catch (e) {
+      // Don't fail the whole analyze just because image probe threw.
+      log.debug('[analyze-clipboard] image probe failed:', e?.message);
+    }
+
     let text = clipboard.readText().trim();
     if (!text) text = await readClipboardFileDrop();
     if (!text) return { type: 'none' };
@@ -3916,10 +3955,14 @@ function registerIpcHandlers() {
     //      regex (`.claude` looks like 6-char extension).
     // Classify an existing file by its extension. Mirrors
     // inferItemFromPath in App.tsx; keep the two logically in sync.
+    // v1.3.46: image extensions shared with renderer's
+    // lib/imageExtensions.ts — keep in sync.
+    const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','svg','ico','avif']);
     const classifyFile = (filePath, basename) => {
       const m = basename.match(/\.([a-zA-Z0-9]+)$/);
       const ext = m ? m[1].toLowerCase() : '';
       if (ext === 'exe') return { type: 'app', value: filePath, label: basename.replace(/\.exe$/i, '') };
+      if (ext && IMAGE_EXTS.has(ext)) return { type: 'image', value: filePath, label: basename.replace(/\.[a-zA-Z0-9]+$/, '') };
       if (ext && docExts.includes(ext)) return { type: 'doc', value: filePath, label: basename.replace(/\.[a-zA-Z0-9]+$/, '') };
       // Other / unknown — fall back to app so the launcher still works
       // (shell-execute routes via Windows default associations).
@@ -4045,6 +4088,98 @@ function registerIpcHandlers() {
     // Brief delay so React can finish rendering the "복사됨" toast before hiding
     maybeCloseAfter(closeAfter, 700);
     // copy doesn't launch external app — no top reassert needed
+  });
+
+  // ── Image card IPC (v1.3.46+) ───────────────────────────────────
+  // Three handlers:
+  //   - save-clipboard-image : write current clipboard image to
+  //     userData/images/{uuid}.png. Used by the gateway banner's
+  //     "이미지 카드로" flow.
+  //   - copy-image-to-clipboard : read file at given path and write
+  //     to clipboard as native image. Card-click action.
+  //   - delete-image-file : unlink. Called by the renderer when an
+  //     image card is deleted, so the disk doesn't accumulate
+  //     orphan blobs.
+  //
+  // Cohort C (PC-local): files live under userData/images/ and
+  // never sync. See plans/sync-and-auth.md §3.
+  const imagesDir = () => {
+    const dir = path.join(app.getPath('userData'), 'images');
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+    return dir;
+  };
+
+  // Path-safety helper — refuse anything that escapes the images dir.
+  // Defends against a compromised renderer asking us to delete arbitrary
+  // files on disk. Returns absolute resolved path or null.
+  const resolveImagePath = (p) => {
+    if (typeof p !== 'string' || !p) return null;
+    try {
+      const abs = path.resolve(p);
+      const base = imagesDir();
+      if (!abs.toLowerCase().startsWith(base.toLowerCase())) return null;
+      return abs;
+    } catch { return null; }
+  };
+
+  ipcMain.handle('save-clipboard-image', async () => {
+    try {
+      const formats = clipboard.availableFormats();
+      const hasImage = formats.some(f => f.startsWith('image/'));
+      if (!hasImage) return { success: false, reason: 'no-image' };
+      const img = clipboard.readImage();
+      if (img.isEmpty()) return { success: false, reason: 'empty' };
+      const buf = img.toPNG();
+      const uuid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const filename = `${uuid}.png`;
+      const filePath = path.join(imagesDir(), filename);
+      fs.writeFileSync(filePath, buf);
+      const size = img.getSize();
+      return {
+        success: true,
+        path: filePath,
+        width: size.width,
+        height: size.height,
+        byteSize: buf.length,
+      };
+    } catch (e) {
+      log.warn('[save-clipboard-image] failed:', e?.message);
+      return { success: false, reason: String(e?.message ?? e) };
+    }
+  });
+
+  ipcMain.on('copy-image-to-clipboard', (_e, filePath, closeAfter) => {
+    try {
+      if (typeof filePath !== 'string' || !filePath) return;
+      // For card-click → clipboard, the path comes from item.value which
+      // was set by us during save-clipboard-image. Any non-userData path
+      // (e.g. drag-dropped image at /Users/.../foo.png) is still allowed
+      // since user explicitly added it — we only path-guard the DELETE
+      // handler where the risk is destructive.
+      const img = nativeImage.createFromPath(filePath);
+      if (img.isEmpty()) {
+        log.warn('[copy-image-to-clipboard] empty / missing:', filePath);
+        return;
+      }
+      clipboard.writeImage(img);
+    } catch (e) {
+      log.warn('[copy-image-to-clipboard] failed:', e?.message);
+    }
+    maybeCloseAfter(closeAfter, 700);
+  });
+
+  ipcMain.handle('delete-image-file', async (_e, filePath) => {
+    const safe = resolveImagePath(filePath);
+    if (!safe) return { success: false, reason: 'outside-images-dir' };
+    try {
+      fs.unlinkSync(safe);
+      return { success: true };
+    } catch (e) {
+      // ENOENT = already gone; treat as success so the renderer doesn't
+      // get confused (the card is already being deleted).
+      if (e?.code === 'ENOENT') return { success: true };
+      return { success: false, reason: String(e?.message ?? e) };
+    }
   });
 
   ipcMain.on('open-guide', () => {

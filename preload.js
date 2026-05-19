@@ -234,6 +234,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  installed / no audio playing). */
   mediaFocusSource: () => ipcRenderer.invoke('media-focus-source'),
 
+  // ── Image card (v1.3.46+) ───────────────────────────────────────
+  /** Read current clipboard image and save to userData/images/{uuid}.png.
+   *  Returns { success, path, width, height, byteSize } or
+   *  { success:false, reason }. Used by the clipboard gateway banner
+   *  when the user clicks "이미지 카드로". */
+  saveClipboardImage: () => ipcRenderer.invoke('save-clipboard-image'),
+  /** Copy the image at the given path back to the OS clipboard. Used
+   *  by card-click on an image card — clicking the card stamps the
+   *  image into the clipboard so the user can Ctrl+V into another app. */
+  copyImageToClipboard: (filePath, closeAfter) =>
+    ipcRenderer.send('copy-image-to-clipboard', filePath, closeAfter),
+  /** Delete an image file (called when the image card is deleted so
+   *  userData/images/ doesn't accumulate orphans). Path-guarded — only
+   *  paths inside userData/images/ are accepted. */
+  deleteImageFile: (filePath) => ipcRenderer.invoke('delete-image-file', filePath),
+
   // ── Color picker (screen-capture eyedropper) ────────────────────
   /** Hide launcher → screenshot primary display → open fullscreen picker.
    *  Resolves with the hex the user clicked, or { success:false, reason }

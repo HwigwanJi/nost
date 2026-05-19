@@ -129,7 +129,7 @@ CREATE POLICY "users access own snapshot"
 |---|---|---|---|
 | **A — Always sync** | url, browser, text, memo, widget(music/color), spaces/presets/node groups/decks 구조, 튜토리얼 진행, dismissals | 그대로 sync (LWW per-field) | 경로 의존 없음, 모든 PC에서 동일 의미 |
 | **B — Sync 메타, 경로 자동 해석** | app(.exe/.lnk), window(창 포커스), cmd | 카드 메타(이름·아이콘·카테고리)는 sync. 경로는 디바이스별 자체 해석 + cache | 사용자 의도(이 앱)는 portable, 경로는 PC마다 다름 |
-| **C — PC-local 전용** | folder, 임의 파일(.pdf/.docx/.xlsx 등 비-앱) | sync 안 함. 디바이스별 카드 풀 | 본질적으로 PC 종속, 강제 sync 시 깨짐 |
+| **C — PC-local 전용** | folder, 임의 파일(.pdf/.docx/.xlsx 등 비-앱), **image (v1.3.46+)** | sync 안 함. 디바이스별 카드 풀 | 본질적으로 PC 종속, 강제 sync 시 깨짐. image 의 경우 binary 가 userData/images/ 에 살아서 다른 PC 에 의미 없음 — Phase C 의 cloud 업로드 옵션이 도착하면 사용자 선택으로 cohort A 로 promote 가능 |
 | **D — 디바이스 settings** | windowBounds, floatingButton.position, floatingBadges xy, monitorDirections, shortcut, autoLaunch, autoHide, badgeSize, autoUpdate 상태, lastDailyNudgeYmd | sync 안 함 | PC별로 다른 게 맞음 (모니터/키 충돌) |
 
 ### 3.1 Cohort B 자동 매칭 알고리즘
@@ -188,6 +188,7 @@ resolvePath(card) {
 - type='cmd' → B
 - type='folder' → C
 - type='file' (드래그드롭한 비-앱 파일) → C
+- type='image' → C (binary 가 userData/images/ 에 — v1.3.46+)
 - type='text' → A (클립보드 카피니까 portable)
 
 사용자가 한 번 만든 카드의 cohort는 **불변**. C → A로 끌어올리는 옵션 없음 (모델 단순성 우선).

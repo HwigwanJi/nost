@@ -31,6 +31,12 @@ const LOCAL_TYPES: ReadonlySet<LauncherItem['type']> = new Set([
   'doc',
   'window',
   'cmd',
+  // v1.3.46: image cards store the binary in userData/images/{uuid}.png
+  // — a path that's meaningless on another PC. Phase C may introduce
+  // a per-card "promote to cloud" option that uploads the bytes to
+  // Supabase Storage and re-tags the card as cohort A; until then,
+  // image cards stay device-local with the "🖥️ 이 PC만" badge.
+  'image',
 ]);
 
 /** Which cohort a given card-type belongs to. */

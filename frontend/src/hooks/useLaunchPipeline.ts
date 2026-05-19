@@ -71,6 +71,18 @@ export function useLaunchPipeline({ showToast, dismissToast }: LaunchPipelineOpt
       return;
     }
 
+    // ── image: copy binary image to clipboard (v1.3.46+) ─────
+    // Image cards are paste-targets, not launch targets — clicking
+    // stamps the binary into the OS clipboard so the user can Ctrl+V
+    // into another app (Slack, doc editor, etc.). Same shape as the
+    // text branch above, just routed through a different IPC because
+    // the payload is a file, not a string.
+    if (item.type === 'image') {
+      electronAPI.copyImageToClipboard(item.value, closeAfter);
+      showToast(`"${item.title || '이미지'}" 복사됨`, { duration: 1800 });
+      return;
+    }
+
     // ── cmd: fire-and-forget shell command ───────────────────
     if (item.type === 'cmd') {
       electronAPI.runCmd(item.value, closeAfter);

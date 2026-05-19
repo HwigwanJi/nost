@@ -119,6 +119,10 @@ function getTypeIcon(type: LauncherItem['type']) {
   const map: Record<string, string> = {
     url: 'language', folder: 'folder_open', app: 'apps', doc: 'description',
     window: 'window', browser: 'public', text: 'content_copy', cmd: 'terminal',
+    // image: fallback icon when the actual <img> render fails (broken
+    // path / deleted file). The normal render path branches on
+    // item.type === 'image' BEFORE this map and renders the thumbnail.
+    image: 'image',
   };
   return map[type] ?? 'link';
 }
@@ -972,43 +976,105 @@ function ItemCardImpl({
         </>
       )}
 
-      {/* ── Icon — type-tint badge container ────────────────────────
-          Wraps the icon in a 36×36 rounded square with 8% opacity type-color
-          background. This gives the card a visual anchor and passively encodes
-          the item type through colour.
-          Inactive items used to get a red tint here, but combined with the
-          50% card opacity it read as alarming — like an error. We now rely
-          on the card-level opacity alone, which is enough to communicate
-          "this is dimmed" without the safety-orange. */}
-      <div
-        title={isInactive ? '창이 닫혀 있어요' : undefined}
-        style={{
-          width: 36, height: 36, borderRadius: 9, flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          // Image icons: let the image speak for itself — no tint behind it
-          background: (item.iconType === 'image' && item.icon && !imageIconFailed)
-            ? 'transparent'
-            : `${accentColor}14`,     // 8% type-color tint (always)
-          transition: 'background 0.15s',
-        }}
-      >
-        {loading ? (
-          <Icon name="sync" size={22} color={accentColor} className="animate-spin" />
-        ) : item.iconType === 'image' && item.icon && !imageIconFailed ? (
-          <img
-            src={item.icon} alt=""
-            style={{ width: 32, height: 32, borderRadius: 7, objectFit: 'cover' }}
-            onError={() => setImageIconFailed(true)}
-          />
-        ) : (
-          <Icon name={icon} size={22} color={accentColor} />
-        )}
-      </div>
+      {/* ── Image card: full-card thumbnail (v1.3.46+) ──────────────
+          For type='image' we replace the icon+title vertical stack
+          with a Pinterest-style cover thumbnail + small label slice
+          at the bottom. All the other overlays (pin, badges, slot
+          dots, hold ring, monitor pill) keep their absolute positions
+          and float on top of the image. */}
+      {item.type === 'image' && item.value ? (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 4,
+            borderRadius: 8,
+            overflow: 'hidden',
+            background: 'var(--surface-hover)',
+            pointerEvents: 'none',
+          }}
+        >
+          {imageIconFailed ? (
+            <div style={{
+              width: '100%', height: '100%',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-dim)',
+            }}>
+              <Icon name="broken_image" size={28} color="var(--text-dim)" />
+            </div>
+          ) : (
+            <img
+              src={`file:///${item.value.replace(/\\/g, '/')}`}
+              alt=""
+              loading="lazy"
+              style={{
+                width: '100%', height: '100%',
+                objectFit: 'cover',
+                display: 'block',
+              }}
+              onError={() => setImageIconFailed(true)}
+            />
+          )}
+          {/* Label slice — small caption over a bottom gradient so the
+              title stays legible regardless of the image's bottom edge. */}
+          {item.title && (
+            <div style={{
+              position: 'absolute', bottom: 0, left: 0, right: 0,
+              padding: '8px 6px 4px',
+              background: 'linear-gradient(to top, rgba(0,0,0,0.65), transparent)',
+              color: '#fff',
+              fontSize: 10,
+              fontWeight: 600,
+              textAlign: 'center',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              textShadow: '0 1px 2px rgba(0,0,0,0.4)',
+            }}>
+              {item.title}
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* ── Icon — type-tint badge container ────────────────────────
+              Wraps the icon in a 36×36 rounded square with 8% opacity type-color
+              background. This gives the card a visual anchor and passively encodes
+              the item type through colour.
+              Inactive items used to get a red tint here, but combined with the
+              50% card opacity it read as alarming — like an error. We now rely
+              on the card-level opacity alone, which is enough to communicate
+              "this is dimmed" without the safety-orange. */}
+          <div
+            title={isInactive ? '창이 닫혀 있어요' : undefined}
+            style={{
+              width: 36, height: 36, borderRadius: 9, flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              // Image icons: let the image speak for itself — no tint behind it
+              background: (item.iconType === 'image' && item.icon && !imageIconFailed)
+                ? 'transparent'
+                : `${accentColor}14`,     // 8% type-color tint (always)
+              transition: 'background 0.15s',
+            }}
+          >
+            {loading ? (
+              <Icon name="sync" size={22} color={accentColor} className="animate-spin" />
+            ) : item.iconType === 'image' && item.icon && !imageIconFailed ? (
+              <img
+                src={item.icon} alt=""
+                style={{ width: 32, height: 32, borderRadius: 7, objectFit: 'cover' }}
+                onError={() => setImageIconFailed(true)}
+              />
+            ) : (
+              <Icon name={icon} size={22} color={accentColor} />
+            )}
+          </div>
 
-      {/* ── Title ───────────────────────────────────────────────────── */}
-      <span className="text-[11px] font-medium leading-tight text-center line-clamp-2 w-full" style={{ color:'var(--text-color)' }}>
-        <HighlightText text={item.title} query={searchQuery} />
-      </span>
+          {/* ── Title ───────────────────────────────────────────────────── */}
+          <span className="text-[11px] font-medium leading-tight text-center line-clamp-2 w-full" style={{ color:'var(--text-color)' }}>
+            <HighlightText text={item.title} query={searchQuery} />
+          </span>
+        </>
+      )}
 
       {/* ── Bottom stripe — space-color only ────────────────────────
           Pre-v1.3.9 this stripe doubled as the pin indicator (accent

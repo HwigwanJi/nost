@@ -130,10 +130,17 @@ export interface ElectronAPI {
   // Renderer should pass `data.settings.documentExtensions` so user-customised
   // doc lists apply uniformly across every clipboard entry point.
   analyzeClipboard: (docExtensions?: string[]) => Promise<{
-    type: 'url' | 'app' | 'folder' | 'doc' | 'hex' | 'text' | 'none';
+    type: 'url' | 'app' | 'folder' | 'doc' | 'hex' | 'text' | 'image' | 'none';
     value?: string;
     label?: string;
     html?: string;
+    // image-only: base64 data URL preview (96 px max width) + raw bytes
+    // estimate. The file isn't on disk yet — only in the OS clipboard;
+    // the renderer triggers `saveClipboardImage()` to materialise it.
+    preview?: string;
+    width?: number;
+    height?: number;
+    byteSize?: number;
   }>;
   /**
    * Document cohort directory scan. Returns files whose basename matches
@@ -200,6 +207,14 @@ export interface ElectronAPI {
   // bring the audible browser tab to front when the wrapper is clicked.
   mediaCommand: (action: 'play-pause' | 'next' | 'prev' | 'stop' | 'vol-up' | 'vol-down' | 'mute') => void;
   mediaFocusSource: () => Promise<{ tabId: number; title: string; url: string } | null>;
+  // ── Image card (v1.3.46+) ───────────────────────────────────────
+  saveClipboardImage: () => Promise<
+    | { success: true; path: string; width: number; height: number; byteSize: number }
+    | { success: false; reason: string }
+  >;
+  copyImageToClipboard: (filePath: string, closeAfter?: boolean) => void;
+  deleteImageFile: (filePath: string) => Promise<{ success: boolean; reason?: string }>;
+
   // ── Color picker (screen-capture eyedropper) ────────────────────
   pickColorFromScreen: () => Promise<{ success: boolean; hex?: string; reason?: string }>;
   // ── Memo (사라지는 메모) ────────────────────────────────────────
@@ -389,6 +404,9 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   // Dev-mode media stubs.
   mediaCommand: noop,
   mediaFocusSource: async () => null,
+  saveClipboardImage: async () => ({ success: false, reason: 'dev-mode' }),
+  copyImageToClipboard: noop,
+  deleteImageFile: async () => ({ success: false, reason: 'dev-mode' }),
   pickColorFromScreen: async () => ({ success: false, reason: 'dev-mode' }),
   // Dev-mode memo stubs — exporting in browser dev makes no sense, so
   // we return a "success" path that won't be opened (caller should

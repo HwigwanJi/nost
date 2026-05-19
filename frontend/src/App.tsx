@@ -547,10 +547,14 @@ function flattenRows(rows: SpaceRow[]): Space[] {
 function inferItemFromPath(filePath: string, docExtensions: string[]): { type: LauncherItem['type']; title: string } {
   const filename = filePath.replace(/\//g, '\\').split('\\').pop() ?? filePath;
   const ext = filename.match(/\.([^.]+)$/)?.[1]?.toLowerCase() ?? '';
+  // v1.3.46: image extensions classified to 'image' type. Checked
+  // BEFORE doc/app fallback so png/jpg/svg don't slip into 'app'.
+  const IMAGE_EXTS = new Set(['png','jpg','jpeg','gif','webp','bmp','svg','ico','avif']);
   const type: LauncherItem['type'] =
     ext === 'exe' || ext === 'lnk' ? 'app' :
     ext === 'url'                  ? 'url' :
     !ext                           ? 'folder' :
+    IMAGE_EXTS.has(ext)            ? 'image' :
     docExtensions.includes(ext)    ? 'doc' :
                                      'app';
   const title = ext
@@ -1003,10 +1007,19 @@ export default function App() {
   type ClipPrompt = {
     // v1.3.34 — `'doc'` is a first-class kind; banner gets its own
     // copy/icon for it (see meta switch below).
-    type: 'url' | 'app' | 'folder' | 'doc' | 'hex' | 'text';
+    // v1.3.46 — `'image'` for binary clipboard contents (screenshots,
+    // browser "이미지 복사" etc.). For image kind `value` is empty
+    // until the user confirms — the actual save happens in
+    // handleClipPromptToCard via the save-clipboard-image IPC. Preview
+    // is a base64 thumbnail for the banner.
+    type: 'url' | 'app' | 'folder' | 'doc' | 'hex' | 'text' | 'image';
     value: string;
     label: string;
     html?: string;
+    preview?: string;        // image kind only — base64 data URL
+    width?: number;          // image kind only
+    height?: number;         // image kind only
+    byteSize?: number;       // image kind only
   };
   const [clipPrompt, setClipPrompt] = useState<ClipPrompt | null>(null);
   const lastClipValueRef = useRef('');
@@ -1501,10 +1514,31 @@ export default function App() {
     const check = async () => {
       const r = await electronAPI.analyzeClipboard(getDocumentExtensions(data.settings.documentExtensions));
       if (cancelled) return;
-      if (r.type === 'none' || !r.value) return;
-      if (r.value === lastClipValueRef.current) return;
-      if (dismissedClipRef.current.has(r.value)) return;
-      lastClipValueRef.current = r.value;
+      if (r.type === 'none') return;
+      // v1.3.46: image kind has no `value` until user confirms — use a
+      // signature key derived from dimensions+bytes for the cache. Same
+      // screenshot copied twice produces the same key, so we don't keep
+      // re-banner-ing the user.
+      const key = r.type === 'image'
+        ? `image:${r.width ?? 0}x${r.height ?? 0}:${r.byteSize ?? 0}`
+        : (r.value ?? '');
+      if (!key) return;
+      if (key === lastClipValueRef.current) return;
+      if (dismissedClipRef.current.has(key)) return;
+      lastClipValueRef.current = key;
+      if (r.type === 'image') {
+        setClipPrompt({
+          type: 'image',
+          value: '',
+          label: r.label ?? '클립보드 이미지',
+          preview: r.preview,
+          width: r.width,
+          height: r.height,
+          byteSize: r.byteSize,
+        });
+        return;
+      }
+      if (!r.value) return;
       setClipPrompt({
         type: r.type as ClipPrompt['type'],
         value: r.value,
@@ -1535,6 +1569,50 @@ export default function App() {
    *  duplicate the type-narrowing logic here. */
   const handleClipPromptToCard = useCallback(() => {
     if (!clipPrompt) return;
+    // v1.3.46: image kind needs to materialise the clipboard binary to
+    // disk BEFORE creating the card (the card stores the saved path
+    // as `item.value`). Async IPC → addItem → markItemsAsNew. Skips
+    // ItemDialog entirely — the user just wants the screenshot saved
+    // as a card, no fields to fill.
+    if (clipPrompt.type === 'image') {
+      const key = `image:${clipPrompt.width ?? 0}x${clipPrompt.height ?? 0}:${clipPrompt.byteSize ?? 0}`;
+      dismissedClipRef.current.add(key);
+      setClipPrompt(null);
+      (async () => {
+        const res = await electronAPI.saveClipboardImage();
+        if (!res.success) {
+          showToast('이미지를 저장하지 못했어요', { duration: 2500 });
+          return;
+        }
+        const targetSpaceId = data.spaces[0]?.id ?? '';
+        if (!targetSpaceId) {
+          showToast('스페이스가 없어요', { duration: 2500 });
+          return;
+        }
+        if (!quotaChecks.card()) return;
+        const autoLabel = `이미지_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}`;
+        const newItem = store.addItem(targetSpaceId, {
+          type: 'image',
+          title: autoLabel,
+          value: res.path,
+        });
+        if (newItem) {
+          markItemsAsNew([newItem.id]);
+          pushUndo({
+            description: `"${autoLabel}" 추가`,
+            undo: () => {
+              store.deleteItem(targetSpaceId, newItem.id);
+              // Also remove the disk file on undo — keeps userData/images/
+              // tidy if the user immediately Ctrl+Z'd a paste they didn't
+              // mean to make permanent.
+              electronAPI.deleteImageFile(res.path);
+            },
+            redo: () => store.restoreItem(targetSpaceId, newItem),
+          });
+        }
+      })();
+      return;
+    }
     const { type, value, label } = clipPrompt;
     dismissedClipRef.current.add(value);
     setClipPrompt(null);
@@ -1542,7 +1620,7 @@ export default function App() {
     setPrefilledItem({ type, value, title: label } as Partial<LauncherItem>);
     setEditSpaceId(data.spaces[0]?.id ?? '');
     setDialog('item');
-  }, [clipPrompt, data.spaces]);
+  }, [clipPrompt, data.spaces, store, quotaChecks, showToast, markItemsAsNew, pushUndo]);
 
   /** Hex prompt → instant color-swatch widget creation in the
    *  first space, then the dialog opens on the new item so the
@@ -1604,7 +1682,13 @@ export default function App() {
 
   const handleClipPromptDismiss = useCallback(() => {
     if (clipPrompt) {
-      dismissedClipRef.current.add(clipPrompt.value);
+      // v1.3.46: image kind uses a synthetic dims+bytes key (same as
+      // the polling cache) instead of `value` (which is empty for
+      // image until save).
+      const key = clipPrompt.type === 'image'
+        ? `image:${clipPrompt.width ?? 0}x${clipPrompt.height ?? 0}:${clipPrompt.byteSize ?? 0}`
+        : clipPrompt.value;
+      dismissedClipRef.current.add(key);
       tutorialTriggers.fire('gateway-banner-dismissed', { type: clipPrompt.type });
     }
     setClipPrompt(null);
@@ -2811,6 +2895,12 @@ export default function App() {
       undo: () => store.restoreItem(spaceId, item),
       redo: () => store.deleteItem(spaceId, itemId),
     });
+    // v1.3.46 NOTE on image cards: the binary at item.value is NOT
+    // unlinked here. If we deleted on the spot, undo / Ctrl+Z would
+    // bring back a card pointing at a missing file. Phase B will add a
+    // boot-time orphan GC that scans userData/images/ for files no
+    // longer referenced by any item.value and removes them then. For
+    // now the user can manually clean that folder if it grows.
     showToast(`"${item.title}" 삭제됨`, {
       actions: [{
         label: '실행 취소',
@@ -4505,10 +4595,12 @@ export default function App() {
                 case 'folder': return { icon: 'folder_open',  summary: '폴더 경로가 복사되어 있어요', primaryLabel: '폴더 카드로',  primaryIcon: 'folder' };
                 case 'hex':    return { icon: 'palette',      summary: '컬러 코드가 복사되어 있어요', primaryLabel: '컬러 위젯으로', primaryIcon: 'palette' };
                 case 'text':   return { icon: 'content_paste', summary: '텍스트가 복사되어 있어요',  primaryLabel: '클립보드 카드', primaryIcon: 'content_paste' };
+                case 'image':  return { icon: 'image',        summary: '이미지가 복사되어 있어요',  primaryLabel: '이미지 카드로',  primaryIcon: 'image' };
               }
             })();
-            const isHex  = clipPrompt.type === 'hex';
-            const isText = clipPrompt.type === 'text';
+            const isHex   = clipPrompt.type === 'hex';
+            const isText  = clipPrompt.type === 'text';
+            const isImage = clipPrompt.type === 'image';
             return (
               <div data-tour-id="gateway-banner" style={{
                 flexShrink: 0,
@@ -4520,7 +4612,8 @@ export default function App() {
                 background: 'color-mix(in srgb, var(--accent) 10%, var(--surface))',
                 animation: 'slideDown 0.18s ease',
               }}>
-                {/* Leading affordance — colour swatch for hex, icon for everything else. */}
+                {/* Leading affordance — colour swatch for hex, image
+                    thumbnail for image, icon for everything else. */}
                 {isHex ? (
                   <span style={{
                     width: 14, height: 14, borderRadius: 4,
@@ -4529,6 +4622,21 @@ export default function App() {
                     flexShrink: 0,
                     boxShadow: '0 1px 2px rgba(0,0,0,0.06)',
                   }} />
+                ) : isImage && clipPrompt.preview ? (
+                  // 28px thumb — tall enough to see what's actually
+                  // in the clipboard, small enough to keep the banner
+                  // single-line tall.
+                  <img
+                    src={clipPrompt.preview}
+                    alt=""
+                    style={{
+                      width: 28, height: 28, borderRadius: 4,
+                      objectFit: 'cover',
+                      flexShrink: 0,
+                      border: '1px solid var(--border-rgba)',
+                      background: 'var(--surface)',
+                    }}
+                  />
                 ) : (
                   <Icon name={meta.icon} size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
                 )}
@@ -4542,7 +4650,9 @@ export default function App() {
                       ? 'ui-monospace, monospace'
                       : 'inherit',
                   }}>
-                    {clipPrompt.label}
+                    {isImage
+                      ? `${clipPrompt.width ?? '?'}×${clipPrompt.height ?? '?'} · ${Math.round((clipPrompt.byteSize ?? 0) / 1024)} KB`
+                      : clipPrompt.label}
                   </span>
                 </div>
 

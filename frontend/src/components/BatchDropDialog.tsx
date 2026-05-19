@@ -39,6 +39,10 @@ const TYPE_META: Record<LauncherItem['type'], { icon: string; label: string; col
   cmd:     { icon: 'terminal',     label: '명령어',  color: '#64748b' },
   window:  { icon: 'window',       label: '창',      color: '#10b981' },
   browser: { icon: 'tab',          label: '탭',      color: '#06b6d4' },
+  // v1.3.46+: dropped image files (.png/.jpg/.svg etc.) — Phase B
+  // will wire dropped-file → image card creation; until then this
+  // entry just satisfies the Record completeness check.
+  image:   { icon: 'image',        label: '이미지',  color: '#ec4899' },
   // Widgets aren't drop-creatable (added via "+ 위젯" UI), but the
   // record needs all union members. Color follows the accent family.
   widget:  { icon: 'widgets',      label: '위젯',    color: '#a855f7' },
