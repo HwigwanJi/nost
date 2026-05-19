@@ -348,7 +348,7 @@ export function TourOverlay({ onComplete, onEnd, data }: Props) {
                 key={i}
                 style={{
                   width: 6, height: 6, borderRadius: '50%',
-                  background: i === stepIdx ? 'var(--accent, #6366f1)' : 'rgba(255,255,255,0.18)',
+                  background: i === stepIdx ? 'var(--accent)' : 'rgba(255,255,255,0.18)',
                   transition: 'background 150ms ease',
                 }}
               />
@@ -371,7 +371,7 @@ export function TourOverlay({ onComplete, onEnd, data }: Props) {
                 onClick={advance}
                 style={{
                   padding: '5px 14px', fontSize: 11, fontWeight: 700,
-                  background: 'var(--accent, #6366f1)', color: '#fff',
+                  background: 'var(--accent)', color: '#fff',
                   border: 'none', borderRadius: 6,
                   cursor: 'pointer', fontFamily: 'inherit',
                 }}

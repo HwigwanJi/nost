@@ -25,7 +25,7 @@ function Switch({ checked, onCheckedChange, disabled = false }: SwitchProps) {
         borderRadius: 10,
         border: 'none',
         cursor: disabled ? 'not-allowed' : 'pointer',
-        background: checked ? 'var(--accent, #6366f1)' : 'rgba(120,120,130,0.3)',
+        background: checked ? 'var(--accent)' : 'rgba(120,120,130,0.3)',
         transition: 'background 0.18s',
         flexShrink: 0,
         padding: 0,

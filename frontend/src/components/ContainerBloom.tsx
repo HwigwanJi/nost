@@ -214,7 +214,7 @@ export function ContainerBloom({ containerRect, filledSlots, hotDir, accent }: P
           transform: `scale(${scale})`,
           opacity,
           background: `color-mix(in srgb, var(--surface) 70%, ${accentColor} ${isHot ? '20%' : '8%'})`,
-          border: `${isHot ? 1.5 : 1}px dashed ${isHot ? accentColor : 'var(--accent-dim, var(--accent))'}`,
+          border: `${isHot ? 1.5 : 1}px dashed ${isHot ? accentColor : 'var(--accent-dim)'}`,
           backdropFilter: 'blur(8px) saturate(140%)',
           boxShadow: isHot
             ? `0 0 24px -4px ${accentColor}, 0 4px 14px rgba(0,0,0,0.18)`

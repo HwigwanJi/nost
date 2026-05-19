@@ -315,7 +315,7 @@ input:focus {
 }
 [data-slot="switch"][data-state="checked"],
 [data-slot="switch"][aria-checked="true"] {
-  background: var(--accent, #6366f1) !important;
+  background: var(--accent) !important;
 }
 [data-slot="switch-thumb"] {
   width: 16px !important;
@@ -488,13 +488,13 @@ body[data-screen-picking="true"] [data-space-id] {
   right: 4px;
   height: 3px;
   border-radius: 0 0 4px 4px;
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   opacity: 0.7;
   z-index: 2;
 }
 
 .node-anchor {
-  outline: 2px solid var(--accent, #6366f1) !important;
+  outline: 2px solid var(--accent) !important;
   outline-offset: -2px;
 }
 

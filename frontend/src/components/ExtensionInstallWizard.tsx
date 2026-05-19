@@ -36,17 +36,17 @@ function StepDot({ n, active, done }: { n: number; active: boolean; done: boolea
         flexShrink: 0,
         transition: 'background 0.2s, color 0.2s, border-color 0.2s',
         background: done
-          ? 'var(--accent, #6366f1)'
+          ? 'var(--accent)'
           : active
-            ? 'var(--accent-dim, rgba(99,102,241,0.15))'
+            ? 'var(--accent-dim)'
             : 'var(--surface)',
         color: done
           ? '#fff'
           : active
-            ? 'var(--accent, #6366f1)'
+            ? 'var(--accent)'
             : 'var(--text-dim)',
         border: `1.5px solid ${
-          done ? 'var(--accent, #6366f1)' : active ? 'var(--accent, #6366f1)' : 'var(--border-rgba)'
+          done ? 'var(--accent)' : active ? 'var(--accent)' : 'var(--border-rgba)'
         }`,
       }}
     >
@@ -68,9 +68,9 @@ function StepBar({ current }: { current: 1 | 2 | 3 }) {
                 height: 1.5,
                 margin: '0 4px',
                 background: current > n + 1
-                  ? 'var(--accent, #6366f1)'
+                  ? 'var(--accent)'
                   : current > n
-                    ? 'var(--accent, #6366f1)'
+                    ? 'var(--accent)'
                     : 'var(--border-rgba)',
                 transition: 'background 0.3s',
               }}
@@ -118,7 +118,7 @@ function InstructionCard({
           width: 36,
           height: 36,
           borderRadius: 9,
-          background: 'var(--accent-dim, rgba(99,102,241,0.1))',
+          background: 'var(--accent-dim)',
           border: '1px solid rgba(99,102,241,0.2)',
           display: 'flex',
           alignItems: 'center',
@@ -175,7 +175,7 @@ function ActionButton({
         border: variant === 'primary' ? 'none' : '1px solid var(--border-rgba)',
         background:
           variant === 'primary'
-            ? 'var(--accent, #6366f1)'
+            ? 'var(--accent)'
             : 'var(--bg-rgba)',
         color: variant === 'primary' ? '#fff' : 'var(--text-color)',
         fontSize: 12,
@@ -298,9 +298,9 @@ function ClipboardReCopy() {
         gap: 5,
         padding: '4px 10px',
         borderRadius: 99,
-        background: 'var(--accent-dim, rgba(99,102,241,0.1))',
+        background: 'var(--accent-dim)',
         border: '1px solid rgba(99,102,241,0.25)',
-        color: 'var(--accent, #6366f1)',
+        color: 'var(--accent)',
         fontSize: 11,
         fontWeight: 600,
         cursor: 'pointer',
@@ -414,7 +414,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
               width: 40,
               height: 40,
               borderRadius: 12,
-              background: 'var(--accent-dim, rgba(99,102,241,0.1))',
+              background: 'var(--accent-dim)',
               border: '1px solid rgba(99,102,241,0.2)',
               display: 'flex',
               alignItems: 'center',
@@ -514,7 +514,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
           display: 'flex', alignItems: 'center', gap: 9,
           padding: '10px 12px', borderRadius: 10,
           border: '1.5px solid var(--accent)',
-          background: 'var(--accent-dim, rgba(99,102,241,0.08))',
+          background: 'var(--accent-dim)',
           color: 'var(--accent)',
           fontSize: 12, fontWeight: 700,
         }}>
@@ -541,7 +541,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
             '3단계 안내에 따라 1분 안에 설치 완료',
           ].map((t, i) => (
             <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
-              <span style={{ color: 'var(--accent, #6366f1)', fontWeight: 700, flexShrink: 0 }}>·</span>
+              <span style={{ color: 'var(--accent)', fontWeight: 700, flexShrink: 0 }}>·</span>
               {t}
             </div>
           ))}
@@ -807,13 +807,13 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
                     gap: 6,
                     padding: '4px 10px',
                     borderRadius: 7,
-                    border: '2px solid var(--accent, #6366f1)',
-                    background: 'var(--accent-dim, rgba(99,102,241,0.1))',
+                    border: '2px solid var(--accent)',
+                    background: 'var(--accent-dim)',
                     animation: 'pulse 1.5s ease-in-out infinite',
                   }}
                 >
-                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent, #6366f1)' }}>개발자 모드</span>
-                  <div style={{ width: 32, height: 18, borderRadius: 99, background: 'var(--accent, #6366f1)', position: 'relative' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>개발자 모드</span>
+                  <div style={{ width: 32, height: 18, borderRadius: 99, background: 'var(--accent)', position: 'relative' }}>
                     <div style={{ position: 'absolute', right: 3, top: 3, width: 12, height: 12, borderRadius: '50%', background: '#fff' }} />
                   </div>
                 </div>
@@ -839,13 +839,13 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
                     gap: 6,
                     padding: '4px 10px',
                     borderRadius: 7,
-                    border: '2px solid var(--accent, #6366f1)',
-                    background: 'var(--accent-dim, rgba(99,102,241,0.1))',
+                    border: '2px solid var(--accent)',
+                    background: 'var(--accent-dim)',
                     animation: 'pulse 1.5s ease-in-out infinite',
                   }}
                 >
-                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent, #6366f1)' }}>개발자 모드</span>
-                  <div style={{ width: 32, height: 18, borderRadius: 99, background: 'var(--accent, #6366f1)', position: 'relative' }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--accent)' }}>개발자 모드</span>
+                  <div style={{ width: 32, height: 18, borderRadius: 99, background: 'var(--accent)', position: 'relative' }}>
                     <div style={{ position: 'absolute', right: 3, top: 3, width: 12, height: 12, borderRadius: '50%', background: '#fff' }} />
                   </div>
                 </div>
@@ -919,7 +919,7 @@ export function ExtensionInstallWizard({ onSuccess }: ExtensionInstallWizardProp
                   width: 22,
                   height: 22,
                   borderRadius: 6,
-                  background: item.accent ? 'var(--accent-dim, rgba(99,102,241,0.15))' : 'var(--border-rgba)',
+                  background: item.accent ? 'var(--accent-dim)' : 'var(--border-rgba)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
