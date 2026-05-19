@@ -44,6 +44,7 @@ function expensiveAnalyze(input) {
 **적용 사례**:
 - `main.js::analyze-clipboard` → 텍스트 hash (v1.3.40)
 - `main.js::analyze-clipboard` 이미지 → formats + text length (v1.3.47, ~120ms → ~2ms)
+- `main.js::analyze-clipboard` file-drop → `formats.some(== 'CF_HDROP')` cheap probe + formats-key 캐시. 외부 PowerShell spawn (~800ms) 을 클립보드 변화 시 1회로 압축. negative outcome ("이건 image file 아님") 도 캐싱해서 비이미지 파일 복사 시 재spawn 방지 (v1.3.47, 폴당 826ms → ~0ms)
 
 ### 1.2 document.hidden 가드
 

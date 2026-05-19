@@ -76,6 +76,12 @@
 - **SSOT**: `frontend/src/lib/typePlausibility.ts:26` — "X에 어떤 타입이 말 되는가" 의 단일 정답표
 - **읽는 곳**: 카드 추가 흐름, 자동 분류
 
+### A.10b 이미지 확장자 (v1.3.46+)
+- **renderer SSOT**: `frontend/src/lib/imageExtensions.ts` — `DEFAULT_IMAGE_EXTENSIONS`, `isImagePath`, `mimeFromExt`
+- **main SSOT**: `main.js` `_IMAGE_EXTS` Set + `_isImagePath(p)` helper (analyze-clipboard 안)
+- **읽는 곳**: `typePlausibility.ts` (path 분기), `App.tsx::inferItemFromPath`, `documentExtensions.ts::detectClipboardType`, main 의 `classifyFile` / file-drop image 분기
+- **금지**: 컴포넌트나 핸들러에 인라인 `['png','jpg',...]` 박기. 새 확장자 추가는 위 두 SSOT 만 수정
+
 ### A.11 노드/덱 빌딩 모드 상태
 - **SSOT**: `frontend/src/hooks/useNodeDeckMode.ts:149` — B(빌드) 단계의 상태는 local `nodeBuilding`만 읽음
 
