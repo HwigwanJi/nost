@@ -4680,7 +4680,16 @@ export default function App() {
                       : 'inherit',
                   }}>
                     {isImage
-                      ? `${clipPrompt.width ?? '?'}×${clipPrompt.height ?? '?'} · ${Math.round((clipPrompt.byteSize ?? 0) / 1024)} KB`
+                      ? (() => {
+                          // v1.3.47: file-drop has no decoded dimensions
+                          // (width/height = 0) — show filename + size only.
+                          // Bitmap/SVG path keeps the WxH · KB summary.
+                          const kb = Math.round((clipPrompt.byteSize ?? 0) / 1024);
+                          const hasDims = (clipPrompt.width ?? 0) > 0 && (clipPrompt.height ?? 0) > 0;
+                          if (hasDims) return `${clipPrompt.width}×${clipPrompt.height} · ${kb} KB`;
+                          if (clipPrompt.value) return `${clipPrompt.label} · ${kb} KB`;
+                          return `${kb} KB`;
+                        })()
                       : clipPrompt.label}
                   </span>
                 </div>
