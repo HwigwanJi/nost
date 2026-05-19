@@ -3922,43 +3922,83 @@ function registerIpcHandlers() {
   let lastClipboardHash = '';
   let lastClipboardResult = null;
   let lastClipboardDocExts = '';
+  // v1.3.47: separate cache for the image-probe path (bitmap/svg) so
+  // we don't re-decode + resize + base64-encode the clipboard image
+  // on every 1.5 s poll. Signature is `availableFormats().join('|')`
+  // + text length — a clipboard mutation rotates the formats list
+  // OR the text length, both cheap to read.
+  let _imageProbeCache = null;
+
   ipcMain.handle('analyze-clipboard', async (_event, docExtensions) => {
-    // v1.3.46: binary image clipboard takes priority over text — when
-    // the user copies a screenshot (Win+Shift+S, browser "이미지 복사",
-    // etc.) there's no text payload but `availableFormats()` lists an
-    // image/png entry. Return a tiny base64 thumbnail (96 px) for the
-    // gateway banner preview; the actual file isn't written to disk
-    // until the user confirms with the "이미지 카드로" button.
+    // v1.3.46: image clipboard takes priority over text — when the
+    // user copies a screenshot (Win+Shift+S, browser "이미지 복사"),
+    // there's no plain text payload but `availableFormats()` lists an
+    // image/* entry. v1.3.47: signature-based cache so we don't re-
+    // decode+resize the bitmap on every 1.5 s poll (the toPNG() call
+    // alone was ~120 ms per tick for a 1920×1080 screenshot — the
+    // "복사할 때마다 버벅임" symptom). SVG fallback added because
+    // SVG arrives as `image/svg+xml` or HTML/text — nativeImage can't
+    // decode it, so we read it as raw text and treat as an image card
+    // whose binary IS the SVG markup.
     try {
       const formats = clipboard.availableFormats();
-      const hasImage = formats.some(f => f.startsWith('image/'));
-      if (hasImage) {
-        const img = clipboard.readImage();
-        if (!img.isEmpty()) {
-          const size = img.getSize();
-          const previewW = Math.min(96, size.width);
-          const previewH = Math.round(previewW * size.height / Math.max(1, size.width));
-          const preview = img.resize({ width: previewW, height: previewH });
-          // PNG keeps transparency for screenshots / icons with alpha.
-          const dataUrl = preview.toDataURL();
-          // Rough size estimate of the original (for the banner subtitle).
-          const fullPng = img.toPNG();
-          return {
-            type: 'image',
-            // No `value` yet — the file lives only in the clipboard
-            // until the user clicks "이미지 카드로" which will trigger
-            // the save-clipboard-image IPC.
-            value: '',
-            label: '클립보드 이미지',
-            preview: dataUrl,
-            width: size.width,
-            height: size.height,
-            byteSize: fullPng.length,
-          };
+      const hasBitmap = formats.some(f => f === 'image/png' || f === 'image/jpeg' || f === 'image/jpg' || f === 'image/bmp' || f === 'image/gif');
+      const hasSvg    = formats.some(f => f === 'image/svg+xml');
+      if (hasBitmap || hasSvg) {
+        const sigKey = formats.join('|') + '#' + (clipboard.readText() || '').length;
+        if (_imageProbeCache && _imageProbeCache.sig === sigKey) {
+          return _imageProbeCache.payload;
         }
+        let payload = null;
+        if (hasBitmap) {
+          const img = clipboard.readImage();
+          if (!img.isEmpty()) {
+            const size = img.getSize();
+            const previewW = Math.min(96, size.width);
+            const previewH = Math.round(previewW * size.height / Math.max(1, size.width));
+            const preview = img.resize({ width: previewW, height: previewH });
+            const dataUrl = preview.toDataURL();
+            // No expensive toPNG() for size — estimate from raw bitmap.
+            const bitmap = img.getBitmap();
+            payload = {
+              type: 'image',
+              value: '',
+              label: '클립보드 이미지',
+              preview: dataUrl,
+              width: size.width,
+              height: size.height,
+              byteSize: bitmap.length,
+              imageKind: 'bitmap',
+            };
+          }
+        }
+        if (!payload && hasSvg) {
+          // SVG arrives as text in `image/svg+xml` format. Read it raw,
+          // embed as a data URL for the preview. Save side will write
+          // it verbatim with .svg extension.
+          const svgText = clipboard.read('image/svg+xml');
+          if (svgText && svgText.length > 0) {
+            const dataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svgText)}`;
+            payload = {
+              type: 'image',
+              value: '',
+              label: '클립보드 SVG',
+              preview: dataUrl,
+              width: 0,    // SVG is vector — no fixed pixel dims here
+              height: 0,
+              byteSize: svgText.length,
+              imageKind: 'svg',
+            };
+          }
+        }
+        if (payload) {
+          _imageProbeCache = { sig: sigKey, payload };
+          return payload;
+        }
+      } else {
+        _imageProbeCache = null;
       }
     } catch (e) {
-      // Don't fail the whole analyze just because image probe threw.
       log.debug('[analyze-clipboard] image probe failed:', e?.message);
     }
 
@@ -4178,23 +4218,53 @@ function registerIpcHandlers() {
   ipcMain.handle('save-clipboard-image', async () => {
     try {
       const formats = clipboard.availableFormats();
-      const hasImage = formats.some(f => f.startsWith('image/'));
-      if (!hasImage) return { success: false, reason: 'no-image' };
-      const img = clipboard.readImage();
-      if (img.isEmpty()) return { success: false, reason: 'empty' };
-      const buf = img.toPNG();
+      const hasBitmap = formats.some(f => f === 'image/png' || f === 'image/jpeg' || f === 'image/jpg' || f === 'image/bmp' || f === 'image/gif');
+      const hasSvg    = formats.some(f => f === 'image/svg+xml');
       const uuid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-      const filename = `${uuid}.png`;
-      const filePath = path.join(imagesDir(), filename);
-      fs.writeFileSync(filePath, buf);
-      const size = img.getSize();
-      return {
-        success: true,
-        path: filePath,
-        width: size.width,
-        height: size.height,
-        byteSize: buf.length,
-      };
+
+      // v1.3.47: SVG path — `nativeImage` can't decode SVG, but the
+      // clipboard carries the raw markup. Write it verbatim as .svg
+      // so the file IS the binary. Renderer reads via file:// URL
+      // (browser engines render SVG natively from disk).
+      if (hasSvg) {
+        const svgText = clipboard.read('image/svg+xml');
+        if (svgText && svgText.length > 0) {
+          const filename = `${uuid}.svg`;
+          const filePath = path.join(imagesDir(), filename);
+          fs.writeFileSync(filePath, svgText, 'utf-8');
+          return {
+            success: true,
+            path: filePath,
+            width: 0,
+            height: 0,
+            byteSize: Buffer.byteLength(svgText, 'utf-8'),
+          };
+        }
+      }
+
+      if (hasBitmap) {
+        const img = clipboard.readImage();
+        if (img.isEmpty()) return { success: false, reason: 'empty' };
+        const buf = img.toPNG();
+        const filename = `${uuid}.png`;
+        const filePath = path.join(imagesDir(), filename);
+        fs.writeFileSync(filePath, buf);
+        const size = img.getSize();
+        // Invalidate analyze cache so next poll re-detects (the clipboard
+        // contents themselves are unchanged but the user has now
+        // materialised them — banner should not re-fire for the same
+        // image after save).
+        _imageProbeCache = null;
+        return {
+          success: true,
+          path: filePath,
+          width: size.width,
+          height: size.height,
+          byteSize: buf.length,
+        };
+      }
+
+      return { success: false, reason: 'no-image' };
     } catch (e) {
       log.warn('[save-clipboard-image] failed:', e?.message);
       return { success: false, reason: String(e?.message ?? e) };
