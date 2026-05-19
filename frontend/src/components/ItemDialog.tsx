@@ -1333,6 +1333,36 @@ function renderValuePhase({
   onPickExe: () => void;
   onEnterCommit: () => void;
 }) {
+  // v1.3.46: image type uses a preview-based UI (no path typing).
+  // Two materialise paths: clipboard image → save-clipboard-image
+  // IPC, file picker → pickImageFile IPC (Phase B). For now only
+  // clipboard works; file picker shows a "Phase B" placeholder.
+  if (form.type === 'image') {
+    return (
+      <>
+        <h2 style={phaseHeadingStyle}>이미지</h2>
+        <ImageValueEditor
+          value={form.value}
+          onChange={(p) => f({ value: p })}
+        />
+        {valueError && (
+          <p style={{ fontSize: 11, color: 'var(--destructive, #ef4444)', display: 'flex', alignItems: 'center', gap: 4, margin: 0 }}>
+            <Icon name="error" size={12} />{valueError}
+          </p>
+        )}
+        <div style={{ height: 1, background: 'var(--border-rgba)', margin: '4px 0' }} />
+        <h2 style={{ ...phaseHeadingStyle, fontSize: 12, color: 'var(--text-muted)' }}>이름 (선택)</h2>
+        <Input
+          ref={titleInputRef}
+          value={form.title}
+          onChange={e => f({ title: e.target.value })}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); onEnterCommit(); } }}
+          placeholder={derivedTitle ? `${derivedTitle}  (비워두면 자동)` : '이미지 이름 (자동 추론)'}
+          style={{ height: 38, fontSize: 13, borderRadius: 8 }}
+        />
+      </>
+    );
+  }
   const valueLabel =
     form.type === 'url' || form.type === 'browser' ? 'URL' :
     form.type === 'folder' ? '폴더 경로' :
@@ -1794,3 +1824,118 @@ const smallActionBtn: React.CSSProperties = {
   color: 'var(--text-muted)', cursor: 'pointer', fontFamily: 'inherit',
   display: 'flex', alignItems: 'center', gap: 5, width: 'fit-content',
 };
+
+/**
+ * ImageValueEditor — image card 의 값(파일 경로) UI. v1.3.46+.
+ *
+ * 일반 type 의 값 입력은 단일 TextInput 이지만 image 는 path 를 사용자가
+ * 손으로 칠 일이 거의 없음 (스크린샷 / 캡처 / 외부 이미지). UX:
+ *  - 현재 값 있으면 240px 정사각 미리보기 (object-fit:contain 으로 잘림 없이)
+ *  - 미리보기 아래 actions: "클립보드에서" / "파일 선택"
+ *  - 미리보기 아래 작은 path text (truncate). 디버깅 / 확인용
+ *
+ * 파일 선택은 main IPC 가 다이얼로그 → 사용자 가 고른 path 를 직접
+ * userData/images/ 로 복사하면 깔끔하지만, Phase A 는 그냥 그 path 를
+ * value 로 받는다 (Cohort C — 어차피 PC-local). 사용자가 원본 파일
+ * 옮기면 카드 깨질 수 있다는 trade-off 는 Phase B 의 "import" 옵션으로
+ * 해결 예정.
+ */
+function ImageValueEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [loading, setLoading] = useState(false);
+  const handleClipboard = async () => {
+    setLoading(true);
+    try {
+      const res = await electronAPI.saveClipboardImage();
+      if (res.success) onChange(res.path);
+    } finally {
+      setLoading(false);
+    }
+  };
+  const handlePickFile = async () => {
+    setLoading(true);
+    try {
+      // pickFolder/pickExe 와 동일 패턴의 imageFile picker 가 Phase B
+      // 에서 도착하면 여기에 연결. 지금은 alert 로 placeholder.
+      alert('파일 선택은 Phase B 에서 제공됩니다. 우선 클립보드에서 이미지 추가를 사용해주세요.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  const fileUrl = value ? `file:///${value.replace(/\\/g, '/')}` : null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div
+        style={{
+          width: '100%', maxWidth: 280, aspectRatio: '1', alignSelf: 'center',
+          borderRadius: 10, border: '1px solid var(--border-rgba)',
+          background: 'var(--surface)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          overflow: 'hidden', position: 'relative',
+        }}
+      >
+        {fileUrl ? (
+          <img
+            src={fileUrl}
+            alt=""
+            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+            onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+          />
+        ) : (
+          <div style={{ color: 'var(--text-dim)', fontSize: 11, textAlign: 'center', padding: 16 }}>
+            <Icon name="image" size={36} color="var(--text-dim)" />
+            <div style={{ marginTop: 8 }}>아직 이미지가 없어요</div>
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 6, justifyContent: 'center' }}>
+        <button
+          type="button"
+          onClick={handleClipboard}
+          disabled={loading}
+          style={{
+            padding: '8px 14px', borderRadius: 7,
+            background: 'var(--accent)', color: '#fff', border: 'none',
+            fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+            cursor: loading ? 'wait' : 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            opacity: loading ? 0.7 : 1,
+          }}
+        >
+          <Icon name="content_paste" size={14} />클립보드에서
+        </button>
+        <button
+          type="button"
+          onClick={handlePickFile}
+          disabled={loading}
+          style={{
+            padding: '8px 14px', borderRadius: 7,
+            background: 'var(--surface)',
+            border: '1px solid var(--border-rgba)',
+            color: 'var(--text-muted)',
+            fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+            cursor: 'not-allowed',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            opacity: 0.6,
+          }}
+          title="Phase B 에서 추가됩니다"
+        >
+          <Icon name="folder_open" size={14} />파일 선택
+        </button>
+      </div>
+      {value && (
+        <div
+          style={{
+            fontFamily: 'ui-monospace, monospace', fontSize: 10,
+            color: 'var(--text-dim)',
+            textAlign: 'center',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            maxWidth: '100%',
+          }}
+          title={value}
+        >
+          {value}
+        </div>
+      )}
+    </div>
+  );
+}

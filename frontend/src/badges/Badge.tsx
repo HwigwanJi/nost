@@ -7,7 +7,10 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 export interface BadgeItem {
   id: string;
   title: string;
-  type: 'url' | 'folder' | 'app' | 'window' | 'browser' | 'text' | 'cmd';
+  // v1.3.46: 'image' added — pinned space / node / deck rendering in
+  // the floating badge mini-window now handles image cards (thumbnail
+  // from item.value, click → copy-image-to-clipboard).
+  type: 'url' | 'folder' | 'app' | 'window' | 'browser' | 'text' | 'cmd' | 'image';
   value: string;
   icon?: string;
   iconType?: 'material' | 'image';

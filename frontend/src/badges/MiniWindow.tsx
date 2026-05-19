@@ -34,6 +34,9 @@ const TYPE_ICON: Record<BadgeItem['type'], string> = {
   browser: 'public',
   text:    'content_copy',
   cmd:     'terminal',
+  // v1.3.46: fallback only — actual image row renders a 18px file://
+  // thumbnail via the `isImageCard` branch in the row JSX below.
+  image:   'image',
 };
 
 interface MiniWindowApi {
@@ -268,6 +271,11 @@ export function MiniWindow({
           <div style={list}>
             {items.map(it => {
               const c = it.color ?? color;
+              // v1.3.46: image cards render their actual binary thumbnail
+              // (item.value points to userData/images/{uuid}.png). This
+              // branch runs even when iconType !== 'image' (most image
+              // cards never set a custom icon).
+              const isImageCard = it.type === 'image' && !!it.value;
               const iconGlyph = it.iconType === 'image' && it.icon
                 ? null  // will render as <img>
                 : (it.icon || TYPE_ICON[it.type]);
@@ -283,7 +291,15 @@ export function MiniWindow({
                   }}
                   title={it.title}
                 >
-                  {it.iconType === 'image' && it.icon ? (
+                  {isImageCard ? (
+                    <img
+                      src={`file:///${it.value.replace(/\\/g, '/')}`}
+                      alt=""
+                      style={{
+                        width: 18, height: 18, borderRadius: 4, objectFit: 'cover', flexShrink: 0,
+                      }}
+                    />
+                  ) : it.iconType === 'image' && it.icon ? (
                     <img
                       src={it.icon}
                       alt=""

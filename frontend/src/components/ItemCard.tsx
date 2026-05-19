@@ -86,6 +86,7 @@ function getRightLabel(type: LauncherItem['type']) {
   if (type === 'folder' || type === 'app') return '경로 복사';
   if (type === 'window') return '창 제목 복사';
   if (type === 'cmd') return '명령어 복사';
+  if (type === 'image') return '경로 복사';  // 이미지 자체 복사는 카드 클릭(좌클릭); 우클릭 메뉴에선 path 복사가 더 유용
   return '텍스트 복사';
 }
 
@@ -1453,6 +1454,7 @@ function CardHoverHint({
     type === 'window' ? '창 전환' :
     type === 'cmd' ? '명령어 실행' :
     type === 'text' ? '텍스트 복사' :
+    type === 'image' ? '이미지 복사' :
     '실행';
 
   return (
