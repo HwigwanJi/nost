@@ -207,7 +207,13 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
           setPhase({ kind: 'empty' });
           return;
         }
-        const detected = detectClipboardType(t, exts);
+        const detectedRaw = detectClipboardType(t, exts);
+        // ItemWizard intentionally skips image type — the clipboard
+        // gateway banner / ItemDialog 유형 picker is the canonical
+        // entry for image cards (manual path-typing in the wizard
+        // makes no sense for binary blobs). Treat detected==='image'
+        // as "no auto-detect" → user proceeds via manual path.
+        const detected = detectedRaw === 'image' ? null : detectedRaw;
         if (!detected) {
           setPhase({ kind: 'empty' });
           return;

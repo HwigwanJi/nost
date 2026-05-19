@@ -29,6 +29,7 @@
 
 import type { LauncherItem } from '../types';
 import { getDocumentExtensions } from './documentExtensions';
+import { isImagePath } from './imageExtensions';
 
 export type PlausibleType = LauncherItem['type'];
 
@@ -98,7 +99,7 @@ export function isDocLike(v: string, docExtensions?: readonly string[]): boolean
 }
 
 const ALL_TYPES: Set<PlausibleType> = new Set([
-  'url', 'browser', 'folder', 'app', 'doc', 'window', 'text', 'cmd', 'memo',
+  'url', 'browser', 'folder', 'app', 'doc', 'window', 'text', 'cmd', 'memo', 'image',
 ]);
 
 /**
@@ -130,9 +131,16 @@ export function plausibleTypes(
     return new Set<PlausibleType>(['url', 'browser', 'text']);
   }
 
-  // Windows / UNC / POSIX path → folder / app / doc, never URL.
+  // Windows / UNC / POSIX path → folder / app / doc / image, never URL.
   if (isPathLike(v)) {
     if (isExeLike(v)) return new Set<PlausibleType>(['app', 'text', 'cmd']);
+    // v1.3.46: image extensions (.png/.jpg/.svg/...) — without this,
+    // the auto-correct effect in ItemDialog silently snapped an
+    // edited image card to 'folder' (SSOT violation: the card type
+    // was image in store but the dialog re-classified). 'image' first
+    // so it's the recommended option; folder/app/text as override
+    // fallbacks (in case user wants to repurpose the path).
+    if (isImagePath(v)) return new Set<PlausibleType>(['image', 'folder', 'app', 'text']);
     // Text docs (.txt/.md/.markdown) — memo is a sensible alt to the
     // standard file-card path; load contents into a memo body. 'doc' is
     // also valid since memo can fall back to a regular doc card.

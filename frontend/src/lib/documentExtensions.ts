@@ -40,13 +40,18 @@ export function isExePath(p: string): boolean {
 export function detectClipboardType(
   text: string,
   docExtensions: string[],
-): 'url' | 'app' | 'folder' | 'doc' | 'text' | null {
+): 'url' | 'app' | 'folder' | 'doc' | 'image' | 'text' | null {
   const t = text.trim();
   if (!t) return null;
   if (/^https?:\/\//i.test(t)) return 'url';
   // Windows absolute path
   if (/^[a-zA-Z]:[\\\/]/.test(t) || t.startsWith('\\\\')) {
     if (isExePath(t)) return 'app';
+    // v1.3.46: image extensions checked BEFORE doc/folder fallback.
+    // Mirrors classifyFile in main.js + inferItemFromPath in App.tsx —
+    // three sites that classify paths must agree on what's an image.
+    const ext = t.split('.').pop()?.toLowerCase() ?? '';
+    if (['png','jpg','jpeg','gif','webp','bmp','svg','ico','avif'].includes(ext)) return 'image';
     if (isDocumentPath(t, docExtensions)) return 'doc';
     if (isFolderPath(t)) return 'folder';
   }
