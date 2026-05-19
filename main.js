@@ -1271,10 +1271,34 @@ function toggleMainWindow() {
 function registerShortcut(newShortcut) {
   if (currentShortcut) globalShortcut.unregister(currentShortcut);
   currentShortcut = newShortcut;
+  if (!newShortcut) return; // empty string = explicitly disabled
 
   const registered = globalShortcut.register(currentShortcut, toggleMainWindow);
 
   if (!registered) console.warn(`[Shortcut] Failed to register "${newShortcut}"`);
+}
+
+// v1.3.46: pause/resume hook for the in-app shortcut capture UI.
+// Electron's globalShortcut intercepts EVERY matching keypress at the
+// OS level — including ones the renderer is trying to capture for
+// reassignment. Without this pause, "Alt+Space" pressed while
+// configuring the shortcut just triggers the existing launcher toggle
+// instead of registering as the new shortcut. The ShortcutCapture
+// component sends pause-global-shortcut on focus, resume on commit
+// or cancel.
+let _shortcutPaused = false;
+function pauseGlobalShortcut() {
+  if (_shortcutPaused) return;
+  if (currentShortcut) globalShortcut.unregister(currentShortcut);
+  _shortcutPaused = true;
+}
+function resumeGlobalShortcut() {
+  if (!_shortcutPaused) return;
+  _shortcutPaused = false;
+  if (currentShortcut) {
+    const ok = globalShortcut.register(currentShortcut, toggleMainWindow);
+    if (!ok) console.warn(`[Shortcut] Resume re-register failed for "${currentShortcut}"`);
+  }
 }
 
 /**
@@ -2608,7 +2632,19 @@ function createWindow() {
   });
   mainWindow.on('ready-to-show', () => rdbg('window: ready-to-show'));
   mainWindow.on('show', () => rdbg('window: show'));
-  mainWindow.on('hide', () => rdbg('window: hide'));
+  mainWindow.on('hide', () => {
+    rdbg('window: hide');
+    // v1.3.46: any open satellite dialogs (item-dialog / item-wizard /
+    // settings-dialog / etc.) ride along — when the launcher hides
+    // (Esc, autoHide, global shortcut toggle), they hide too. Without
+    // this the modal hangs in the air with no parent context. We
+    // destroy rather than hide because they cleanly re-spawn on the
+    // next openXxx IPC, and persisting a closed satellite's webContents
+    // would leak memory across hide/show cycles.
+    for (const name of Array.from(satellites.keys())) {
+      destroySatellite(name);
+    }
+  });
 
   // Lock window to screen-saver z-order so external app launches
   // (which trigger SetForegroundWindow on Windows) can't demote us.
@@ -3318,6 +3354,10 @@ function registerIpcHandlers() {
 
   /** Re-register the global shortcut with a new key combo from settings. */
   ipcMain.on('update-shortcut', (_, newShortcut) => registerShortcut(newShortcut));
+  // v1.3.46 shortcut capture pause/resume — see comment at the helper
+  // definition. Used by the in-app key-capture UI in SettingsDialog.
+  ipcMain.on('pause-global-shortcut',  () => pauseGlobalShortcut());
+  ipcMain.on('resume-global-shortcut', () => resumeGlobalShortcut());
 
   // ── 12b. Persistent Storage ──────────────────────────────────────
 

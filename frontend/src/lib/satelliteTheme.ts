@@ -43,12 +43,16 @@ export function useSatelliteTheme(state: { theme?: 'light' | 'dark'; accentColor
 
       /* Native drag — click anywhere outside an interactive control to
          move the satellite window. Mirrors macOS title-bar-drag UX
-         without needing a visible handle. Interactive elements opt out
-         so clicks land in inputs / buttons properly. */
+         without needing a visible handle.
+         v1.3.46: removed [role="dialog"] from no-drag selector — that
+         was catching the entire base-ui Dialog container, blocking the
+         whole satellite window from being draggable. Interactive
+         children (button/input/etc) keep their own no-drag, so
+         clicking title text / empty padding now moves the window. */
       html, body { -webkit-app-region: drag; }
       button, input, textarea, select, a, label,
       [role="button"], [role="combobox"], [role="slider"], [role="menu"],
-      [role="menuitem"], [role="tab"], [role="dialog"],
+      [role="menuitem"], [role="tab"],
       [contenteditable="true"], [data-popup-interactive],
       [data-slot="dialog-content"] [role="presentation"] {
         -webkit-app-region: no-drag;

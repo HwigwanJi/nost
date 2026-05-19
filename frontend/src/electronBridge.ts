@@ -69,6 +69,10 @@ export interface ElectronAPI {
    *  app restarts (electron-store) — hostname/platform read live. */
   deviceGetInfo: () => Promise<{ deviceId: string; hostname: string; platform: string }>;
   updateShortcut: (shortcut: string) => void;
+  /** Pause / resume the launcher's global shortcut while the in-app
+   *  capture UI is recording a new combo. v1.3.46+. */
+  pauseGlobalShortcut:  () => void;
+  resumeGlobalShortcut: () => void;
   detectDialog: () => Promise<{ isDialog: boolean; title?: string; className?: string }>;
   jumpToDialogFolder: (folderPath: string) => void;
   storeLoad: () => Promise<unknown>;
@@ -339,6 +343,8 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   authKvList: async () => ({}),
   deviceGetInfo: async () => ({ deviceId: 'noop-device', hostname: 'unknown', platform: 'unknown' }),
   updateShortcut: noop,
+  pauseGlobalShortcut: noop,
+  resumeGlobalShortcut: noop,
   detectDialog: async () => ({ isDialog: false }),
   jumpToDialogFolder: noop,
   storeLoad: async () => null,

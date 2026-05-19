@@ -857,6 +857,12 @@ function ShortcutCapture({ value, onChange }: { value: string; onChange: (v: str
 
   useEffect(() => {
     if (!capturing) return;
+    // v1.3.46: pause the launcher's own global shortcut while we
+    // capture — otherwise pressing the current binding (e.g. Alt+4)
+    // OR a popular alternate (Alt+Space) just toggles the launcher
+    // instead of getting recorded here. resume restores on commit
+    // or cancel (cleanup runs on every capturing→false transition).
+    electronAPI.pauseGlobalShortcut();
     const onKeyDown = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -875,7 +881,10 @@ function ShortcutCapture({ value, onChange }: { value: string; onChange: (v: str
       }
     };
     window.addEventListener('keydown', onKeyDown, true);
-    return () => window.removeEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      electronAPI.resumeGlobalShortcut();
+    };
   }, [capturing, onChange]);
 
   return (
@@ -2054,11 +2063,17 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
               onClick={e => e.stopPropagation()}
               style={{
                 width: 'min(380px, 90%)',
-                background: 'var(--surface)',
-                border: '1px solid var(--border-rgba)',
+                // var(--surface) 는 3% 불투명 (라이트 모드) 이라
+                // 본문 글자가 비쳐 보이던 문제 — 솔리드한 var(--bg-rgba)
+                // (95%) 로 변경. backdrop blur 위에 올라가니 살짝
+                // 투명해도 OK 지만 글씨 가독성이 우선.
+                background: 'var(--bg-rgba)',
+                border: '1px solid var(--border-focus)',
                 borderRadius: 14,
                 padding: '20px 20px 16px',
                 boxShadow: '0 16px 48px rgba(0,0,0,0.5)',
+                backdropFilter: 'blur(20px)',
+                WebkitBackdropFilter: 'blur(20px)',
               }}
             >
               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-color)', marginBottom: 8 }}>

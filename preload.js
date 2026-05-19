@@ -72,6 +72,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),
   launchOrFocusApp: (exePath, closeAfter, monitor) => ipcRenderer.invoke('launch-or-focus-app', exePath, closeAfter, monitor),
   updateShortcut: (shortcut) => ipcRenderer.send('update-shortcut', shortcut),
+  /** Temporarily unregister the launcher's global shortcut so the
+   *  in-app capture UI can record keys (including the one currently
+   *  bound) without the OS intercepting them. Pair with resume. */
+  pauseGlobalShortcut:  () => ipcRenderer.send('pause-global-shortcut'),
+  resumeGlobalShortcut: () => ipcRenderer.send('resume-global-shortcut'),
   detectDialog: () => ipcRenderer.invoke('detect-dialog'),
   jumpToDialogFolder: (folderPath) => ipcRenderer.send('jump-to-dialog-folder', folderPath),
   storeLoad: () => ipcRenderer.invoke('store-load'),
