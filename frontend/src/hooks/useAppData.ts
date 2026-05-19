@@ -172,16 +172,28 @@ function normalisePreset(p: Preset, docExts: string[]): Preset {
 }
 
 function migrateData(parsed: AppData): AppData {
+  // One-shot v1.3.46 defaults migration. Pre-1.3.46 store had the
+  // historic windowOpenAt default 'cursor' baked in — even users who
+  // never opened settings ended up with 'cursor' persisted. The
+  // v1.3.45 code change to default 'last' only affected fresh installs.
+  // This migration force-flips 'cursor' → 'last' ONCE per device, then
+  // stamps the flag so it doesn't keep undoing the user's explicit
+  // choice on later loads. Users who genuinely prefer 'cursor' can
+  // toggle it back in settings after the migration.
+  const needs1346 = !parsed.settings._defaultsV146Migrated;
   // ── Settings defaults (global — same as before) ─────────────
   parsed.settings = {
     ...parsed.settings,
     theme: parsed.settings.theme ?? 'dark',
     autoLaunch: parsed.settings.autoLaunch ?? false,
     autoHide: parsed.settings.autoHide ?? false,
-    // Default 'last' (user request 2026-05-18) — most users want the
-    // launcher to reopen where they left it. 'cursor' (historic) is
-    // still selectable in 설정 → 작업 환경 → 동작.
-    windowOpenAt: parsed.settings.windowOpenAt === 'cursor' ? 'cursor' : 'last',
+    // 'last' for missing, 'cursor' only when explicitly chosen post-
+    // migration. The migration block below force-flips legacy 'cursor'
+    // to 'last' once.
+    windowOpenAt: needs1346
+      ? 'last'   // ← migration: ignore stored value for old installs
+      : (parsed.settings.windowOpenAt === 'cursor' ? 'cursor' : 'last'),
+    _defaultsV146Migrated: true,
     accentColor: parsed.settings.accentColor ?? '#6366f1',
     documentExtensions: parsed.settings.documentExtensions ?? [],
     floatingButton: parsed.settings.floatingButton ?? {

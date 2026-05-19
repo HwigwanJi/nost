@@ -3331,9 +3331,22 @@ function registerIpcHandlers() {
     // restart — both of which feel broken from the user's perspective.
     const prevBadgeSize = (store.get('appData') || {})?.settings?.badgeSize ?? 46;
     store.set('appData', data);
-    // Keep the Windows startup entry in sync with the autoLaunch toggle
+    // Keep the Windows startup entry in sync with the autoLaunch toggle.
+    // v1.3.46: explicit logging so when the user reports "auto-launch
+    // doesn't persist" we can verify from main.log whether the renderer
+    // actually pushed the new value AND whether setLoginItemSettings
+    // succeeded on Windows side. (Silent prior — invisible behaviour.)
     if (data?.settings) {
-      app.setLoginItemSettings({ openAtLogin: !!data.settings.autoLaunch });
+      const want = !!data.settings.autoLaunch;
+      try {
+        app.setLoginItemSettings({ openAtLogin: want });
+        // Read-back to confirm OS actually accepted (Windows can refuse
+        // in some signed-binary / dev-exe edge cases without throwing).
+        const got = app.getLoginItemSettings();
+        log.info(`[autoLaunch] requested=${want} openAtLogin(after)=${got.openAtLogin} executableWillLaunchAtLogin=${got.executableWillLaunchAtLogin}`);
+      } catch (e) {
+        log.warn(`[autoLaunch] setLoginItemSettings threw: ${e?.message ?? e}`);
+      }
     }
     const nextBadgeSize = data?.settings?.badgeSize ?? 46;
     if (nextBadgeSize !== prevBadgeSize) {

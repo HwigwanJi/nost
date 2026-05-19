@@ -315,6 +315,13 @@ export interface AppSettings {
    * 'cursor' to preserve historic behaviour when absent.
    */
   windowOpenAt?: 'cursor' | 'last';
+  /**
+   * One-shot migration flag set by useAppData::migrateData when the
+   * v1.3.46 defaults pass runs (currently: flip legacy 'cursor' →
+   * 'last' for users who never explicitly chose). Persists in store
+   * so subsequent loads respect the user's post-migration choice.
+   */
+  _defaultsV146Migrated?: boolean;
   license?: License;             // Phase 5: paid-tier entitlement cache
   memo?: MemoSettings;           // Memo feature (v1.3.16+)
   /**
