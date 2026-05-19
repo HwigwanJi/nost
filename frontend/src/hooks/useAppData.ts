@@ -375,8 +375,26 @@ export function useAppData() {
    * mutate `raw` directly. Allowing `save` to overwrite them would let a
    * stale data-view spread clobber a newly-switched preset.
    */
-  const save = useCallback((next: AppData) => {
+  /**
+   * Accepts either a `next: AppData` object (legacy callers) OR a
+   * `(prev) => AppData` updater function. The function form is the
+   * race-safe one — caller computes `next.spaces` from the latest
+   * committed state instead of a captured closure, so back-to-back
+   * mutations in the same tick can't clobber each other.
+   *
+   * v1.3.45 bug: pre-existing mutators passed `next` built from the
+   * captured `data` closure. Two events in the same render tick (e.g.
+   * "satellite save action arrived + user dragged a card") both saw
+   * the same stale `data`. The second save overwrote the first with
+   * its own pre-computed `next.spaces`, dropping the just-added
+   * URL card. The functional form passes `prev` straight from React's
+   * state queue, so each update layers correctly.
+   */
+  const save = useCallback((nextOrFn: AppData | ((prev: AppData) => AppData)) => {
     setRawData(prev => {
+      const next: AppData = typeof nextOrFn === 'function'
+        ? (nextOrFn as (p: AppData) => AppData)(prev)
+        : nextOrFn;
       const activeId = prev.activePresetId;
       const nextPresets = prev.presets.map(p => p.id === activeId ? {
         ...p,
@@ -693,27 +711,27 @@ export function useAppData() {
   // ── Items ────────────────────────────────────────────────
   const addItem = useCallback((spaceId: string, item: Omit<LauncherItem, 'id'>, presetId?: string) => {
     const newItem: LauncherItem = { ...item, id: presetId ?? generateId(), clickCount: 0, pinned: false };
-    save({
-      ...data,
-      spaces: data.spaces.map(s =>
+    // Functional save — read latest spaces from prev (committed state)
+    // rather than the closure's `data`. Without this, two same-tick
+    // mutations (e.g. clipboard→URL card save AND a drag-drop) both
+    // wrote `data` as-of-render-N and the second clobbered the first.
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s =>
         s.id === spaceId ? { ...s, items: [...s.items, newItem] } : s
       ),
-    });
-    // Returning the new item lets callers chain follow-ups —
-    // e.g. "add a colour swatch and immediately open the edit
-    // dialog so the user can label it" (handleClipboardAdd, the
-    // hex fast-path in openQuickAdd, etc.).
+    }));
     return newItem;
-  }, [data, save]);
+  }, [save]);
 
   const updateItem = useCallback((spaceId: string, item: LauncherItem) => {
-    save({
-      ...data,
-      spaces: data.spaces.map(s =>
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s =>
         s.id === spaceId ? { ...s, items: s.items.map(i => i.id === item.id ? item : i) } : s
       ),
-    });
-  }, [data, save]);
+    }));
+  }, [save]);
 
   const deleteItem = useCallback((spaceId: string, itemId: string) => {
     // Cascade cleanup: remove the deleted id from any node groups,
@@ -723,13 +741,10 @@ export function useAppData() {
     // a phantom member ("3/3" when only 2 cards exist). Same for
     // decks. Same write tx as the items[] mutation so we don't
     // momentarily expose a half-cleaned state to subscribers.
-    save({
-      ...data,
-      spaces: data.spaces.map(s => {
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => {
         if (s.id !== spaceId) {
-          // Other spaces: items[] untouched, but pinnedIds may
-          // still reference cross-space (it doesn't, by design,
-          // but be defensive — also strip container-slot refs).
           const slotsCleaner = (i: LauncherItem): LauncherItem => {
             if (!i.isContainer || !i.slots) return i;
             const newSlots: ContainerSlots = { ...i.slots };
@@ -740,8 +755,6 @@ export function useAppData() {
           };
           return { ...s, items: s.items.map(slotsCleaner) };
         }
-        // The owning space: drop the item, prune pinnedIds, also
-        // clear any container slot refs to it.
         const slotsCleaner = (i: LauncherItem): LauncherItem => {
           if (!i.isContainer || !i.slots) return i;
           const newSlots: ContainerSlots = { ...i.slots };
@@ -756,16 +769,13 @@ export function useAppData() {
           pinnedIds: (s.pinnedIds ?? []).filter(id => id !== itemId),
         };
       }),
-      nodeGroups: (data.nodeGroups ?? [])
+      nodeGroups: (prev.nodeGroups ?? [])
         .map(g => ({ ...g, itemIds: g.itemIds.filter(id => id !== itemId) }))
-        // A node with fewer than 2 members can't launch anything —
-        // drop it entirely rather than leave a dead row. Empty decks
-        // we keep (they're just empty buckets).
         .filter(g => g.itemIds.length >= 2),
-      decks: (data.decks ?? [])
+      decks: (prev.decks ?? [])
         .map(d => ({ ...d, itemIds: d.itemIds.filter(id => id !== itemId) })),
-    });
-  }, [data, save]);
+    }));
+  }, [save]);
 
   /**
    * Apply many partial item patches in a single store write. The favicon

@@ -820,14 +820,42 @@ function sendSse(data) {
  * Both sides strip the 'www.' prefix before comparing.
  * Returns the tab object or null.
  */
+// v1.3.45: tightened from "hostname only" to host+port (+path priority).
+// Previously `localhost:3000` and `localhost:8082` collided — both
+// hostname=localhost matched the first localhost tab in the list. Now
+// the port is part of the key, so the cards focus the right tab.
+// Matching priority: exact host+port AND pathname > host+port alone.
+function _hostPortKey(urlStr) {
+  const u = new URL(urlStr);
+  const host = u.hostname.replace(/^www\./, '');
+  // Normalise the default-port case so `http://example.com` and
+  // `http://example.com:80` collide as intended (the user thinks of
+  // them as the same site). Same for https:443.
+  let port = u.port;
+  if (!port) port = (u.protocol === 'https:' ? '443' : '80');
+  return `${host}:${port}`;
+}
 function findChromeTabByHost(urlStr) {
   if (!global.chromeTabs?.length) return null;
   try {
-    const host = new URL(urlStr).hostname.replace('www.', '');
-    return global.chromeTabs.find(t => {
-      try { return new URL(t.url).hostname.replace('www.', '') === host; }
-      catch { return false; }
-    }) ?? null;
+    const targetKey = _hostPortKey(urlStr);
+    const targetPath = new URL(urlStr).pathname || '/';
+    let hostPortFallback = null;
+    for (const t of global.chromeTabs) {
+      let tKey, tPath;
+      try {
+        tKey = _hostPortKey(t.url);
+        tPath = new URL(t.url).pathname || '/';
+      } catch { continue; }
+      if (tKey !== targetKey) continue;
+      // Best match: same host:port AND same pathname.
+      if (tPath === targetPath) return t;
+      // Otherwise remember the first same-host:port tab as fallback
+      // (so a card pointing at "localhost:3000" still finds an open
+      // "localhost:3000/dashboard" rather than opening a new window).
+      if (!hostPortFallback) hostPortFallback = t;
+    }
+    return hostPortFallback;
   } catch {
     return null;
   }
