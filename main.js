@@ -2676,10 +2676,12 @@ function createWindow() {
   // Initialise the autoHide cache from disk so the very first blur
   // (before the renderer has had a chance to push) reads a sane value.
   cachedAutoHide = !!store.get('appData')?.settings?.autoHide;
-  // Same for the window-open-at strategy. 'cursor' is the historic
-  // default so any pre-1.3.31 store reads as cursor mode.
+  // Window-open-at strategy. Default 'last' as of v1.3.45 (user
+  // request: 최근 위치가 default 가 자연스럽다). 'cursor' is still
+  // selectable in 설정 → 동작. Only fall back to 'cursor' when the
+  // store explicitly says so.
   const savedOpenAt = store.get('appData')?.settings?.windowOpenAt;
-  cachedWindowOpenAt = (savedOpenAt === 'last' ? 'last' : 'cursor');
+  cachedWindowOpenAt = (savedOpenAt === 'cursor' ? 'cursor' : 'last');
 
   // Same for the saved launcher size %. Apply BEFORE the window's
   // first show so the user never sees a 100% → snap-to-saved flash.
@@ -3482,16 +3484,29 @@ function registerIpcHandlers() {
     try {
       const raw = fs.readFileSync(filePaths[0], 'utf-8');
       const parsed = JSON.parse(raw);
+      let appData = null;
+      let formatVersion = 1;
       // Envelope format (v1.3+)
       if (parsed && parsed.format === 'nost' && parsed.data) {
-        return { success: true, data: parsed.data, formatVersion: parsed.formatVersion ?? 1 };
+        appData = parsed.data;
+        formatVersion = parsed.formatVersion ?? 1;
       }
       // Legacy raw AppData — accept if it has either presets[] (post-1.2)
       // or spaces[] (pre-1.2 flat shape; renderer's migrateData handles it).
-      if (parsed && (parsed.presets || parsed.spaces) && parsed.settings) {
-        return { success: true, data: parsed, formatVersion: 0 };
+      else if (parsed && (parsed.presets || parsed.spaces) && parsed.settings) {
+        appData = parsed;
+        formatVersion = 0;
+      } else {
+        return { success: false, reason: 'invalid-format' };
       }
-      return { success: false, reason: 'invalid-format' };
+      // v1.3.45: actually APPLY the imported data. Pre-1.3.45 we just
+      // returned it to the renderer which displayed "재시작하면 적용"
+      // but never wrote — the import was effectively a no-op.
+      store.set('appData', appData);
+      // Tell the renderer to reload from store (applies migrateData
+      // for legacy formats + refreshes every reactive surface).
+      try { mainWindow?.webContents?.send('app-data-reloaded'); } catch (_) {}
+      return { success: true, data: appData, formatVersion, applied: true };
     } catch (e) { return { success: false, reason: String(e) }; }
   });
 

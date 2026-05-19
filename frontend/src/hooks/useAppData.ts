@@ -178,7 +178,10 @@ function migrateData(parsed: AppData): AppData {
     theme: parsed.settings.theme ?? 'dark',
     autoLaunch: parsed.settings.autoLaunch ?? false,
     autoHide: parsed.settings.autoHide ?? false,
-    windowOpenAt: parsed.settings.windowOpenAt === 'last' ? 'last' : 'cursor',
+    // Default 'last' (user request 2026-05-18) — most users want the
+    // launcher to reopen where they left it. 'cursor' (historic) is
+    // still selectable in 설정 → 작업 환경 → 동작.
+    windowOpenAt: parsed.settings.windowOpenAt === 'cursor' ? 'cursor' : 'last',
     accentColor: parsed.settings.accentColor ?? '#6366f1',
     documentExtensions: parsed.settings.documentExtensions ?? [],
     floatingButton: parsed.settings.floatingButton ?? {

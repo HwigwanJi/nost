@@ -219,6 +219,11 @@ export interface ElectronAPI {
   openMemoFolder: (customFolder?: string) => Promise<{ success: boolean; filePath?: string; reason?: string }>;
   getMemoDefaultFolder: () => Promise<string>;
 
+  /** Subscribe to "store was overwritten externally" notifications.
+   *  Main fires this after import-data writes the imported tree;
+   *  renderer reloads via reloadFromStore (which also migrates). */
+  onAppDataReloaded: (cb: () => void) => () => void;
+
   // ── Satellite ItemDialog (card add/edit) ────────────────────────
   /** Open the satellite card-edit dialog in its own BrowserWindow.
    *  See plans/satellite-dialogs.md. Payload mirrors the props the
@@ -393,6 +398,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   openMemoExternal: async () => ({ success: false, reason: 'dev-mode' }),
   openMemoFolder: async () => ({ success: false, reason: 'dev-mode' }),
   getMemoDefaultFolder: async () => '',
+  onAppDataReloaded: () => () => {},
   openItemDialog: noop,
   onItemDialogAction: () => () => {},
   onItemDialogClosed: () => () => {},

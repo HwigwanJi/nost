@@ -818,9 +818,120 @@ function LabelOrderEditor({ order, onChange }: {
   );
 }
 
+/**
+ * ShortcutCapture — modern key-capture input for the global shortcut
+ * setting. Click → "키 입력 대기…" mode → press any combo (modifiers +
+ * key) → automatically captures and emits as an Electron accelerator
+ * string ("Alt+Space", "Ctrl+Shift+F1"). Esc cancels, "지우기" clears
+ * to empty (which disables the global shortcut on the main side).
+ *
+ * Replaces the old `<Input>` where users had to TYPE the accelerator
+ * string by hand — error-prone and felt dated.
+ */
+function ShortcutCapture({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [capturing, setCapturing] = useState(false);
+  const [draftDisplay, setDraftDisplay] = useState<string | null>(null);
+
+  // Display string for a current keydown event. Returns null when the
+  // event is modifier-only (user is still pressing modifiers, hasn't
+  // committed yet) so we can show "Ctrl+…" preview without finalising.
+  const formatKey = (e: KeyboardEvent): { accel: string | null; preview: string } => {
+    const parts: string[] = [];
+    if (e.ctrlKey)  parts.push('Ctrl');
+    if (e.altKey)   parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    if (e.metaKey)  parts.push('Meta');
+    const key = e.key;
+    // Modifier-only keystroke → no commit yet, show preview only.
+    if (key === 'Control' || key === 'Alt' || key === 'Shift' || key === 'Meta') {
+      return { accel: null, preview: parts.join('+') + '+…' };
+    }
+    // Normalise the key name into an Electron accelerator token.
+    let token: string;
+    if (key === ' ') token = 'Space';
+    else if (key.length === 1) token = key.toUpperCase();
+    else token = key; // 'Enter', 'Tab', 'F1', 'ArrowUp', etc.
+    const full = [...parts, token].join('+');
+    return { accel: full, preview: full };
+  };
+
+  useEffect(() => {
+    if (!capturing) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Escape') {
+        setCapturing(false);
+        setDraftDisplay(null);
+        return;
+      }
+      const { accel, preview } = formatKey(e);
+      setDraftDisplay(preview);
+      if (accel) {
+        // Commit on the first non-modifier press.
+        onChange(accel);
+        setCapturing(false);
+        setDraftDisplay(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [capturing, onChange]);
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <button
+        type="button"
+        onClick={() => { setCapturing(true); setDraftDisplay(null); }}
+        onBlur={() => { setCapturing(false); setDraftDisplay(null); }}
+        style={{
+          flex: 1,
+          textAlign: 'left',
+          padding: '8px 12px',
+          borderRadius: 7,
+          border: `1px solid ${capturing ? 'var(--accent)' : 'var(--border-rgba)'}`,
+          background: 'var(--surface)',
+          color: capturing && !draftDisplay ? 'var(--text-muted)' : 'var(--text-color)',
+          fontFamily: 'monospace',
+          fontSize: 12,
+          cursor: 'pointer',
+          fontStyle: capturing && !draftDisplay ? 'italic' : 'normal',
+          transition: 'border-color 120ms ease',
+        }}
+      >
+        {capturing
+          ? (draftDisplay ?? '키 입력 대기… (Esc 로 취소)')
+          : (value || '(설정 안 됨)')}
+      </button>
+      {value && !capturing && (
+        <button
+          type="button"
+          onClick={() => onChange('')}
+          title="단축키 지우기"
+          style={{
+            padding: '7px 10px',
+            borderRadius: 7,
+            border: '1px solid var(--border-rgba)',
+            background: 'var(--surface)',
+            color: 'var(--text-muted)',
+            cursor: 'pointer',
+            fontSize: 11,
+            fontFamily: 'inherit',
+          }}
+        >
+          지우기
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── Main component ───────────────────────────────────────────────────
 
-export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onStartTutorial, onOpenMemoTrash, onExtendAllMemos, onEmptyMemoTrash }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onStartTutorial, onOpenMemoTrash, onEmptyMemoTrash }: SettingsDialogProps) {
+  // onExtendAllMemos was destructured for the "모든 메모 +수명" button
+  // in the now-removed 일괄정리 section. Prop stays in the interface for
+  // back-compat but is no longer consumed here.
   useBusyMark('modal:settings', open);
   // initialTab may carry legacy values ('general', 'monitor') from older
   // call sites (notification action payloads, deep links). remapLegacyTab
@@ -962,8 +1073,12 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
   const handleImport = async () => {
     const res = await electronAPI.importData();
     if (res.success) {
-      setBackupStatus('복원 완료, 앱을 다시 시작하면 적용됩니다');
-      setTimeout(() => { setBackupStatus(null); onClose(); }, 2500);
+      // v1.3.45: main writes the imported tree to electron-store and
+      // fires 'app-data-reloaded' which the main renderer listens to —
+      // reloadFromStore picks it up + applies migrateData so legacy
+      // backups also land without a restart.
+      setBackupStatus('복원 완료');
+      setTimeout(() => { setBackupStatus(null); onClose(); }, 1800);
     } else {
       setBackupStatus(res.reason === 'invalid-format' ? '잘못된 파일 형식' : '취소됨');
       setTimeout(() => setBackupStatus(null), 2500);
@@ -1168,7 +1283,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                       { value: 'cursor', icon: 'my_location', title: '마우스 위치',  desc: '커서가 있는 모니터의 가운데에 나타납니다.' },
                       { value: 'last',   icon: 'restart_alt',  title: '최근 위치',  desc: '마지막에 닫은 위치 그대로 다시 나타납니다.' },
                     ] as const).map(opt => {
-                      const active = (form.windowOpenAt ?? 'cursor') === opt.value;
+                      const active = (form.windowOpenAt ?? 'last') === opt.value;
                       return (
                         <button
                           key={opt.value}
@@ -1222,9 +1337,10 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
 
                 <Section>
                   <SectionLabel icon="keyboard" text="전역 단축키" />
-                  <Input value={form.shortcut} onChange={e => f('shortcut', e.target.value)}
-                    placeholder="예: Alt+Space" className="font-mono text-sm" />
-                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.4 }}>단축키 변경 후 저장하면 즉시 반영됩니다.</p>
+                  <ShortcutCapture value={form.shortcut} onChange={v => f('shortcut', v)} />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, lineHeight: 1.4 }}>
+                    클릭한 뒤 원하는 단축키를 누르면 자동으로 입력됩니다.
+                  </p>
                 </Section>
               </>}
 
@@ -1740,25 +1856,9 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   </div>
                 </Section>
 
-                <Section>
-                  <SectionLabel icon="restart_alt" text="일괄 정리" />
-                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
-                    여행 다녀와서 한 번씩 쓰는 비상 버튼. 모든 활성 메모의
-                    수명을 기본 일수만큼 다시 채웁니다 (핀, 휴지통 제외).
-                  </p>
-                  <GhostBtn onClick={() => {
-                    if (!onExtendAllMemos) return;
-                    const n = onExtendAllMemos();
-                    setBackupStatus(n > 0 ? `${n}개 메모의 수명을 다시 채웠어요` : '활성 메모가 없어요');
-                    setTimeout(() => setBackupStatus(null), 4000);
-                  }}>
-                    <Icon name="schedule" size={14} />
-                    모든 메모 +수명
-                  </GhostBtn>
-                  {backupStatus && (
-                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 8, textAlign: 'center' }}>{backupStatus}</p>
-                  )}
-                </Section>
+                {/* "일괄 정리" 섹션 (모든 메모 +수명) 제거 — 사용 빈도
+                    낮고 유지보수 가치 없다는 사용자 피드백. onExtendAllMemos
+                    prop 은 satellite stub (return 0) 와 호환 위해 유지. */}
               </>}
 
               {tab === 'tutorial' && <>

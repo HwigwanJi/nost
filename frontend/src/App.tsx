@@ -1089,6 +1089,19 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Backup restore (import-data IPC) finished writing to electron-store
+  // — reload everywhere. v1.3.45 fix: pre-1.3.45 the import button just
+  // showed "재시작하면 적용" without actually applying. Main now writes
+  // straight to store and notifies us; reloadFromStore re-reads +
+  // migrates so legacy backups also land correctly without a restart.
+  useEffect(() => {
+    const off = electronAPI.onAppDataReloaded(() => {
+      store.reloadFromStore();
+    });
+    return () => { off?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     if (auth.status !== 'signed-in' || !auth.user) return;
     initSync({

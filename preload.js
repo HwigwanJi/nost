@@ -240,6 +240,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
    *  on cancel / busy / failure. The launcher is always restored. */
   pickColorFromScreen: () => ipcRenderer.invoke('eyedropper-pick'),
 
+  /** Fires after a successful import-data — renderer reloads from
+   *  store so the freshly-imported AppData is reflected everywhere
+   *  (cards, settings, presets, etc.). */
+  onAppDataReloaded: (cb) => {
+    const handler = () => cb();
+    ipcRenderer.on('app-data-reloaded', handler);
+    return () => ipcRenderer.removeListener('app-data-reloaded', handler);
+  },
+
   // ── Satellite ItemDialog (card add/edit) ────────────────────────
   // The card-edit dialog runs in its own BrowserWindow so it can extend
   // past the main launcher's rectangle (pair-split / narrow-window
