@@ -414,6 +414,7 @@ export interface NotificationAction {
     | 'open-tour'         // start an onboarding tour
     | 'open-settings'     // open settings dialog (optional tab in payload)
     | 'open-trash'        // open memo trash
+    | 'view-expiring-memos' // scroll to the first space with a memo expiring today; payload = spaceId
     | 'noop';             // dismiss-only (handler still runs)
   /** Optional payload — e.g. settings tab id, tour id. Free-form so
    *  individual sources can ride along without expanding NotificationKind. */

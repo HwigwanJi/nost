@@ -29,7 +29,6 @@ import type { Template } from './onboarding/templates';
 // src/item-wizard/ItemWizardSatellite.tsx.
 import { MemoEditor } from './components/MemoEditor';
 import { MemoTrashDialog } from './components/MemoTrashDialog';
-import { MemoExpiringBanner } from './components/MemoExpiringBanner';
 import { memoIsExpiringSoon, memoBodyToPlain, htmlToMarkdown, htmlHasStructure } from './lib/memoUtils';
 import { NotificationBell } from './components/NotificationBell';
 import type { AppNotification } from './types';
@@ -858,9 +857,11 @@ export default function App() {
   // BrowserWindow). spaceId is captured at open-time so the lookup
   // remains correct even if the active preset changes mid-edit.
   const [editingMemoId, setEditingMemoId] = useState<{ spaceId: string; itemId: string } | null>(null);
-  // Today-expiring banner dismissed for this session (per spec: closeable,
-  // doesn't reappear today). Keyed by date so it auto-resets next day.
-  const [bannerDismissedYmd, setBannerDismissedYmd] = useState<string | null>(null);
+  // (v1.3.47) 이전에는 그리드 위 인라인 배너 (MemoExpiringBanner) 로 떴지만,
+  // 알림 SSOT 일관성 위반이라 알림센터(NotificationPanel)로 이주. once-per-day
+  // 시맨틱은 dedupKey 가 ymd 를 포함해서 자연스럽게 보장됨 — 같은 키의
+  // 알림이 (active든 dismissed든) 한 번 만들어지면 그날은 더 안 만들어짐.
+  // producer effect 는 아래 useEffect 블록에 둠.
   const [memoTrashOpen, setMemoTrashOpen] = useState(false);
   // Bell-icon popover open state. Lives at App level so the bell button
   // (in the title bar) and the panel (rendered via portal) share the
@@ -2467,6 +2468,20 @@ export default function App() {
       case 'open-trash':
         setMemoTrashOpen(true);
         break;
+      case 'view-expiring-memos': {
+        // payload = spaceId of the first space holding an expiring memo
+        // (set by the daily memo-expiring producer below). Defer the
+        // scroll one frame so the bell popover finishes closing — the
+        // popover sits over the grid and the scroll target would otherwise
+        // be obscured at the moment of dispatch.
+        const sid = n.action.payload;
+        if (!sid) break;
+        requestAnimationFrame(() => {
+          const el = document.querySelector(`[data-space-id="${sid}"]`);
+          el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+        break;
+      }
       case 'noop':
       default:
         break;
@@ -2477,6 +2492,40 @@ export default function App() {
     setNotifPanelOpen(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
+
+  // ── 오늘 사라질 메모 알림 producer (v1.3.47, 알림센터 SSOT) ──────
+  // 이전: 그리드 위 인라인 MemoExpiringBanner (지금 보기 / ✕). 그러나
+  // 알림 SSOT 두 가지 (인라인 토스트 vs. 알림센터) 중 "메모 사라짐 경고" 는
+  // 즉시성 < 누적성 이라 알림센터가 적절. 하루 한 번 dedupKey 로 게이트.
+  // 같은 ymd 에 이미 알림이 (active 든 dismissed 든) 있으면 skip — 알림센터의
+  // 기본 dedup 은 active 인 것만 보지만, 여기선 "한 번 띄우고 dismiss 됐으면
+  // 그날은 다시 안 띄움" 시맨틱이라 caller 측에서 추가 검사.
+  useEffect(() => {
+    const ymd = (() => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`; })();
+    const dedupKey = `memo-expiring-${ymd}`;
+    if (data.notifications?.some(n => n.dedupKey === dedupKey)) return;
+    const now = Date.now();
+    let count = 0;
+    let firstSpaceId: string | null = null;
+    for (const sp of data.spaces) {
+      for (const it of sp.items) {
+        if (it.type === 'memo' && memoIsExpiringSoon(it, now)) {
+          count++;
+          if (!firstSpaceId) firstSpaceId = sp.id;
+        }
+      }
+    }
+    if (count === 0) return;
+    store.addNotification({
+      kind: 'tip',
+      title: `오늘 사라질 메모 ${count}개`,
+      body: '지금 확인하지 않으면 사라져요.',
+      dedupKey,
+      action: firstSpaceId
+        ? { label: '지금 보기', intent: 'view-expiring-memos', payload: firstSpaceId }
+        : undefined,
+    });
+  }, [data.spaces, data.notifications, store]);
 
   /**
    * "빠른추가" — peek at the clipboard first. Hex codes get the
@@ -5017,37 +5066,6 @@ export default function App() {
                         data-tour-id="space-list"
                         style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
                       >
-                        {/* Today-expiring memos banner — counts across the
-                            ACTIVE preset only (other presets' memos aren't
-                            on-screen so warning about them is noise). One
-                            click "지금 보기" jumps to the first space that
-                            has an expiring memo. Closeable; reappears next day. */}
-                        {(() => {
-                          const ymd = (() => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`; })();
-                          if (bannerDismissedYmd === ymd) return null;
-                          const now = Date.now();
-                          let count = 0;
-                          let firstSpaceId: string | null = null;
-                          for (const sp of data.spaces) {
-                            for (const it of sp.items) {
-                              if (it.type === 'memo' && memoIsExpiringSoon(it, now)) {
-                                count++;
-                                if (!firstSpaceId) firstSpaceId = sp.id;
-                              }
-                            }
-                          }
-                          return (
-                            <MemoExpiringBanner
-                              count={count}
-                              onView={() => {
-                                if (!firstSpaceId) return;
-                                const el = document.querySelector(`[data-space-id="${firstSpaceId}"]`);
-                                el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                              }}
-                              onDismiss={() => setBannerDismissedYmd(ymd)}
-                            />
-                          );
-                        })()}
                         {rows.map(row => {
                           const isPair = !!row.rightSpace;
                           return (
