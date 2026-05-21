@@ -21,22 +21,8 @@
     "copyright": "Copyright © 2025 Antigravity",
     "files": [
       "main.js",
-      "media-controller.js",
-      "foreground-window.js",
-      "preload.js",
-      "preload-floating.js",
-      "preload-badges.js",
-      "preload-dialog-popup.js",
-      "preload-item-dialog.js",
-      "preload-item-wizard.js",
-      "preload-settings-dialog.js",
-      "preload-doc-cohort-dialog.js",
-      "preload-batch-drop-dialog.js",
-      "preload-container-slot-picker.js",
-      "preload-picker.js",
-      "preload-splash.js",
-      "picker.html",
-      "icon.png",
+      "electron/**/*",
+      "branding/icon.png",
       "frontend/dist/**/*"
     ],
     "asarUnpack": [
@@ -46,7 +32,7 @@
     "extraResources": [
       "chrome-extension/**/*",
       "ps-scripts/**/*",
-      "guide.md"
+      "docs/guide.md"
     ],
     "win": {
       "target": [
@@ -63,7 +49,7 @@
           ]
         }
       ],
-      "icon": "icon.png"
+      "icon": "branding/icon.png"
     },
     "nsis": {
       "oneClick": false,

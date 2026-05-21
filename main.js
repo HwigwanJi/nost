@@ -45,7 +45,7 @@ const http            = require('http');
 const Store           = require('electron-store');
 const { autoUpdater } = require('electron-updater');
 const log             = require('electron-log/main');
-const foregroundWindow = require('./foreground-window');
+const foregroundWindow = require('./electron/foreground-window');
 
 // ── electron-log setup ──────────────────────────────────────────────
 // File:    %APPDATA%\nost\logs\main.log (and renderer.log for renderer)
@@ -1029,7 +1029,7 @@ function _unused_legacySplashMarkup() {  // eslint-disable-line no-unused-vars
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload-splash.js'),
+      preload: path.join(__dirname, 'electron', 'preload-splash.js'),
     },
   });
 
@@ -1517,7 +1517,7 @@ function createFloatingWindow() {
     minimizable: false, maximizable: false, fullscreenable: false,
     show: false,
     webPreferences: {
-      preload: path.join(__dirname, 'preload-floating.js'),
+      preload: path.join(__dirname, 'electron', 'preload-floating.js'),
       contextIsolation: true,
       nodeIntegration:  false,
       backgroundThrottling: false,
@@ -1753,7 +1753,7 @@ function createDialogPopupWindow(rect, dialogTitle) {
     alwaysOnTop: true, skipTaskbar: true, focusable: false,
     hasShadow: false, show: false, useContentSize: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload-dialog-popup.js'),
+      preload: path.join(__dirname, 'electron', 'preload-dialog-popup.js'),
       contextIsolation: true,
       session: dpSession,
     },
@@ -1903,7 +1903,7 @@ function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, ini
     maximizable: false,
     fullscreenable: false,
     webPreferences: {
-      preload: path.join(__dirname, preloadFile),
+      preload: path.join(__dirname, 'electron', preloadFile),
       contextIsolation: true,
       // sandbox:false is required because each satellite's preload uses
       // `require('./preload.js')` to reuse the main app's electronAPI
@@ -2338,7 +2338,7 @@ function createBadgeOverlayForDisplay(display) {
     show: false,
     paintWhenInitiallyHidden: true,
     webPreferences: {
-      preload: path.join(__dirname, 'preload-badges.js'),
+      preload: path.join(__dirname, 'electron', 'preload-badges.js'),
       contextIsolation: true,
       nodeIntegration:  false,
       backgroundThrottling: false,
@@ -2575,9 +2575,9 @@ function createWindow() {
     // app launch triggers SetForegroundWindow. 'screen-saver' sits
     // above other topmost apps so launching Chrome/IDE/etc doesn't
     // demote nost. Floating overlays already use this same level.
-    icon: path.join(__dirname, 'icon.png'),
+    icon: path.join(__dirname, 'branding', 'icon.png'),
     webPreferences: {
-      preload:        path.join(__dirname, 'preload.js'),
+      preload:        path.join(__dirname, 'electron', 'preload.js'),
       contextIsolation: true,
       nodeIntegration:  false,
       // Disable renderer throttling so timers and animations keep running
@@ -4357,10 +4357,11 @@ function registerIpcHandlers() {
   });
 
   ipcMain.on('open-guide', () => {
-    // Prefer the bundled copy in extraResources; fall back to project root in dev
+    // Prefer the bundled copy in extraResources; fall back to docs/ in dev.
+    // (v1.3.47 — guide.md moved from project root to docs/ during cleanup)
     const candidates = [
-      path.join(process.resourcesPath || '', 'guide.md'),
-      path.join(__dirname, 'guide.md'),
+      path.join(process.resourcesPath || '', 'docs', 'guide.md'),
+      path.join(__dirname, 'docs', 'guide.md'),
     ];
     const guidePath = candidates.find(p => fs.existsSync(p));
     if (guidePath) shell.openPath(guidePath);
@@ -5250,7 +5251,7 @@ function registerIpcHandlers() {
         hasShadow: false,
         show: false,
         webPreferences: {
-          preload: path.join(__dirname, 'preload-picker.js'),
+          preload: path.join(__dirname, 'electron', 'preload-picker.js'),
           contextIsolation: true,
           nodeIntegration: false,
           sandbox: false,
@@ -5309,7 +5310,7 @@ function registerIpcHandlers() {
       });
 
       try {
-        await win.loadFile(path.join(__dirname, 'picker.html'));
+        await win.loadFile(path.join(__dirname, 'electron', 'picker.html'));
       } catch (e) {
         log.warn('[picker] loadFile failed', e);
         finish({ success: false, reason: 'load-failed' });
@@ -5537,7 +5538,7 @@ function registerIpcHandlers() {
   // see media-controller.js for the longer note. We keep the module
   // loaded so init() binds koffi to user32.dll once, then commands
   // route through `media.command(action)` synchronously.
-  const media = require('./media-controller');
+  const media = require('./electron/media-controller');
   media.init();
 
   // Initialise the native foreground-window detector so the dialog poll
@@ -5849,7 +5850,7 @@ app.whenReady().then(() => {
   }
 
   // ── System Tray ──────────────────────────────────────────────────
-  const iconPath = path.join(__dirname, 'icon.png');
+  const iconPath = path.join(__dirname, 'branding', 'icon.png');
   let icon = nativeImage.createFromPath(iconPath);
   if (icon.isEmpty()) {
     // Fallback icon in case the asset is missing (dev or corrupted install)
@@ -5904,5 +5905,5 @@ app.on('will-quit', () => {
   // Drop SMTC subscriptions — without this the native binding can hold
   // its event source alive past process exit, occasionally producing
   // an "object accessed after destroy" log on shutdown.
-  try { require('./media-controller').destroy(); } catch (_) {}
+  try { require('./electron/media-controller').destroy(); } catch (_) {}
 });

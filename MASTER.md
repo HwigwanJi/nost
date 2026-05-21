@@ -73,10 +73,10 @@
 | # | 파일 | 무엇 |
 |---|---|---|
 | 1 | **MASTER.md** (이 파일) | 30초 컨텍스트 + 금기 + 인덱스 |
-| 2 | [**walkthrough_v2.md**](walkthrough_v2.md) | 전체 워크스루 — 디렉토리/타입/IPC/타일링 파이프라인. 정본. |
+| 2 | [**walkthrough_v2.md**](docs/walkthrough_v2.md) | 전체 워크스루 — 디렉토리/타입/IPC/타일링 파이프라인. 정본. |
 | 3 | [**plans/ssot-index.md**](plans/ssot-index.md) | 코드/문서 SSOT 인벤토리 — 어떤 값/규칙을 바꿀 때 또 어디 미러가 있는지 확인. |
 | 4 | [**plans/checklists.md**](plans/checklists.md) | 자주 하는 5개 작업 (카드 타입 / IPC / 모달 / 설정 / 알림) 체크리스트 |
-| 5 | [**guide.md**](guide.md) | 사용자 매뉴얼 (앱 사용법). 시야 맞추기. |
+| 5 | [**guide.md**](docs/guide.md) | 사용자 매뉴얼 (앱 사용법). 시야 맞추기. |
 
 ### 3.2 자주 하는 작업별 절차 (체크리스트 우선 ⭐)
 
