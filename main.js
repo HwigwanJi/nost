@@ -59,6 +59,54 @@ log.transports.console.format = '[{h}:{i}:{s}.{ms}] [{level}] {text}';
 
 const store = new Store({ name: 'nost-data' });
 
+// ── Rolling backup (v1.3.47) — defense in depth ─────────────────────
+// Pattern A (closure-staleness race in renderer mutators) has historically
+// caused cards to silent-revert when a stale snapshot overwrites a fresh
+// one. Even after fixing all 17 mutators in this app, future code could
+// re-introduce the bug. Rolling backups guarantee a recovery window:
+// 5 snapshots, each ≥ 60s old. A burst of 100 writes within 60s
+// collapses into a single rotation, so meaningful states survive.
+//
+// Layout:
+//   userData/backups/nost-data.bak.0.json  ← newest
+//   userData/backups/nost-data.bak.1.json
+//   ...
+//   userData/backups/nost-data.bak.4.json  ← ~5+ min old
+//
+// If a user reports "my card disappeared", main.log + these 5 files give
+// us a deterministic recovery path. Cost: ~100 KB × 5 = 0.5 MB on disk,
+// + one writeFile per backup rotation (worst case 1×/min).
+const BACKUP_SLOTS = 5;
+const BACKUP_MIN_INTERVAL_MS = 60 * 1000;
+let _lastBackupAt = 0;
+function _backupAppData(data) {
+  try {
+    const now = Date.now();
+    if (now - _lastBackupAt < BACKUP_MIN_INTERVAL_MS) {
+      // Within debounce window — just refresh slot 0 with the latest
+      // state so the most recent snapshot is never more than ~60s stale.
+      const dir = path.join(app.getPath('userData'), 'backups');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'nost-data.bak.0.json'), JSON.stringify(data), 'utf-8');
+      return;
+    }
+    _lastBackupAt = now;
+    const dir = path.join(app.getPath('userData'), 'backups');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    // Rotate: slot N-1 → N (drop oldest), starting from the top down.
+    for (let i = BACKUP_SLOTS - 1; i > 0; i--) {
+      const src = path.join(dir, `nost-data.bak.${i - 1}.json`);
+      const dst = path.join(dir, `nost-data.bak.${i}.json`);
+      if (fs.existsSync(src)) {
+        try { fs.copyFileSync(src, dst); } catch (_) { /* ignore — rotation is best-effort */ }
+      }
+    }
+    fs.writeFileSync(path.join(dir, 'nost-data.bak.0.json'), JSON.stringify(data), 'utf-8');
+  } catch (e) {
+    log.warn(`[backup] _backupAppData failed: ${e?.message ?? e}`);
+  }
+}
+
 // ── Perf tracker (v1.3.39) ──────────────────────────────────────────
 // Lightweight call counters flushed every 10s as a single log line per
 // category. Active in every build — overhead is ~80ns per increment so
@@ -3370,6 +3418,11 @@ function registerIpcHandlers() {
     // effect after the next badge mutation (pin/unpin/move) or app
     // restart — both of which feel broken from the user's perspective.
     const prevBadgeSize = (store.get('appData') || {})?.settings?.badgeSize ?? 46;
+    // v1.3.47: snapshot current state to rolling backup BEFORE overwriting.
+    // If the incoming `data` is a stale closure (Pattern A regression),
+    // the prior state still lives in nost-data.bak.{0..4}.json.
+    const prevAppData = store.get('appData');
+    if (prevAppData) _backupAppData(prevAppData);
     store.set('appData', data);
     // Keep the Windows startup entry in sync with the autoLaunch toggle.
     // v1.3.46: explicit logging so when the user reports "auto-launch
