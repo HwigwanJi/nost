@@ -611,41 +611,41 @@ export function useAppData() {
       sortMode: 'custom',
       pinnedIds: [],
     };
-    save({ ...data, spaces: [...data.spaces, newSpace] });
+    save(prev => ({ ...prev, spaces: [...prev.spaces, newSpace] }));
     return newSpace;
-  }, [data, save]);
+  }, [save]);
 
   const renameSpace = useCallback((id: string, name: string) => {
-    save({
-      ...data,
-      spaces: data.spaces.map(s => s.id === id ? { ...s, name } : s),
-    });
-  }, [data, save]);
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => s.id === id ? { ...s, name } : s),
+    }));
+  }, [save]);
 
   const deleteSpace = useCallback((id: string) => {
-    save({ ...data, spaces: data.spaces.filter(s => s.id !== id) });
-  }, [data, save]);
+    save(prev => ({ ...prev, spaces: prev.spaces.filter(s => s.id !== id) }));
+  }, [save]);
 
   // Reorder entry point. All drag operations funnel here — we always enforce the
   // pair invariant after reordering so the saved state can never have a [A→B→C]
   // chain or a dangling pairedWithNext at the tail.
   const reorderSpaces = useCallback((newSpaces: Space[]) => {
-    save({ ...data, spaces: enforcePairInvariant(newSpaces) });
-  }, [data, save]);
+    save(prev => ({ ...prev, spaces: enforcePairInvariant(newSpaces) }));
+  }, [save]);
 
   const setSpaceColor = useCallback((id: string, color: string) => {
-    save({
-      ...data,
-      spaces: data.spaces.map(s => s.id === id ? { ...s, color } : s),
-    });
-  }, [data, save]);
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => s.id === id ? { ...s, color } : s),
+    }));
+  }, [save]);
 
   const setSpaceIcon = useCallback((id: string, icon: string) => {
-    save({
-      ...data,
-      spaces: data.spaces.map(s => s.id === id ? { ...s, icon } : s),
-    });
-  }, [data, save]);
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => s.id === id ? { ...s, icon } : s),
+    }));
+  }, [save]);
 
   // Pair split-ratio setter. The handle sits between the two paired spaces and
   // dragging it adjusts how the row's width is divided. Only the LEFT space of a
@@ -665,28 +665,32 @@ export function useAppData() {
   }, []);
 
   const duplicateSpace = useCallback((spaceId: string) => {
-    const src = data.spaces.find(s => s.id === spaceId);
-    if (!src) return;
-    const clone: Space = {
-      ...src,
-      id: generateId(),
-      name: `${src.name} (복사)`,
-      items: src.items.map(i => ({ ...i, id: generateId(), clickCount: 0 })),
-      pinnedIds: [],
-    };
-    const idx = data.spaces.findIndex(s => s.id === spaceId);
-    const newSpaces = [...data.spaces];
-    newSpaces.splice(idx + 1, 0, clone);
-    save({ ...data, spaces: newSpaces });
-  }, [data, save]);
+    save(prev => {
+      const src = prev.spaces.find(s => s.id === spaceId);
+      if (!src) return prev;
+      const clone: Space = {
+        ...src,
+        id: generateId(),
+        name: `${src.name} (복사)`,
+        items: src.items.map(i => ({ ...i, id: generateId(), clickCount: 0 })),
+        pinnedIds: [],
+      };
+      const idx = prev.spaces.findIndex(s => s.id === spaceId);
+      const newSpaces = [...prev.spaces];
+      newSpaces.splice(idx + 1, 0, clone);
+      return { ...prev, spaces: newSpaces };
+    });
+  }, [save]);
 
   const toggleSpaceCollapsed = useCallback((spaceId: string) => {
-    const collapsed = data.collapsedSpaceIds ?? [];
-    const next = collapsed.includes(spaceId)
-      ? collapsed.filter(id => id !== spaceId)
-      : [...collapsed, spaceId];
-    save({ ...data, collapsedSpaceIds: next });
-  }, [data, save]);
+    save(prev => {
+      const collapsed = prev.collapsedSpaceIds ?? [];
+      const next = collapsed.includes(spaceId)
+        ? collapsed.filter(id => id !== spaceId)
+        : [...collapsed, spaceId];
+      return { ...prev, collapsedSpaceIds: next };
+    });
+  }, [save]);
 
   // F1: frequency + recency score. `clickCount × exp(-ageDays / 30)` — items
   // used a lot rise to the top, but a burst a year ago decays versus recent
@@ -700,9 +704,9 @@ export function useAppData() {
 
   const sortSpaceByUsage = useCallback((id: string) => {
     const now = Date.now();
-    save({
-      ...data,
-      spaces: data.spaces.map(s => {
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => {
         if (s.id !== id) return s;
         const pinnedIds = s.pinnedIds ?? [];
         const pinned = s.items.filter(i => pinnedIds.includes(i.id));
@@ -710,15 +714,15 @@ export function useAppData() {
         rest.sort((a, b) => usageScore(b, now) - usageScore(a, now));
         return { ...s, items: [...pinned, ...rest], sortMode: 'usage' };
       }),
-    });
-  }, [data, save]);
+    }));
+  }, [save]);
 
   const lockSpaceSort = useCallback((spaceId: string, pinnedIds: string[]) => {
-    save({
-      ...data,
-      spaces: data.spaces.map(s => s.id === spaceId ? { ...s, pinnedIds } : s),
-    });
-  }, [data, save]);
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => s.id === spaceId ? { ...s, pinnedIds } : s),
+    }));
+  }, [save]);
 
   // ── Items ────────────────────────────────────────────────
   const addItem = useCallback((spaceId: string, item: Omit<LauncherItem, 'id'>, presetId?: string) => {
@@ -974,50 +978,55 @@ export function useAppData() {
   }, []);
 
   const incrementClickCount = useCallback((spaceId: string, itemId: string) => {
+    // Functional save — closure-stale `data` would silently overwrite
+    // any not-yet-committed mutation (e.g. a card add from the same
+    // tick). 카드 클릭 = 매우 빈번한 트리거이므로 race 의 주범. (Pattern A)
     const now = Date.now();
-    save({
-      ...data,
-      spaces: data.spaces.map(s =>
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s =>
         s.id === spaceId
           ? { ...s, items: s.items.map(i => i.id === itemId ? { ...i, clickCount: (i.clickCount ?? 0) + 1, lastClickedAt: now } : i) }
           : s
       ),
-    });
-  }, [data, save]);
+    }));
+  }, [save]);
 
   const reorderItems = useCallback((spaceId: string, items: LauncherItem[]) => {
-    save({
-      ...data,
-      spaces: data.spaces.map(s => s.id === spaceId ? { ...s, items } : s),
-    });
-  }, [data, save]);
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => s.id === spaceId ? { ...s, items } : s),
+    }));
+  }, [save]);
 
   const moveItemToSpace = useCallback((itemId: string, fromSpaceId: string, toSpaceId: string) => {
-    const fromSpace = data.spaces.find(s => s.id === fromSpaceId);
-    const item = fromSpace?.items.find(i => i.id === itemId);
-    if (!item || fromSpaceId === toSpaceId) return;
-    save({
-      ...data,
-      spaces: data.spaces.map(s => {
-        if (s.id === fromSpaceId) return { ...s, items: s.items.filter(i => i.id !== itemId) };
-        if (s.id === toSpaceId) return { ...s, items: [...s.items, item] };
-        return s;
-      }),
+    if (fromSpaceId === toSpaceId) return;
+    save(prev => {
+      const fromSpace = prev.spaces.find(s => s.id === fromSpaceId);
+      const item = fromSpace?.items.find(i => i.id === itemId);
+      if (!item) return prev;
+      return {
+        ...prev,
+        spaces: prev.spaces.map(s => {
+          if (s.id === fromSpaceId) return { ...s, items: s.items.filter(i => i.id !== itemId) };
+          if (s.id === toSpaceId) return { ...s, items: [...s.items, item] };
+          return s;
+        }),
+      };
     });
-  }, [data, save]);
+  }, [save]);
 
   const updateItemAndMove = useCallback((fromSpaceId: string, toSpaceId: string, item: LauncherItem) => {
-    // Update item data AND move it to the new space atomically
     const updatedItem = { ...item };
-    save({
-      ...data,
-      spaces: data.spaces.map(s => {
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => {
         if (s.id === fromSpaceId) return { ...s, items: s.items.filter(i => i.id !== item.id) };
         if (s.id === toSpaceId) return { ...s, items: [...s.items, updatedItem] };
         return s;
       }),
-    });
-  }, [data, save]);
+    }));
+  }, [save]);
 
   /**
    * Move an item to a space in a DIFFERENT preset (and update its content
@@ -1074,39 +1083,43 @@ export function useAppData() {
     return (data.nodeGroups ?? []).find(g => g.itemIds.includes(itemId));
   }, [data.nodeGroups]);
 
+  // ── Node Groups / Decks — Pattern A 일괄 functional 화 ──────
+  // 이전엔 `save({...data, ...})` 형태라 같은 tick 의 다른 mutator 가
+  // 동시 실행되면 stale data 덮어쓰기 발생. 카드 클릭→incrementClickCount /
+  // 드래그→reorderItems 가 새로 추가된 노드/덱을 silent 하게 회귀시켰음.
   const addNodeGroup = useCallback((name: string, itemIds: string[]) => {
     const group: NodeGroup = { id: generateId(), name, itemIds };
-    save({ ...data, nodeGroups: [...(data.nodeGroups ?? []), group] });
-  }, [data, save]);
+    save(prev => ({ ...prev, nodeGroups: [...(prev.nodeGroups ?? []), group] }));
+  }, [save]);
 
   const updateNodeGroup = useCallback((id: string, updates: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor' | 'icon'>>) => {
-    save({
-      ...data,
-      nodeGroups: (data.nodeGroups ?? []).map(g => g.id === id ? { ...g, ...updates } : g),
-    });
-  }, [data, save]);
+    save(prev => ({
+      ...prev,
+      nodeGroups: (prev.nodeGroups ?? []).map(g => g.id === id ? { ...g, ...updates } : g),
+    }));
+  }, [save]);
 
   const deleteNodeGroup = useCallback((id: string) => {
-    save({ ...data, nodeGroups: (data.nodeGroups ?? []).filter(g => g.id !== id) });
-  }, [data, save]);
+    save(prev => ({ ...prev, nodeGroups: (prev.nodeGroups ?? []).filter(g => g.id !== id) }));
+  }, [save]);
 
   const reorderNodeGroups = useCallback((groups: NodeGroup[]) => {
-    save({ ...data, nodeGroups: groups });
-  }, [data, save]);
+    save(prev => ({ ...prev, nodeGroups: groups }));
+  }, [save]);
 
   // ── Decks ────────────────────────────────────────────────
   const addDeck = useCallback((name: string, itemIds: string[]) => {
     const deck: Deck = { id: generateId(), name, itemIds };
-    save({ ...data, decks: [...(data.decks ?? []), deck] });
-  }, [data, save]);
+    save(prev => ({ ...prev, decks: [...(prev.decks ?? []), deck] }));
+  }, [save]);
 
   const updateDeck = useCallback((id: string, updates: Partial<Pick<Deck, 'name' | 'itemIds' | 'monitor'>>) => {
-    save({ ...data, decks: (data.decks ?? []).map(d => d.id === id ? { ...d, ...updates } : d) });
-  }, [data, save]);
+    save(prev => ({ ...prev, decks: (prev.decks ?? []).map(d => d.id === id ? { ...d, ...updates } : d) }));
+  }, [save]);
 
   const deleteDeck = useCallback((id: string) => {
-    save({ ...data, decks: (data.decks ?? []).filter(d => d.id !== id) });
-  }, [data, save]);
+    save(prev => ({ ...prev, decks: (prev.decks ?? []).filter(d => d.id !== id) }));
+  }, [save]);
 
   // ── Container Slots (atomic: add new items + hide removals + update slots in ONE save) ──
   // Each individual store fn (addItem/updateItem) spreads stale `data`, so calling
@@ -1119,7 +1132,8 @@ export function useAppData() {
     removals: Array<{ spaceId: string; itemId: string }>,
     newItems: Array<{ id: string; item: Omit<LauncherItem, 'id'> }>,
   ) => {
-    let nextSpaces = data.spaces;
+    save(prev => {
+    let nextSpaces = prev.spaces;
 
     // 1. Add new items to the container's space
     for (const { id, item } of newItems) {
@@ -1159,8 +1173,9 @@ export function useAppData() {
         : s
     );
 
-    save({ ...data, spaces: nextSpaces });
-  }, [data, save]);
+      return { ...prev, spaces: nextSpaces };
+    });
+  }, [save]);
 
   /**
    * Atomic "drag-into-slot" assignment used by the Bloom UX.
@@ -1189,14 +1204,15 @@ export function useAppData() {
     sourceItemId: string;
   }) => {
     const { containerSpaceId, containerId, dir, sourceItemId } = opts;
-    let nextSpaces = data.spaces;
+    save(prev => {
+    let nextSpaces = prev.spaces;
 
     const container = nextSpaces.find(s => s.id === containerSpaceId)
                                 ?.items.find(i => i.id === containerId);
-    if (!container?.isContainer) return;
+    if (!container?.isContainer) return prev;
     const oldSlots = container.slots ?? {};
     const oldSlotItemId = oldSlots[dir];
-    if (oldSlotItemId === sourceItemId) return; // no-op
+    if (oldSlotItemId === sourceItemId) return prev; // no-op
 
     // Compose new slots: copy others, drop source from any other slot,
     // then write source into `dir`.
@@ -1235,21 +1251,24 @@ export function useAppData() {
         : s,
     );
 
-    save({ ...data, spaces: nextSpaces });
-  }, [data, save]);
+      return { ...prev, spaces: nextSpaces };
+    });
+  }, [save]);
 
   // ── Dismissed suggestions (F5: cooldown structure) ────────
   // Each dismiss records its timestamp and increments the count; useGhostCards
   // checks if the cooldown window has elapsed before re-showing the suggestion.
   const dismissSuggestion = useCallback((value: string) => {
     const now = Date.now();
-    const prev = data.dismissals?.[value];
-    const dismissals = {
-      ...(data.dismissals ?? {}),
-      [value]: { at: now, count: (prev?.count ?? 0) + 1 },
-    };
-    save({ ...data, dismissals });
-  }, [data, save]);
+    save(prev => {
+      const prior = prev.dismissals?.[value];
+      const dismissals = {
+        ...(prev.dismissals ?? {}),
+        [value]: { at: now, count: (prior?.count ?? 0) + 1 },
+      };
+      return { ...prev, dismissals };
+    });
+  }, [save]);
 
   /**
    * Pull the persisted data from electron-store and replace local state.
@@ -1350,8 +1369,8 @@ export function useAppData() {
     try {
       if (JSON.stringify(settings) === JSON.stringify(prev)) return;
     } catch { /* settings has unserialisable shape — fall through, do save */ }
-    save({ ...data, settings });
-  }, [data, save]);
+    save(prev => ({ ...prev, settings }));
+  }, [data.settings, save]);
 
   // ── Memos (사라지는 메모) ─────────────────────────────────
   // Thin wrappers over addItem/updateItem that bake the memo-specific
