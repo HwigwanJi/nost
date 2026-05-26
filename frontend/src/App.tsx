@@ -4124,7 +4124,10 @@ export default function App() {
       }
     });
     return off;
-  }, [store, auth.user, showToast]);
+    // v1.3.48: dep 은 user.id 만 — user 객체 참조는 매 render 다를 수 있어
+    // listener 재등록이 빈번. id 는 supabase 가 보장하는 stable key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, auth.user?.id, showToast]);
 
   useEffect(() => {
     const off = electronAPI.onSettingsDialogClosed(() => {

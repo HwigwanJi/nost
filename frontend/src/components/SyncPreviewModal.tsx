@@ -64,8 +64,16 @@ function SectionHeader({ icon, title, count, color }: { icon: string; title: str
 }
 
 export function SyncPreviewModal({ open, onClose, onConfirm, diff, phase, errorMessage }: Props) {
+  // v1.3.48 UX: 변경 없음일 때 확인 버튼 disable — 의미 없는 round-trip 방지.
+  const noOp = !!(diff && isNoOpDiff(diff));
+  const canConfirm = phase === 'preview' && !!diff && !noOp;
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog
+      open={open}
+      // 동기화 진행 중 ESC / 백드롭 클릭으로 모달 닫히면 사용자가
+      // 결과(성공/실패)를 못 봄. syncing phase 에선 dismiss 차단.
+      onOpenChange={(o) => { if (!o && phase !== 'syncing') onClose(); }}
+    >
       <DialogContent size="md" style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ padding: '16px 20px 12px' }}>
           <DialogTitle style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-color)', margin: 0 }}>
@@ -195,18 +203,19 @@ export function SyncPreviewModal({ open, onClose, onConfirm, diff, phase, errorM
           <button
             type="button"
             onClick={onConfirm}
-            disabled={phase !== 'preview' || !diff}
+            disabled={!canConfirm && phase !== 'syncing'}
+            title={noOp ? '변경 사항이 없어 동기화할 항목이 없어요.' : ''}
             style={{
               padding: '7px 16px', fontSize: 11, fontWeight: 700,
               background: 'var(--accent)', color: '#fff',
               border: 'none', borderRadius: 6,
-              cursor: (phase !== 'preview' || !diff) ? 'default' : 'pointer',
-              fontFamily: 'inherit', opacity: (phase !== 'preview' || !diff) ? 0.55 : 1,
+              cursor: canConfirm ? 'pointer' : 'default',
+              fontFamily: 'inherit', opacity: canConfirm || phase === 'syncing' ? 1 : 0.55,
               display: 'inline-flex', alignItems: 'center', gap: 6,
             }}
           >
             {phase === 'syncing' && <Icon name="sync" size={12} className="animate-spin" />}
-            {phase === 'syncing' ? '동기화 중…' : '동기화 실행'}
+            {phase === 'syncing' ? '동기화 중…' : '확인'}
           </button>
         </div>
       </DialogContent>

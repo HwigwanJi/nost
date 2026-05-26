@@ -91,11 +91,19 @@ export default function AppShell() {
   // satellite reverts to the signed-out "로그인" CTA even while the
   // StatusBar AuthChip here shows signed-in.
   useEffect(() => {
+    // v1.3.48: pick the AccountTab-rendered fields explicitly instead of
+    // a JSON deep clone — smaller IPC payload, no surprise field loss,
+    // and lets reviewers see exactly what crosses the boundary.
+    const u = auth.user;
+    const pickedUser = u ? {
+      id: u.id,
+      email: u.email ?? null,
+      user_metadata: u.user_metadata ?? {},
+      app_metadata: u.app_metadata ?? {},
+    } : null;
     electronAPI.syncAuthState({
       status: auth.status,
-      // user can carry Date / Function / etc. via supabase-js — strip to
-      // a plain JSON-serialisable shape for the IPC boundary.
-      user: auth.user ? JSON.parse(JSON.stringify(auth.user)) : null,
+      user: pickedUser,
       configured: auth.configured,
     });
   }, [auth.status, auth.user, auth.configured]);
