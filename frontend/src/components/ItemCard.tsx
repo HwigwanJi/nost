@@ -128,6 +128,26 @@ function getTypeIcon(type: LauncherItem['type']) {
   return map[type] ?? 'link';
 }
 
+/** v1.3.48 — Korean type label SSOT for at-a-glance card identification.
+ *  Used by the type chip (bottom-right of card) + CardHoverHint tooltip
+ *  prefix. Keeps the same vocabulary as ui-vocabulary.md so the chip /
+ *  tooltip / shortVerb verbs all read consistently. */
+function getTypeLabel(type: LauncherItem['type']): string {
+  switch (type) {
+    case 'url':     case 'browser': return 'URL';
+    case 'folder':  return '폴더';
+    case 'app':     return '앱';
+    case 'doc':     return '문서';
+    case 'window':  return '창';
+    case 'cmd':     return '명령어';
+    case 'text':    return '텍스트';
+    case 'image':   return '이미지';
+    case 'memo':    return '메모';
+    case 'widget':  return '위젯';
+  }
+  return '';
+}
+
 function ItemCardImpl({
   item, space, onEdit, onDelete, onClickCountIncrement,
   pinned, onTogglePin, onSetMonitor,
@@ -1088,6 +1108,40 @@ function ItemCardImpl({
         <div className="absolute bottom-0 left-2 right-2 h-[2px] rounded-full" style={{ background: space.color, opacity: 0.55 }} />
       )}
 
+      {/* ── Type chip — bottom-right (v1.3.48) ─────────────────────
+          사용자 보고: "카드 유형이 너무 안 보임 — 클립보드든 URL이든".
+          원인 분석:
+            (1) getTypeColor 가 죽어서 (line 118: 항상 muted) 아이콘 배경
+                tint 가 type 을 인코딩하지 않음
+            (2) 본문 아이콘이 user-icon(파비콘) 으로 덮여서 type 시그널 소실
+            (3) type 정보는 호버 tooltip 텍스트에만 존재
+          Fix: 우하단에 12px type 글리프 chip 항상 노출. 본문 아이콘이
+          파비콘이어도 type 은 별도로 보임. 자명한 타입 (image 썸네일 /
+          memo body / widget UI / container grid) 은 chip 생략 — 중복.
+          위치: space stripe(bottom 0, h:2px) 위쪽. left:5/bottom:5 의
+          monitor 칩과는 좌-우 분리. 컨테이너 슬롯 점(right:3)은 컨테이너
+          전용이라 충돌 없음 (chip 자체가 컨테이너 제외). */}
+      {!isWidget && !isMemo && !item.isContainer && item.type !== 'image' && (
+        <span
+          title={getTypeLabel(item.type)}
+          aria-label={getTypeLabel(item.type)}
+          style={{
+            position: 'absolute', bottom: 5, right: 5,
+            width: 14, height: 14, borderRadius: 4,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'var(--bg-rgba)',
+            border: '1px solid var(--border-rgba)',
+            opacity: 0.7,
+            transition: 'opacity 0.15s',
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+          className="group-hover:!opacity-100"
+        >
+          <Icon name={getTypeIcon(item.type)} size={9} color="var(--text-muted)" />
+        </span>
+      )}
+
       {/* F6: stale dot — item hasn't been clicked in 60+ days AND was used before
           (clickCount > 0). Subtle, hover-only tooltip; not a badge so it stays calm. */}
       {(() => {
@@ -1457,8 +1511,14 @@ function CardHoverHint({
     type === 'image' ? '이미지 복사' :
     '실행';
 
+  // v1.3.48: type 라벨을 첫 줄 헤더로 prepend — "URL · 클릭 : URL 열기".
+  // 호버 시점에 type 이 명시적으로 보여서 우하단 chip 의 의미를 보강.
+  const typeLabel = getTypeLabel(type);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, lineHeight: 1.5 }}>
+      {typeLabel && (
+        <div style={{ fontWeight: 600, color: 'var(--accent)' }}>{typeLabel}</div>
+      )}
       <div>클릭 : {shortVerb}</div>
       <div>길게 누르기 : ↑ 수정 ↓ 모니터 ← 새 창 → 복사</div>
     </div>
