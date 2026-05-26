@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
   DropdownMenuLabel,
+  DropdownMenuGroup,
 } from '@/components/ui/dropdown-menu';
 
 interface SpaceAccordionProps {
@@ -596,24 +597,29 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
                         메모도 사실상 위젯의 한 종류라 같은 레벨에 두면
                         혼란. 카드 추가 (launchable / 의미있는 항목) vs.
                         위젯 (음악/컬러/메모 — 인 플레이스 인터랙션) 으로
-                        명확히 분리. */}
-                    <DropdownMenuLabel>카드 추가</DropdownMenuLabel>
-                    <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
-                    <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
-                    <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
+                        명확히 분리. Base UI 의 GroupLabel 은 반드시 Group
+                        의 자식이어야 함 (error #31 회피). */}
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>카드 추가</DropdownMenuLabel>
+                      <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
+                      <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
+                      <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
+                    </DropdownMenuGroup>
                     {(onAddWidget || onAddColorSwatch || onAddMemo) && (
                       <>
                         <DropdownMenuSeparator />
-                        <DropdownMenuLabel>위젯</DropdownMenuLabel>
-                        {onAddWidget && (
-                          <DropdownMenuItem onClick={onAddWidget}>음악</DropdownMenuItem>
-                        )}
-                        {onAddColorSwatch && (
-                          <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
-                        )}
-                        {onAddMemo && (
-                          <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
-                        )}
+                        <DropdownMenuGroup>
+                          <DropdownMenuLabel>위젯</DropdownMenuLabel>
+                          {onAddWidget && (
+                            <DropdownMenuItem onClick={onAddWidget}>음악</DropdownMenuItem>
+                          )}
+                          {onAddColorSwatch && (
+                            <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
+                          )}
+                          {onAddMemo && (
+                            <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
+                          )}
+                        </DropdownMenuGroup>
                       </>
                     )}
                   </DropdownMenuContent>
