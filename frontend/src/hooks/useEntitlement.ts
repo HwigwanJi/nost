@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { AppData, License, LicenseTier } from '../types';
 import { FREE_LIMITS, LICENSE_GRACE_DAYS, TRIAL_DURATION_MS } from '../types';
+import { useAuth } from '../lib/auth';
 
 /**
  * Entitlement — the single source of truth for "can the user do X right now?".
@@ -126,13 +127,42 @@ function resolveTier(license: License | undefined, now: number): {
  */
 const BETA_FORCE_PRO = false;
 
+/**
+ * v1.3.48 — Admin / founder allowlist. These accounts get Pro
+ * unconditionally regardless of license state. Used while billing infra
+ * isn't yet shipped (Stripe / Toss webhook → license server). Once the
+ * real payment flow lands this list can stay as a "permanent comp" for
+ * the founders / staff accounts.
+ *
+ * Email match is exact + case-insensitive. Anonymous / signed-out users
+ * never hit this branch (no email to match).
+ */
+const ADMIN_EMAILS: ReadonlySet<string> = new Set([
+  'gwansol56@gmail.com',
+]);
+
+function isAdminEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return ADMIN_EMAILS.has(email.toLowerCase());
+}
+
 export function useEntitlement(data: AppData): Entitlement {
+  // useAuth() is a lightweight external-store subscribe — pulling the
+  // signed-in email here means every entitlement consumer auto-refreshes
+  // when the user signs in / out without threading auth state through
+  // the call chain.
+  const auth = useAuth();
+  const adminPro = isAdminEmail(auth.user?.email ?? null);
   return useMemo(() => {
     const license = data.settings.license;
     const now = Date.now();
     const resolved = resolveTier(license, now);
-    const tier   = BETA_FORCE_PRO ? 'pro' : resolved.tier;
-    const reason = BETA_FORCE_PRO ? '' : resolved.reason;
+    // Tier resolution order (highest precedence first):
+    //   1. BETA_FORCE_PRO emergency rollback (global)
+    //   2. Admin allowlist (per-email)
+    //   3. License-derived tier (server-verified or local trial)
+    const tier   = BETA_FORCE_PRO ? 'pro' : (adminPro ? 'pro' : resolved.tier);
+    const reason = BETA_FORCE_PRO ? '' : (adminPro ? '' : resolved.reason);
     const isPro = tier === 'pro';
     const limits = isPro ? PRO_LIMITS : FREE_LIMITS;
 
@@ -169,7 +199,7 @@ export function useEntitlement(data: AppData): Entitlement {
       canUseMemoMdExport:        () => limits.memoMdExport,
       canUseMemoFolderSync:      () => limits.memoFolderSync,
     };
-  }, [data.settings.license]);
+  }, [data.settings.license, adminPro]);
 }
 
 /**
