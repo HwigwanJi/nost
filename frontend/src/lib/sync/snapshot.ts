@@ -183,7 +183,15 @@ function mergeListLWW<T extends { id: string; lastModifiedAt?: number }>(
 }
 
 /** LWW merge for spaces — nested because each space carries an `items`
- *  list that needs its own per-item merge. */
+ *  list that needs its own per-item merge.
+ *
+ *  v1.3.48 Phase 2.D: 위치/내용 분리.
+ *    - space.lastModifiedAt 가 더 최신인 쪽 = "ORDER 의 winner". 그쪽 space
+ *      의 items[] 배열 순서를 primary 로 채택.
+ *    - 각 item 의 CONTENT 는 별도로 LWW (item.lastModifiedAt 기준) — 다른
+ *      쪽이 더 최근 컨텐츠 편집이 있으면 그게 이김.
+ *    - 즉 "한쪽이 reorder + 다른 쪽이 본문 편집" 케이스에 양쪽이 다 살아남음.
+ */
 function mergeSpacesLWW(
   localSpaces: readonly Space[],
   serverSpaces: readonly Space[],
@@ -208,38 +216,45 @@ function mergeSpacesLWW(
       });
       continue;
     }
-    // Both sides — LWW for space-level fields, item-level merge nested.
-    const winner = (ss.lastModifiedAt ?? 0) > (existing.lastModifiedAt ?? 0) ? ss : existing;
+    // Both sides — LWW for space metadata, items merged with primary
+    // = winner's order so reorder/move propagates correctly.
+    const localNewer = (existing.lastModifiedAt ?? 0) >= (ss.lastModifiedAt ?? 0);
+    const winnerMeta = localNewer ? existing : ss;
+    const primary    = localNewer ? existing.items : ss.items;
+    const secondary  = localNewer ? ss.items       : existing.items;
     byId.set(ss.id, {
-      ...winner,
-      items: mergeItemsLWW(existing.items, ss.items, itemT),
+      ...winnerMeta,
+      items: mergeItemsLWW(primary, secondary, itemT),
     });
   }
   return Array.from(byId.values());
 }
 
+/** Merge two item arrays. The PRIMARY array drives the resulting order;
+ *  for each id present on both sides, content is LWW per-item; items
+ *  only-in-secondary are appended at the end (they're new from the
+ *  other device that hadn't been synced yet). Tombstoned ids skipped. */
 function mergeItemsLWW(
-  localItems: readonly LauncherItem[],
-  serverItems: readonly LauncherItem[],
+  primary: readonly LauncherItem[],
+  secondary: readonly LauncherItem[],
   itemTombstones: Record<string, number>,
 ): LauncherItem[] {
-  const byId = new Map<string, LauncherItem>();
-  for (const li of localItems) {
-    if (itemTombstones[li.id]) continue;
-    byId.set(li.id, li);
+  const secondaryById = new Map(secondary.map(i => [i.id, i]));
+  const out: LauncherItem[] = [];
+  const consumed = new Set<string>();
+  for (const p of primary) {
+    if (itemTombstones[p.id]) continue;
+    consumed.add(p.id);
+    const s = secondaryById.get(p.id);
+    if (!s) { out.push(p); continue; }
+    const winner = (s.lastModifiedAt ?? 0) > (p.lastModifiedAt ?? 0) ? s : p;
+    out.push(winner);
   }
-  for (const si of serverItems) {
-    if (itemTombstones[si.id]) continue;
-    const existing = byId.get(si.id);
-    if (!existing) {
-      byId.set(si.id, si);
-      continue;
-    }
-    const lv = existing.lastModifiedAt ?? 0;
-    const sv = si.lastModifiedAt ?? 0;
-    byId.set(si.id, sv > lv ? si : existing);
+  for (const s of secondary) {
+    if (consumed.has(s.id) || itemTombstones[s.id]) continue;
+    out.push(s);
   }
-  return Array.from(byId.values());
+  return out;
 }
 
 function filterByTombstone<T extends { id: string }>(arr: readonly T[], tomb: Record<string, number>): T[] {

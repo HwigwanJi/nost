@@ -938,17 +938,19 @@ export function useAppData() {
   // loop makes each call overwrite the previous one. These two operate on `prev`
   // inside setDataRaw, so every item in the batch is preserved / removed atomically.
   const addItems = useCallback((spaceId: string, items: Omit<LauncherItem, 'id'>[]): LauncherItem[] => {
+    const ts = Date.now();
     const newItems: LauncherItem[] = items.map(it => ({
       ...it,
       id: generateId(),
       clickCount: 0,
       pinned: false,
+      lastModifiedAt: ts,
     }));
     setDataRaw(prev => {
       const next: AppData = {
         ...prev,
         spaces: prev.spaces.map(s =>
-          s.id === spaceId ? { ...s, items: [...s.items, ...newItems] } : s
+          s.id === spaceId ? { ...s, lastModifiedAt: ts, items: [...s.items, ...newItems] } : s
         ),
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
@@ -961,9 +963,14 @@ export function useAppData() {
   const deleteItems = useCallback((spaceId: string, itemIds: string[]) => {
     if (itemIds.length === 0) return;
     const idSet = new Set(itemIds);
+    const ts = Date.now();
     setDataRaw(prev => {
       // Cascade cleanup mirrors single deleteItem — strip from
       // nodeGroups / decks / pinnedIds, drop sub-2 nodes.
+      // v1.3.48 Phase 2.C: batch tombstone — same propagation guarantee
+      // as deleteItem (other devices learn of the deletes on pull).
+      const newItemTombs = { ...((prev.tombstones?.items) ?? {}) };
+      for (const id of itemIds) newItemTombs[id] = ts;
       const newNodeGroups = (prev.nodeGroups ?? [])
         .map(g => ({ ...g, itemIds: g.itemIds.filter(id => !idSet.has(id)) }))
         .filter(g => g.itemIds.length >= 2);
@@ -971,10 +978,15 @@ export function useAppData() {
         .map(d => ({ ...d, itemIds: d.itemIds.filter(id => !idSet.has(id)) }));
       const next: AppData = {
         ...prev,
+        tombstones: {
+          ...(prev.tombstones ?? {}),
+          items: newItemTombs,
+        },
         spaces: prev.spaces.map(s =>
           s.id === spaceId
             ? {
                 ...s,
+                lastModifiedAt: ts,
                 items: s.items.filter(i => !idSet.has(i.id)),
                 pinnedIds: (s.pinnedIds ?? []).filter(id => !idSet.has(id)),
               }
@@ -1095,15 +1107,15 @@ export function useAppData() {
 
   const reorderItems = useCallback((spaceId: string, items: LauncherItem[]) => {
     const ts = Date.now();
-    // Stamp every item — reorder is a position change for ALL items in
-    // the array. Without stamping all, only the dragged one would win
-    // LWW and the others' positions could revert.
+    // v1.3.48 Phase 2.D: 위치는 space.items[] 의 순서가 소유 — item 컨텐츠
+    // 자체엔 position 필드가 없음. 따라서 reorder 는 SPACE 만 stamp.
+    // (이전 Phase 2.C 에선 모든 item 도장했는데, 그 결과 한쪽에서 본문 수정
+    // → 다른쪽에서 reorder → sync 시 reorder 가 본문 수정을 덮음. P2.D 의
+    // mergeSpacesLWW primary 기반 머지 로직과 함께 이 분리가 핵심.)
     save(prev => ({
       ...prev,
       spaces: prev.spaces.map(s =>
-        s.id === spaceId
-          ? { ...s, lastModifiedAt: ts, items: items.map(i => ({ ...i, lastModifiedAt: ts })) }
-          : s
+        s.id === spaceId ? { ...s, lastModifiedAt: ts, items } : s
       ),
     }));
   }, [save]);
@@ -1111,16 +1123,18 @@ export function useAppData() {
   const moveItemToSpace = useCallback((itemId: string, fromSpaceId: string, toSpaceId: string) => {
     if (fromSpaceId === toSpaceId) return;
     const ts = Date.now();
+    // v1.3.48 Phase 2.D: 이동도 위치 변경이지 컨텐츠 변경이 아니므로
+    // item 은 도장 안 함. 두 space (잃은 쪽 / 얻은 쪽) 만 도장. 동시 편집
+    // 시 PC1 본문수정 + PC2 이동 → 둘 다 살아남음.
     save(prev => {
       const fromSpace = prev.spaces.find(s => s.id === fromSpaceId);
       const item = fromSpace?.items.find(i => i.id === itemId);
       if (!item) return prev;
-      const movedItem = { ...item, lastModifiedAt: ts };
       return {
         ...prev,
         spaces: prev.spaces.map(s => {
           if (s.id === fromSpaceId) return { ...s, lastModifiedAt: ts, items: s.items.filter(i => i.id !== itemId) };
-          if (s.id === toSpaceId)   return { ...s, lastModifiedAt: ts, items: [...s.items, movedItem] };
+          if (s.id === toSpaceId)   return { ...s, lastModifiedAt: ts, items: [...s.items, item] };
           return s;
         }),
       };
@@ -1297,9 +1311,12 @@ export function useAppData() {
     }
 
     // 3. Update the container item's slots
+    // v1.3.48 Phase 2.C: stamp container item — slots is content of the
+    // container card, content change deserves LWW timestamp bump.
+    const slotsTs = Date.now();
     nextSpaces = nextSpaces.map(s =>
       s.id === containerSpaceId
-        ? { ...s, items: s.items.map(i => i.id === containerItemId ? { ...i, slots } : i) }
+        ? { ...s, lastModifiedAt: slotsTs, items: s.items.map(i => i.id === containerItemId ? { ...i, slots, lastModifiedAt: slotsTs } : i) }
         : s
     );
 
@@ -1375,9 +1392,11 @@ export function useAppData() {
     }));
 
     // Update the container's slots field.
+    // v1.3.48 Phase 2.C: stamp container — slots is content.
+    const assignTs = Date.now();
     nextSpaces = nextSpaces.map(s =>
       s.id === containerSpaceId
-        ? { ...s, items: s.items.map(i => i.id === containerId ? { ...i, slots: newSlots } : i) }
+        ? { ...s, lastModifiedAt: assignTs, items: s.items.map(i => i.id === containerId ? { ...i, slots: newSlots, lastModifiedAt: assignTs } : i) }
         : s,
     );
 
