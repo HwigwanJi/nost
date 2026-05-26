@@ -16,8 +16,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuSeparator,
-  DropdownMenuLabel,
-  DropdownMenuGroup,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu';
 
 interface SpaceAccordionProps {
@@ -592,34 +593,32 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
                     <Icon name="expand_more" size={14} />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" sideOffset={4}>
-                    {/* v1.3.48 — 2단 정리. 위계 정정 사용자 피드백:
-                        '위젯/컬러/메모' 가 평면 나열돼 있었는데 컬러랑
-                        메모도 사실상 위젯의 한 종류라 같은 레벨에 두면
-                        혼란. 카드 추가 (launchable / 의미있는 항목) vs.
-                        위젯 (음악/컬러/메모 — 인 플레이스 인터랙션) 으로
-                        명확히 분리. Base UI 의 GroupLabel 은 반드시 Group
-                        의 자식이어야 함 (error #31 회피). */}
-                    <DropdownMenuGroup>
-                      <DropdownMenuLabel>카드 추가</DropdownMenuLabel>
-                      <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
-                      <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
-                      <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
-                    </DropdownMenuGroup>
+                    {/* v1.3.48 — submenu 구조 (사용자 캡처 참조: "다음에서
+                        열기 > 탐색기" 패턴). 빠른추가/직접입력/스마트스캔
+                        은 메인 카드 추가 흐름이라 1차 레벨, 위젯 (음악/
+                        컬러/메모) 은 한 단계 안쪽으로. 컬러·메모가 위젯의
+                        하위라는 사용자 멘탈모델 명시 + 1차 메뉴 노이즈
+                        감소. */}
+                    <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
+                    <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
+                    <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
                     {(onAddWidget || onAddColorSwatch || onAddMemo) && (
                       <>
                         <DropdownMenuSeparator />
-                        <DropdownMenuGroup>
-                          <DropdownMenuLabel>위젯</DropdownMenuLabel>
-                          {onAddWidget && (
-                            <DropdownMenuItem onClick={onAddWidget}>음악</DropdownMenuItem>
-                          )}
-                          {onAddColorSwatch && (
-                            <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
-                          )}
-                          {onAddMemo && (
-                            <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
-                          )}
-                        </DropdownMenuGroup>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>위젯</DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            {onAddWidget && (
+                              <DropdownMenuItem onClick={onAddWidget}>음악</DropdownMenuItem>
+                            )}
+                            {onAddColorSwatch && (
+                              <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
+                            )}
+                            {onAddMemo && (
+                              <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
+                            )}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
                       </>
                     )}
                   </DropdownMenuContent>
