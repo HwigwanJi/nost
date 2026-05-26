@@ -35,12 +35,18 @@ export interface SyncDiff {
   /** 서버에 user 의 snapshot row 존재 여부. false 면 첫 sync — 모든 게 push. */
   serverHasRow: boolean;
   serverGeneration: number;
-  /** 이 PC → 클라우드 (로컬에만 있는 것) */
+  /** 이 PC → 클라우드 (로컬에만 있는 것 OR local 이 더 최신) */
   push: SyncDiffBucket;
-  /** 클라우드 → 이 PC (서버에만 있는 것) */
+  /** 클라우드 → 이 PC (서버에만 있는 것 OR server 가 더 최신) */
   pull: SyncDiffBucket;
-  /** 양쪽 동일 id 가 존재하는 카드 수 (변경 없음 카테고리) */
+  /** 양쪽 동일 id + 동일 lastModifiedAt 인 카드 수 (변경 없음) */
   unchangedItems: number;
+  /** v1.3.48 Phase 2.C — 양쪽에 있는데 한쪽이 LWW 로 다른 쪽을 덮어쓰는
+   *  카드 수. local-newer vs server-newer 합. 0 이면 양쪽 동기 상태. */
+  changedItems: number;
+  /** v1.3.48 Phase 2.C — 양쪽 어딘가의 tombstone 으로 곧 사라질 카드 수.
+   *  사용자가 "삭제했는데 sync 시 사라지나?" 의 답. */
+  tombstonedItems: number;
   /** 절대 sync 안 되는 디바이스-전용 settings 키 목록 */
   deviceOnlyKeys: readonly string[];
   /** 현재 로컬에 있는 sync 가능한 카드 총 수 (push 페이로드 기준) */
@@ -96,6 +102,8 @@ export async function previewSyncDiff(userId: string, local: AppData): Promise<S
       push: countAll(local),
       pull: emptyBucket(),
       unchangedItems: 0,
+      changedItems: 0,
+      tombstonedItems: 0,
       deviceOnlyKeys: deviceOnly,
       localTotalItems: localTotal,
     };
@@ -103,18 +111,43 @@ export async function previewSyncDiff(userId: string, local: AppData): Promise<S
 
   const server = pulled.data;
 
-  // Items — id 기반 set 차이
-  const localItems = collectItemIds(local.spaces);
-  const serverItems = collectItemIds(server.spaces);
-  let pushItems = 0, pullItems = 0, unchanged = 0;
-  for (const id of localItems) {
-    if (serverItems.has(id)) unchanged++; else pushItems++;
+  // ── Items — LWW + tombstone aware diff ───────────────────────────
+  // Build flat item maps with their lastModifiedAt for direct
+  // comparison (LWW). Tombstones from BOTH sides decide if a card
+  // will end up dead post-merge.
+  const localItemMap = new Map<string, number>();
+  for (const s of local.spaces ?? []) for (const it of (s.items as LauncherItem[]) ?? []) {
+    localItemMap.set(it.id, it.lastModifiedAt ?? 0);
   }
-  for (const id of serverItems) {
-    if (!localItems.has(id)) pullItems++;
+  const serverItemMap = new Map<string, number>();
+  for (const s of server.spaces ?? []) for (const it of (s.items as LauncherItem[]) ?? []) {
+    serverItemMap.set(it.id, it.lastModifiedAt ?? 0);
   }
+  const localItemTomb = new Set(Object.keys(local.tombstones?.items ?? {}));
+  const serverItemTomb = new Set(Object.keys(server.tombstones?.items ?? {}));
+  const combinedTomb = new Set([...localItemTomb, ...serverItemTomb]);
 
-  // Spaces / Presets / NodeGroups / Decks — 같은 id-set 차이 패턴
+  let pushItems = 0, pullItems = 0, unchanged = 0, changed = 0, tombstoned = 0;
+  for (const [id, lts] of localItemMap) {
+    if (combinedTomb.has(id)) { tombstoned++; continue; }
+    const sts = serverItemMap.get(id);
+    if (sts === undefined) { pushItems++; continue; }
+    if (lts === sts) unchanged++;
+    else changed++;  // 한쪽이 LWW 로 다른 쪽 덮어씀
+  }
+  for (const [id, sts] of serverItemMap) {
+    if (combinedTomb.has(id)) continue;  // already counted via local pass or pure-server tombstone
+    if (!localItemMap.has(id)) {
+      // server-only AND not tombstoned by local — would be pulled
+      pullItems++;
+      void sts;
+    }
+  }
+  // Server tombstones for items that exist only on server (would just
+  // not be pulled) — not user-visible change.
+
+  // Spaces / Presets / NodeGroups / Decks — id-set diff (LWW per-entity
+  // not surfaced — these structural pieces rarely conflict on content)
   const diffByIds = <T extends { id: string }>(localArr: readonly T[] | undefined, serverArr: readonly T[] | undefined) => {
     const L = collectIds(localArr); const S = collectIds(serverArr);
     let p = 0, q = 0;
@@ -146,6 +179,8 @@ export async function previewSyncDiff(userId: string, local: AppData): Promise<S
       decks: decks.pull,
     },
     unchangedItems: unchanged,
+    changedItems: changed,
+    tombstonedItems: tombstoned,
     deviceOnlyKeys: deviceOnly,
     localTotalItems: localTotal,
   };
@@ -155,5 +190,5 @@ export async function previewSyncDiff(userId: string, local: AppData): Promise<S
 export function isNoOpDiff(d: SyncDiff): boolean {
   const sumPush = d.push.items + d.push.spaces + d.push.presets + d.push.nodeGroups + d.push.decks;
   const sumPull = d.pull.items + d.pull.spaces + d.pull.presets + d.pull.nodeGroups + d.pull.decks;
-  return sumPush === 0 && sumPull === 0 && d.serverHasRow;
+  return sumPush === 0 && sumPull === 0 && d.changedItems === 0 && d.tombstonedItems === 0 && d.serverHasRow;
 }

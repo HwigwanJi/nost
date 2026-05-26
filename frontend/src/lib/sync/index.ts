@@ -169,7 +169,22 @@ export async function syncFull(): Promise<{ ok: boolean; message?: string }> {
       return { ok: true };
     }
 
-    const pushed = await pushSnapshot(currentUserId, merged, expectedGen, deviceId);
+    let pushed = await pushSnapshot(currentUserId, merged, expectedGen, deviceId);
+
+    // v1.3.48 Phase 2.C: one automatic retry on optimistic-lock conflict.
+    // Another device pushed between our pull and our push — re-pull, re-
+    // merge, push again. LWW + tombstone merge means the second attempt
+    // either succeeds cleanly or surfaces a genuine race we can't auto-
+    // resolve (very rare, then we surface to the user).
+    if (pushed.status === 'conflict') {
+      const repulled = await pullSnapshot(currentUserId);
+      if (repulled.found && repulled.data) {
+        merged = mergeServerIntoLocal(getCurrentLocal(), repulled.data);
+        applyMergedData(merged);
+        pushed = await pushSnapshot(currentUserId, merged, repulled.generation, deviceId);
+      }
+    }
+
     if (pushed.status === 'ok') {
       setState(prev => ({
         ...prev,
@@ -180,8 +195,8 @@ export async function syncFull(): Promise<{ ok: boolean; message?: string }> {
       return { ok: true };
     }
     if (pushed.status === 'conflict') {
-      // Another device pushed between our pull and our push. The user
-      // can click again — next sync will see the newer server state.
+      // Second consecutive conflict — surface to user. Highly unusual:
+      // three devices pushing in the same second. Retry-button UX.
       setState(prev => ({
         ...prev,
         phase: 'error',

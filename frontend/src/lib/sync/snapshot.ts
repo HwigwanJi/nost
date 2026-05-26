@@ -58,49 +58,57 @@ export interface PushResult {
 
 /** Merge a pulled server payload INTO the current local AppData.
  *
- *  Strategy: **local-first union**. Everything local stays as-is; only
- *  server entries with ids NOT present locally are added. Nothing local
- *  is overwritten, mutated, or deleted by the pull. This is the
- *  conservative model the user explicitly asked for — "local 에 동일
- *  항목 없을 때만 server 에서 가져온다".
+ *  Strategy (Phase 2.C): **LWW per-entity + tombstone-aware union**.
+ *    - For each entity present on both sides (same id), pick whichever
+ *      has the higher `lastModifiedAt`. Ties go to local (since the
+ *      sync was user-initiated locally — "I just pushed").
+ *    - For server-only entities: include them UNLESS a local tombstone
+ *      says we deleted that id (preventing resurrection of deleted
+ *      cards / spaces / nodes).
+ *    - For local-only entities: keep them UNLESS a server tombstone
+ *      says another device deleted that id (propagating the delete).
+ *    - Tombstone maps from both sides are unioned (max ts on collision)
+ *      and carried forward — so a third device that hasn't seen the
+ *      delete still learns of it on its next pull.
  *
- *  Why local-first (not server-wins LWW):
- *    - P2.A has no per-entity `lastModifiedAt` yet. Server-wins would
- *      let stale server state overwrite fresh local edits made between
- *      pushes.
- *    - Server-side **deletions** therefore don't propagate to other
- *      devices in P2.A — that's the documented trade-off, fixed in P2.C
- *      when tombstones land. Until then, the worst case is a "ghost"
- *      card resurrecting on a second device; data is never lost.
- *    - Cohort C cards (folder / app / doc / window / cmd) survive
- *      because they live exclusively on local and server has no copy
- *      to compete with.
- *
- *  Settings, activePresetId, dismissals, completedTours: keep local
- *  entirely. Server values only fill keys that are absent locally
- *  (rare — defaults populate most). Device-only setting keys are never
- *  touched regardless.
+ *  Settings: local-first as before. Device-only keys never touched.
+ *  Dismissals / completedTours / activePresetId / collapsedSpaceIds:
+ *  local-only fields, not synced.
  */
 export function mergeServerIntoLocal(local: AppData, server: Partial<AppData>): AppData {
-  const mergedSpaces = mergeSpaces(local.spaces, server.spaces ?? []);
+  // ── Tombstones: union by max(ts) ───────────────────────────────────
+  const mergedTombstones = mergeTombstones(local.tombstones, server.tombstones);
 
-  // Presets: keep local list intact; for each matching preset id splice
-  // in any server-only items per space. Server-only presets are
-  // appended at the end (they came from another device).
-  const localPresetIds = new Set(local.presets.map(p => p.id));
+  // ── Spaces (active preset, flat mirror) ────────────────────────────
+  const mergedSpaces = mergeSpacesLWW(local.spaces, server.spaces ?? [], mergedTombstones);
+
+  // ── Presets (per-preset same logic) ────────────────────────────────
+  const localPresetMap = new Map<string, Preset>(local.presets.map(p => [p.id, p]));
   const serverPresets = server.presets ?? [];
   const mergedPresets: Preset[] = local.presets.map(p => {
-    const sp = serverPresets.find(s => s.id === p.id);
+    const sp = serverPresets.find(x => x.id === p.id);
     if (!sp) return p;
-    return { ...p, spaces: mergeSpaces(p.spaces, sp.spaces) };
+    // Preset-level fields (label etc.) LWW; per-space items merged via
+    // mergeSpacesLWW so item-level tombstone rules still apply.
+    const winner = (sp.lastModifiedAt ?? 0) > (p.lastModifiedAt ?? 0) ? sp : p;
+    return {
+      ...winner,
+      spaces: mergeSpacesLWW(p.spaces, sp.spaces, mergedTombstones),
+      nodeGroups: mergeListLWW<NodeGroup>(p.nodeGroups ?? [], sp.nodeGroups ?? [], mergedTombstones.nodeGroups),
+      decks: mergeListLWW<Deck>(p.decks ?? [], sp.decks ?? [], mergedTombstones.decks),
+      floatingBadges: mergeListLWW<FloatingBadge>(p.floatingBadges ?? [], sp.floatingBadges ?? [], mergedTombstones.floatingBadges),
+    };
   });
+  // Server-only presets: add if not tombstoned
   for (const sp of serverPresets) {
-    if (!localPresetIds.has(sp.id)) mergedPresets.push(sp);
+    if (localPresetMap.has(sp.id)) continue;
+    if (mergedTombstones.presets?.[sp.id]) continue;
+    mergedPresets.push(sp);
   }
 
-  // Settings: local wins on every collision. Server only fills keys
-  // that are literally absent locally (`undefined`). Device-only keys
-  // are never touched regardless of which side defines them.
+  // ── Settings: local-first (no LWW per-key in P2.C — settings rarely
+  //     change and per-field timestamps would be heavy). Server fills
+  //     undefined-locally keys; device-only keys never touched. ─────
   const settings = { ...local.settings };
   if (server.settings) {
     for (const k of Object.keys(server.settings)) {
@@ -114,60 +122,129 @@ export function mergeServerIntoLocal(local: AppData, server: Partial<AppData>): 
     ...local,
     spaces: mergedSpaces,
     presets: mergedPresets,
-    nodeGroups: localFirstUnionById<NodeGroup>(local.nodeGroups ?? [], server.nodeGroups ?? []),
-    decks: localFirstUnionById<Deck>(local.decks ?? [], server.decks ?? []),
-    floatingBadges: localFirstUnionById<FloatingBadge>(local.floatingBadges ?? [], server.floatingBadges ?? []),
-    // Local-only fields below — never touched by pull in P2.A.
+    nodeGroups:     mergeListLWW<NodeGroup>(local.nodeGroups ?? [], server.nodeGroups ?? [], mergedTombstones.nodeGroups),
+    decks:          mergeListLWW<Deck>(local.decks ?? [], server.decks ?? [], mergedTombstones.decks),
+    floatingBadges: mergeListLWW<FloatingBadge>(local.floatingBadges ?? [], server.floatingBadges ?? [], mergedTombstones.floatingBadges),
     collapsedSpaceIds: local.collapsedSpaceIds,
     settings,
     activePresetId: local.activePresetId,
     dismissals: local.dismissals,
     completedTours: local.completedTours,
+    tombstones: mergedTombstones,
   };
 }
 
-/** Local-first union: keep local entries intact, append server entries
- *  whose ids don't already exist locally. Server cannot overwrite or
- *  reorder anything that was there. */
-function localFirstUnionById<T extends { id: string }>(local: readonly T[], server: readonly T[]): T[] {
-  const localIds = new Set(local.map(x => x.id));
-  const out: T[] = [...local];
-  for (const x of server) {
-    if (!localIds.has(x.id)) out.push(x);
+/** Union two tombstone maps. On id collision, keep max(ts) — the
+ *  later-deleted timestamp wins so a re-delete after a resurrection
+ *  attempt is still recognised. */
+type TombstoneMap = NonNullable<AppData['tombstones']>;
+function mergeTombstones(local: TombstoneMap | undefined, server: TombstoneMap | undefined): TombstoneMap {
+  const kinds = ['items', 'spaces', 'presets', 'nodeGroups', 'decks', 'floatingBadges'] as const;
+  const out: TombstoneMap = {};
+  for (const k of kinds) {
+    const ml = local?.[k] ?? {};
+    const ms = server?.[k] ?? {};
+    if (Object.keys(ml).length === 0 && Object.keys(ms).length === 0) continue;
+    const merged: Record<string, number> = { ...ml };
+    for (const [id, ts] of Object.entries(ms)) {
+      merged[id] = merged[id] !== undefined ? Math.max(merged[id], ts) : ts;
+    }
+    out[k] = merged;
   }
   return out;
 }
 
-/** Merge spaces lists with local-first semantics:
- *    - Every local space is kept as-is (its items array is not touched
- *      except to **add** missing-from-local Cohort-A items the server has).
- *    - Server-only spaces (no local match) are appended.
- *  Item-level rule inside a matched space: union by id, local wins on
- *  collision (item exists on both sides — keep local). Server items
- *  whose ids don't appear locally get appended to the space. */
-function mergeSpaces(localSpaces: readonly Space[], serverSpaces: readonly Space[]): Space[] {
-  const merged: Space[] = [];
-  const seenIds = new Set<string>();
-  const serverById = new Map(serverSpaces.map(s => [s.id, s]));
-
-  for (const local of localSpaces) {
-    seenIds.add(local.id);
-    const server = serverById.get(local.id);
-    if (!server) {
-      merged.push(local);
+/** LWW merge for any entity list keyed by `id`. Drops entries whose id
+ *  is in the supplied tombstone map. Used for nodeGroups / decks /
+ *  floatingBadges (flat lists with optional lastModifiedAt). */
+function mergeListLWW<T extends { id: string; lastModifiedAt?: number }>(
+  localList: readonly T[],
+  serverList: readonly T[],
+  tombstones: Record<string, number> | undefined,
+): T[] {
+  const t = tombstones ?? {};
+  const byId = new Map<string, T>();
+  for (const x of localList) {
+    if (t[x.id]) continue;
+    byId.set(x.id, x);
+  }
+  for (const x of serverList) {
+    if (t[x.id]) continue;
+    const existing = byId.get(x.id);
+    if (!existing) {
+      byId.set(x.id, x);
       continue;
     }
-    const localItemIds = new Set((local.items as LauncherItem[]).map(it => it.id));
-    const additions = (server.items as LauncherItem[]).filter(it => !localItemIds.has(it.id));
-    merged.push({
-      ...local,
-      items: [...(local.items as LauncherItem[]), ...additions],
+    const lv = existing.lastModifiedAt ?? 0;
+    const sv = x.lastModifiedAt ?? 0;
+    byId.set(x.id, sv > lv ? x : existing);
+  }
+  return Array.from(byId.values());
+}
+
+/** LWW merge for spaces — nested because each space carries an `items`
+ *  list that needs its own per-item merge. */
+function mergeSpacesLWW(
+  localSpaces: readonly Space[],
+  serverSpaces: readonly Space[],
+  tombstones: TombstoneMap,
+): Space[] {
+  const spaceT = tombstones.spaces ?? {};
+  const itemT  = tombstones.items ?? {};
+  const byId = new Map<string, Space>();
+
+  for (const ls of localSpaces) {
+    if (spaceT[ls.id]) continue;
+    byId.set(ls.id, ls);
+  }
+  for (const ss of serverSpaces) {
+    if (spaceT[ss.id]) continue;
+    const existing = byId.get(ss.id);
+    if (!existing) {
+      // Server-only space — merge items too (apply item tombstones).
+      byId.set(ss.id, {
+        ...ss,
+        items: filterByTombstone(ss.items as LauncherItem[], itemT),
+      });
+      continue;
+    }
+    // Both sides — LWW for space-level fields, item-level merge nested.
+    const winner = (ss.lastModifiedAt ?? 0) > (existing.lastModifiedAt ?? 0) ? ss : existing;
+    byId.set(ss.id, {
+      ...winner,
+      items: mergeItemsLWW(existing.items, ss.items, itemT),
     });
   }
-  for (const server of serverSpaces) {
-    if (!seenIds.has(server.id)) merged.push(server);
+  return Array.from(byId.values());
+}
+
+function mergeItemsLWW(
+  localItems: readonly LauncherItem[],
+  serverItems: readonly LauncherItem[],
+  itemTombstones: Record<string, number>,
+): LauncherItem[] {
+  const byId = new Map<string, LauncherItem>();
+  for (const li of localItems) {
+    if (itemTombstones[li.id]) continue;
+    byId.set(li.id, li);
   }
-  return merged;
+  for (const si of serverItems) {
+    if (itemTombstones[si.id]) continue;
+    const existing = byId.get(si.id);
+    if (!existing) {
+      byId.set(si.id, si);
+      continue;
+    }
+    const lv = existing.lastModifiedAt ?? 0;
+    const sv = si.lastModifiedAt ?? 0;
+    byId.set(si.id, sv > lv ? si : existing);
+  }
+  return Array.from(byId.values());
+}
+
+function filterByTombstone<T extends { id: string }>(arr: readonly T[], tomb: Record<string, number>): T[] {
+  if (Object.keys(tomb).length === 0) return [...arr];
+  return arr.filter(x => !tomb[x.id]);
 }
 
 /** Build the payload that goes into `app_data_snapshots.data`.
@@ -200,6 +277,10 @@ export function buildSyncPayload(local: AppData): Partial<AppData> {
     activePresetId: local.activePresetId,
     dismissals: local.dismissals,
     completedTours: local.completedTours,
+    // v1.3.48 Phase 2.C: tombstones travel with the payload so other
+    // devices learn of deletes on pull (otherwise they'd resurrect the
+    // entity from their stale server snapshot).
+    tombstones: local.tombstones,
   };
 }
 

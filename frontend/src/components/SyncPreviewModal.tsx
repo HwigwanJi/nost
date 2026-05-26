@@ -134,6 +134,36 @@ export function SyncPreviewModal({ open, onClose, onConfirm, diff, phase, errorM
                 <Row label="덱"          value={diff.pull.decks} accent="pull" />
               </div>
 
+              {/* Changed (LWW 충돌 — 한쪽이 다른 쪽을 덮어씀) */}
+              {diff.changedItems > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <SectionHeader
+                    icon="sync_alt"
+                    title="양쪽 변경 (최신값 우선)"
+                    count={diff.changedItems}
+                    color="var(--accent)"
+                  />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                    카드 {diff.changedItems}개가 양쪽에서 모두 변경됐어요. 가장 최근 수정 시각을 기준으로 한쪽이 적용됩니다.
+                  </p>
+                </div>
+              )}
+
+              {/* Tombstoned (한쪽에서 삭제 → 양쪽 다 삭제) */}
+              {diff.tombstonedItems > 0 && (
+                <div style={{ marginBottom: 14 }}>
+                  <SectionHeader
+                    icon="delete_sweep"
+                    title="양쪽에서 삭제될 항목"
+                    count={diff.tombstonedItems}
+                    color="var(--color-destructive)"
+                  />
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                    한쪽에서 삭제된 카드 {diff.tombstonedItems}개가 다른 쪽에서도 사라집니다. (삭제는 30일간 추적돼요.)
+                  </p>
+                </div>
+              )}
+
               {/* Unchanged */}
               {diff.unchangedItems > 0 && (
                 <div style={{ marginBottom: 14 }}>

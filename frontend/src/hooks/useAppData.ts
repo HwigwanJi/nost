@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import type { AppData, Space, LauncherItem, AppSettings, NodeGroup, Deck, ContainerSlots, Preset, PresetId, MemoData, AppNotification } from '../types';
-import { DEFAULT_MEMO_SETTINGS, NOTIFICATION_MAX_AGE_MS, DEFAULT_DOC_COHORT_SETTINGS } from '../types';
+import { DEFAULT_MEMO_SETTINGS, NOTIFICATION_MAX_AGE_MS, DEFAULT_DOC_COHORT_SETTINGS, TOMBSTONE_MAX_AGE_MS } from '../types';
 import { newTrialLicense } from './useEntitlement';
 import { electronAPI } from '../electronBridge';
 import { generateId } from '../lib/utils';
@@ -266,6 +266,53 @@ function migrateData(parsed: AppData): AppData {
   }
 
   parsed.completedTours = parsed.completedTours ?? [];
+
+  // ── v1.3.48 (Phase 2.C) lastModifiedAt + tombstones migration ──
+  // (a) Stamp lastModifiedAt on legacy entities so they participate in
+  //     LWW from this boot onward. Use boot time so a sync done right
+  //     after upgrade still favours the freshly-edited side (further
+  //     edits will stamp again with a later ts). Idempotent — entities
+  //     that already have lastModifiedAt are not touched.
+  // (b) Sweep tombstones older than TOMBSTONE_MAX_AGE_MS. Old deletes
+  //     are forgotten so the registry never grows unbounded.
+  const stampTs = Date.now();
+  const stamp = <T extends { lastModifiedAt?: number }>(x: T): T =>
+    x.lastModifiedAt === undefined ? { ...x, lastModifiedAt: stampTs } : x;
+  parsed.presets = parsed.presets.map(p => ({
+    ...stamp(p),
+    spaces: p.spaces.map(s => ({
+      ...stamp(s),
+      items: s.items.map(stamp),
+    })),
+    nodeGroups: (p.nodeGroups ?? []).map(stamp),
+    decks: (p.decks ?? []).map(stamp),
+    floatingBadges: (p.floatingBadges ?? []).map(stamp),
+  }));
+  // Re-mirror flat fields after stamping (the references just rotated).
+  const activeAfterStamp = parsed.presets.find(p => p.id === parsed.activePresetId) ?? parsed.presets[0];
+  parsed.spaces         = activeAfterStamp.spaces;
+  parsed.nodeGroups     = activeAfterStamp.nodeGroups;
+  parsed.decks          = activeAfterStamp.decks;
+  parsed.floatingBadges = activeAfterStamp.floatingBadges;
+  // Tombstone sweep
+  const t = parsed.tombstones;
+  if (t) {
+    const cutoff = stampTs - TOMBSTONE_MAX_AGE_MS;
+    const sweep = (m: Record<string, number> | undefined) => {
+      if (!m) return undefined;
+      const out: Record<string, number> = {};
+      for (const [id, ts] of Object.entries(m)) if (ts > cutoff) out[id] = ts;
+      return out;
+    };
+    parsed.tombstones = {
+      items:          sweep(t.items),
+      spaces:         sweep(t.spaces),
+      presets:        sweep(t.presets),
+      nodeGroups:     sweep(t.nodeGroups),
+      decks:          sweep(t.decks),
+      floatingBadges: sweep(t.floatingBadges),
+    };
+  }
 
   return parsed;
 }
@@ -611,39 +658,66 @@ export function useAppData() {
       sortMode: 'custom',
       pinnedIds: [],
     };
-    save(prev => ({ ...prev, spaces: [...prev.spaces, newSpace] }));
+    const ts = Date.now();
+    save(prev => ({ ...prev, spaces: [...prev.spaces, { ...newSpace, lastModifiedAt: ts }] }));
     return newSpace;
   }, [save]);
 
   const renameSpace = useCallback((id: string, name: string) => {
+    const ts = Date.now();
     save(prev => ({
       ...prev,
-      spaces: prev.spaces.map(s => s.id === id ? { ...s, name } : s),
+      spaces: prev.spaces.map(s => s.id === id ? { ...s, name, lastModifiedAt: ts } : s),
     }));
   }, [save]);
 
   const deleteSpace = useCallback((id: string) => {
-    save(prev => ({ ...prev, spaces: prev.spaces.filter(s => s.id !== id) }));
+    const ts = Date.now();
+    save(prev => {
+      // v1.3.48 Phase 2.C: tombstone the space + cascade-tombstone every
+      // item it owned. Without item-level tombstones too, a later sync
+      // would resurrect the children from the server.
+      const target = prev.spaces.find(s => s.id === id);
+      const childItemIds = (target?.items ?? []).map(i => i.id);
+      const itemTombs = { ...((prev.tombstones?.items) ?? {}) };
+      for (const iid of childItemIds) itemTombs[iid] = ts;
+      return {
+        ...prev,
+        spaces: prev.spaces.filter(s => s.id !== id),
+        tombstones: {
+          ...(prev.tombstones ?? {}),
+          spaces: { ...((prev.tombstones?.spaces) ?? {}), [id]: ts },
+          items: itemTombs,
+        },
+      };
+    });
   }, [save]);
 
   // Reorder entry point. All drag operations funnel here — we always enforce the
   // pair invariant after reordering so the saved state can never have a [A→B→C]
   // chain or a dangling pairedWithNext at the tail.
   const reorderSpaces = useCallback((newSpaces: Space[]) => {
-    save(prev => ({ ...prev, spaces: enforcePairInvariant(newSpaces) }));
+    const ts = Date.now();
+    // Stamp every space — reorder is a position change for ALL spaces in
+    // the array (their relative position is what changed, not which one
+    // moved). Without stamping all, only the user-dragged one would win
+    // LWW and the others' positions could revert.
+    save(prev => ({ ...prev, spaces: enforcePairInvariant(newSpaces).map(s => ({ ...s, lastModifiedAt: ts })) }));
   }, [save]);
 
   const setSpaceColor = useCallback((id: string, color: string) => {
+    const ts = Date.now();
     save(prev => ({
       ...prev,
-      spaces: prev.spaces.map(s => s.id === id ? { ...s, color } : s),
+      spaces: prev.spaces.map(s => s.id === id ? { ...s, color, lastModifiedAt: ts } : s),
     }));
   }, [save]);
 
   const setSpaceIcon = useCallback((id: string, icon: string) => {
+    const ts = Date.now();
     save(prev => ({
       ...prev,
-      spaces: prev.spaces.map(s => s.id === id ? { ...s, icon } : s),
+      spaces: prev.spaces.map(s => s.id === id ? { ...s, icon, lastModifiedAt: ts } : s),
     }));
   }, [save]);
 
@@ -725,26 +799,41 @@ export function useAppData() {
   }, [save]);
 
   // ── Items ────────────────────────────────────────────────
+  // v1.3.48 Phase 2.C: every Item / Space mutation stamps lastModifiedAt
+  // so sync's LWW per-entity merger can pick the freshly-edited side on
+  // id collision. Deletions push to `tombstones.items` so other devices
+  // learn of the removal on pull (instead of resurrecting it from the
+  // server's stale snapshot). Host space also stamps when its items
+  // array shape changes (add / delete) — so a space-level LWW correctly
+  // wins over a stale server-side space record.
   const addItem = useCallback((spaceId: string, item: Omit<LauncherItem, 'id'>, presetId?: string) => {
-    const newItem: LauncherItem = { ...item, id: presetId ?? generateId(), clickCount: 0, pinned: false };
-    // Functional save — read latest spaces from prev (committed state)
-    // rather than the closure's `data`. Without this, two same-tick
-    // mutations (e.g. clipboard→URL card save AND a drag-drop) both
-    // wrote `data` as-of-render-N and the second clobbered the first.
+    const ts = Date.now();
+    const newItem: LauncherItem = {
+      ...item,
+      id: presetId ?? generateId(),
+      clickCount: 0,
+      pinned: false,
+      lastModifiedAt: ts,
+    };
     save(prev => ({
       ...prev,
       spaces: prev.spaces.map(s =>
-        s.id === spaceId ? { ...s, items: [...s.items, newItem] } : s
+        s.id === spaceId
+          ? { ...s, lastModifiedAt: ts, items: [...s.items, newItem] }
+          : s
       ),
     }));
     return newItem;
   }, [save]);
 
   const updateItem = useCallback((spaceId: string, item: LauncherItem) => {
+    const ts = Date.now();
     save(prev => ({
       ...prev,
       spaces: prev.spaces.map(s =>
-        s.id === spaceId ? { ...s, items: s.items.map(i => i.id === item.id ? item : i) } : s
+        s.id === spaceId
+          ? { ...s, items: s.items.map(i => i.id === item.id ? { ...item, lastModifiedAt: ts } : i) }
+          : s
       ),
     }));
   }, [save]);
@@ -757,8 +846,17 @@ export function useAppData() {
     // a phantom member ("3/3" when only 2 cards exist). Same for
     // decks. Same write tx as the items[] mutation so we don't
     // momentarily expose a half-cleaned state to subscribers.
+    const ts = Date.now();
     save(prev => ({
       ...prev,
+      // v1.3.48 Phase 2.C: register the deletion in the tombstone map so
+      // sync can propagate it to other devices. Without this, the next
+      // pull from a server that still has this card would treat it as
+      // "new server-only" and resurrect it locally.
+      tombstones: {
+        ...(prev.tombstones ?? {}),
+        items: { ...((prev.tombstones?.items) ?? {}), [itemId]: ts },
+      },
       spaces: prev.spaces.map(s => {
         if (s.id !== spaceId) {
           const slotsCleaner = (i: LauncherItem): LauncherItem => {
@@ -781,6 +879,7 @@ export function useAppData() {
         };
         return {
           ...s,
+          lastModifiedAt: ts,
           items: s.items.filter(i => i.id !== itemId).map(slotsCleaner),
           pinnedIds: (s.pinnedIds ?? []).filter(id => id !== itemId),
         };
@@ -981,35 +1080,47 @@ export function useAppData() {
     // Functional save — closure-stale `data` would silently overwrite
     // any not-yet-committed mutation (e.g. a card add from the same
     // tick). 카드 클릭 = 매우 빈번한 트리거이므로 race 의 주범. (Pattern A)
+    // v1.3.48 Phase 2.C: stamp item.lastModifiedAt — click count is part
+    // of the synced state (usage score) so it should win LWW on conflict.
     const now = Date.now();
     save(prev => ({
       ...prev,
       spaces: prev.spaces.map(s =>
         s.id === spaceId
-          ? { ...s, items: s.items.map(i => i.id === itemId ? { ...i, clickCount: (i.clickCount ?? 0) + 1, lastClickedAt: now } : i) }
+          ? { ...s, items: s.items.map(i => i.id === itemId ? { ...i, clickCount: (i.clickCount ?? 0) + 1, lastClickedAt: now, lastModifiedAt: now } : i) }
           : s
       ),
     }));
   }, [save]);
 
   const reorderItems = useCallback((spaceId: string, items: LauncherItem[]) => {
+    const ts = Date.now();
+    // Stamp every item — reorder is a position change for ALL items in
+    // the array. Without stamping all, only the dragged one would win
+    // LWW and the others' positions could revert.
     save(prev => ({
       ...prev,
-      spaces: prev.spaces.map(s => s.id === spaceId ? { ...s, items } : s),
+      spaces: prev.spaces.map(s =>
+        s.id === spaceId
+          ? { ...s, lastModifiedAt: ts, items: items.map(i => ({ ...i, lastModifiedAt: ts })) }
+          : s
+      ),
     }));
   }, [save]);
 
   const moveItemToSpace = useCallback((itemId: string, fromSpaceId: string, toSpaceId: string) => {
     if (fromSpaceId === toSpaceId) return;
+    const ts = Date.now();
     save(prev => {
       const fromSpace = prev.spaces.find(s => s.id === fromSpaceId);
       const item = fromSpace?.items.find(i => i.id === itemId);
       if (!item) return prev;
+      const movedItem = { ...item, lastModifiedAt: ts };
       return {
         ...prev,
         spaces: prev.spaces.map(s => {
-          if (s.id === fromSpaceId) return { ...s, items: s.items.filter(i => i.id !== itemId) };
-          if (s.id === toSpaceId) return { ...s, items: [...s.items, item] };
+          if (s.id === fromSpaceId) return { ...s, lastModifiedAt: ts, items: s.items.filter(i => i.id !== itemId) };
+          if (s.id === toSpaceId)   return { ...s, lastModifiedAt: ts, items: [...s.items, movedItem] };
           return s;
         }),
       };
@@ -1017,12 +1128,13 @@ export function useAppData() {
   }, [save]);
 
   const updateItemAndMove = useCallback((fromSpaceId: string, toSpaceId: string, item: LauncherItem) => {
-    const updatedItem = { ...item };
+    const ts = Date.now();
+    const updatedItem = { ...item, lastModifiedAt: ts };
     save(prev => ({
       ...prev,
       spaces: prev.spaces.map(s => {
-        if (s.id === fromSpaceId) return { ...s, items: s.items.filter(i => i.id !== item.id) };
-        if (s.id === toSpaceId) return { ...s, items: [...s.items, updatedItem] };
+        if (s.id === fromSpaceId) return { ...s, lastModifiedAt: ts, items: s.items.filter(i => i.id !== item.id) };
+        if (s.id === toSpaceId)   return { ...s, lastModifiedAt: ts, items: [...s.items, updatedItem] };
         return s;
       }),
     }));
@@ -1083,42 +1195,60 @@ export function useAppData() {
     return (data.nodeGroups ?? []).find(g => g.itemIds.includes(itemId));
   }, [data.nodeGroups]);
 
-  // ── Node Groups / Decks — Pattern A 일괄 functional 화 ──────
-  // 이전엔 `save({...data, ...})` 형태라 같은 tick 의 다른 mutator 가
-  // 동시 실행되면 stale data 덮어쓰기 발생. 카드 클릭→incrementClickCount /
-  // 드래그→reorderItems 가 새로 추가된 노드/덱을 silent 하게 회귀시켰음.
+  // ── Node Groups / Decks — Pattern A + Phase 2.C stamping/tombstone ─
   const addNodeGroup = useCallback((name: string, itemIds: string[]) => {
-    const group: NodeGroup = { id: generateId(), name, itemIds };
+    const ts = Date.now();
+    const group: NodeGroup = { id: generateId(), name, itemIds, lastModifiedAt: ts };
     save(prev => ({ ...prev, nodeGroups: [...(prev.nodeGroups ?? []), group] }));
   }, [save]);
 
   const updateNodeGroup = useCallback((id: string, updates: Partial<Pick<NodeGroup, 'name' | 'itemIds' | 'monitor' | 'icon'>>) => {
+    const ts = Date.now();
     save(prev => ({
       ...prev,
-      nodeGroups: (prev.nodeGroups ?? []).map(g => g.id === id ? { ...g, ...updates } : g),
+      nodeGroups: (prev.nodeGroups ?? []).map(g => g.id === id ? { ...g, ...updates, lastModifiedAt: ts } : g),
     }));
   }, [save]);
 
   const deleteNodeGroup = useCallback((id: string) => {
-    save(prev => ({ ...prev, nodeGroups: (prev.nodeGroups ?? []).filter(g => g.id !== id) }));
+    const ts = Date.now();
+    save(prev => ({
+      ...prev,
+      nodeGroups: (prev.nodeGroups ?? []).filter(g => g.id !== id),
+      tombstones: {
+        ...(prev.tombstones ?? {}),
+        nodeGroups: { ...((prev.tombstones?.nodeGroups) ?? {}), [id]: ts },
+      },
+    }));
   }, [save]);
 
   const reorderNodeGroups = useCallback((groups: NodeGroup[]) => {
-    save(prev => ({ ...prev, nodeGroups: groups }));
+    const ts = Date.now();
+    save(prev => ({ ...prev, nodeGroups: groups.map(g => ({ ...g, lastModifiedAt: ts })) }));
   }, [save]);
 
   // ── Decks ────────────────────────────────────────────────
   const addDeck = useCallback((name: string, itemIds: string[]) => {
-    const deck: Deck = { id: generateId(), name, itemIds };
+    const ts = Date.now();
+    const deck: Deck = { id: generateId(), name, itemIds, lastModifiedAt: ts };
     save(prev => ({ ...prev, decks: [...(prev.decks ?? []), deck] }));
   }, [save]);
 
   const updateDeck = useCallback((id: string, updates: Partial<Pick<Deck, 'name' | 'itemIds' | 'monitor'>>) => {
-    save(prev => ({ ...prev, decks: (prev.decks ?? []).map(d => d.id === id ? { ...d, ...updates } : d) }));
+    const ts = Date.now();
+    save(prev => ({ ...prev, decks: (prev.decks ?? []).map(d => d.id === id ? { ...d, ...updates, lastModifiedAt: ts } : d) }));
   }, [save]);
 
   const deleteDeck = useCallback((id: string) => {
-    save(prev => ({ ...prev, decks: (prev.decks ?? []).filter(d => d.id !== id) }));
+    const ts = Date.now();
+    save(prev => ({
+      ...prev,
+      decks: (prev.decks ?? []).filter(d => d.id !== id),
+      tombstones: {
+        ...(prev.tombstones ?? {}),
+        decks: { ...((prev.tombstones?.decks) ?? {}), [id]: ts },
+      },
+    }));
   }, [save]);
 
   // ── Container Slots (atomic: add new items + hide removals + update slots in ONE save) ──

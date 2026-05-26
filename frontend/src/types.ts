@@ -159,6 +159,14 @@ export interface LauncherItem {
    * lets the next "최신 확인" skip the detection dialog.
    */
   docCohort?: DocCohortBinding;
+
+  /** v1.3.48 (Phase 2.C) — LWW per-entity timestamp.
+   *  Set on every mutator write (addItem / updateItem / reorderItems /
+   *  moveItemToSpace / incrementClickCount …). `mergeServerIntoLocal`
+   *  picks the side with the higher value on id collision. Migration
+   *  on hydrate stamps `Date.now()` once for existing items so they
+   *  participate in LWW from then on. */
+  lastModifiedAt?: number;
 }
 
 /**
@@ -253,6 +261,11 @@ export interface Space {
   widthWeight?: number;
   /** @deprecated replaced by pairedWithNext/splitRatio; dropped in migrateData() */
   columnSpan?: 1 | 2;
+
+  /** v1.3.48 (Phase 2.C) — LWW timestamp for the space itself (name /
+   *  color / icon / pinnedIds / sortMode / splitRatio). Items inside
+   *  carry their own lastModifiedAt independently. */
+  lastModifiedAt?: number;
 }
 
 export interface FloatingButtonSettings {
@@ -554,6 +567,8 @@ export interface Deck {
   name: string;
   itemIds: string[];
   monitor?: number;
+  /** v1.3.48 (Phase 2.C) — LWW timestamp. */
+  lastModifiedAt?: number;
 }
 
 export interface NodeGroup {
@@ -566,6 +581,8 @@ export interface NodeGroup {
    *  hardcoded value) so existing stores render unchanged after
    *  upgrade. Same picker pattern as space.icon. */
   icon?: string;
+  /** v1.3.48 (Phase 2.C) — LWW timestamp. */
+  lastModifiedAt?: number;
 }
 
 /**
@@ -582,6 +599,8 @@ export interface FloatingBadge {
   refId: string;               // Space.id / NodeGroup.id / Deck.id
   x: number;                   // screen coords (absolute, multi-monitor)
   y: number;
+  /** v1.3.48 (Phase 2.C) — LWW timestamp. */
+  lastModifiedAt?: number;
 }
 
 /**
@@ -599,6 +618,8 @@ export interface Preset {
   decks?: Deck[];
   collapsedSpaceIds?: string[];
   floatingBadges?: FloatingBadge[];
+  /** v1.3.48 (Phase 2.C) — LWW timestamp for the preset itself (label). */
+  lastModifiedAt?: number;
 }
 
 export type PresetId = Preset['id'];
@@ -636,7 +657,36 @@ export interface AppData {
    *  flips dismissedAt. 30-day sweep at app start. See `AppNotification`
    *  for the lifecycle and dedup model. */
   notifications?: AppNotification[];
+
+  /** v1.3.48 (Phase 2.C) — Tombstone registry.
+   *
+   *  Records deletion timestamps separately from entities. When a
+   *  mutator deletes an item/space/etc., the entity is removed from
+   *  the live tree AND its id+deletedAt-ts is added here. Sync
+   *  payload includes this registry → other devices learn of deletes
+   *  and remove the matching ids on pull.
+   *
+   *  Cleanup: 30 days after deletion, the tombstone entry is purged
+   *  (the entity is forgotten — if it ever resurfaces from a third
+   *  device that was offline, it'll be treated as "new" again, which
+   *  is the documented limit).
+   *
+   *  Map shape `id → deletedAt(ms)` keeps the structure cheap to
+   *  serialise and trivial to look up during merge. */
+  tombstones?: {
+    items?: Record<string, number>;
+    spaces?: Record<string, number>;
+    presets?: Record<string, number>;
+    nodeGroups?: Record<string, number>;
+    decks?: Record<string, number>;
+    floatingBadges?: Record<string, number>;
+  };
 }
+
+/** Tombstones older than this are hard-purged at app boot. Mirrors
+ *  NOTIFICATION_MAX_AGE_MS conceptually — keeps the registry from
+ *  growing forever. */
+export const TOMBSTONE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // How long a dismissed suggestion stays hidden (ms). After this window elapses,
 // the suggestion may reappear if its signal is still strong.
