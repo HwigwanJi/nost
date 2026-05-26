@@ -51,6 +51,12 @@ export interface AppActions {
   onWindowInactiveClick: (item: LauncherItem) => void;
   /** Clean-mode action: delete every unpinned/non-container item in a space. */
   onCleanSpace: (spaceId: string) => void;
+  /** v1.3.48 — Clean-mode action on a single card click. Deletes that
+   *  specific card with undo. Skipped if pinned / container (matches
+   *  batch clean's pin-respect rule). User expectation: clean mode +
+   *  card click = surgical delete, not no-op (which was the prior
+   *  behaviour and confused users). */
+  onCleanModeClick: (spaceId: string, itemId: string) => void;
   /**
    * Surface an actionable notification when a feature reaches for the
    * browser extension but the bridge is offline. Calm-by-default policy

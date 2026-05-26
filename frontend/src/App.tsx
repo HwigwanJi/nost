@@ -3180,6 +3180,37 @@ export default function App() {
     showToast(`"${space.name}"에서 ${removed}개 카드 삭제`, { duration: 2500 });
   }, [data.spaces, store, showToast]);
 
+  /**
+   * v1.3.48 — Clean-mode single-card click handler. 사용자가 청소 모드
+   * 진입 후 특정 카드를 클릭하면 그 카드만 삭제 (surgical clean).
+   * 핀 / 컨테이너 카드는 배치 청소와 동일하게 보호. confirm 없음 — undo
+   * 토스트로 회복 경로 보장 (한 카드 단위 액션이므로 confirm 마찰 없이
+   * 빠르게 작업). Pattern A 회피용 functional 머지 통과 (deleteItem 이
+   * tombstone + functional setState).
+   */
+  const handleCleanModeCardClick = useCallback((spaceId: string, itemId: string) => {
+    const space = data.spaces.find(s => s.id === spaceId);
+    if (!space) return;
+    const item = space.items.find(i => i.id === itemId);
+    if (!item) return;
+    const pinSet = new Set(space.pinnedIds ?? []);
+    if (pinSet.has(itemId)) {
+      showToast('고정된 카드는 삭제되지 않아요 — 핀을 먼저 해제하세요', { duration: 1800 });
+      return;
+    }
+    if (item.isContainer) {
+      showToast('컨테이너 카드는 청소 모드 단일 클릭으로 삭제 안 돼요 — 컨텍스트 메뉴 사용', { duration: 1800 });
+      return;
+    }
+    store.deleteItem(spaceId, itemId);
+    pushUndo({
+      description: `"${item.title || '카드'}" 삭제`,
+      undo: () => store.restoreItem(spaceId, item),
+      redo: () => store.deleteItem(spaceId, itemId),
+    });
+    showToast(`"${item.title || '카드'}" 삭제됨`, { duration: 2200 });
+  }, [data.spaces, store, showToast, pushUndo]);
+
   const handleCleanAllSpaces = useCallback(() => {
     const total = data.spaces.reduce((acc, s) => {
       const pinSet = new Set(s.pinnedIds ?? []);
@@ -3856,8 +3887,9 @@ export default function App() {
     onDeckGroupLaunch: handleDeckGroupLaunch,
     onWindowInactiveClick: handleWindowInactiveClick,
     onCleanSpace: handleCleanSpace,
+    onCleanModeClick: handleCleanModeCardClick,
     notifyExtensionRequiredAtUseSite,
-  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeModeClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace, notifyExtensionRequiredAtUseSite]);
+  }), [showToast, launchAndPosition, handlePinModeClick, handleNodeModeClick, handleNodeGroupLaunch, handleDeckBuildingClick, handleDeckGroupLaunch, handleWindowInactiveClick, handleCleanSpace, handleCleanModeCardClick, notifyExtensionRequiredAtUseSite]);
 
   // ── Satellite ItemDialog bridge (v1.3.44+) ──────────────────────
   // The card add/edit dialog now lives in its own BrowserWindow (see
@@ -4922,7 +4954,7 @@ export default function App() {
               <style>{`@keyframes slideDown { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }`}</style>
               <Icon name="cleaning_services" size={13} color="var(--color-destructive)" style={{ flexShrink: 0 }} />
               <div style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>각 스페이스의 청소 버튼 또는 </span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>카드 클릭 = 단일 삭제 · 청소 버튼 = 일괄 · </span>
                 <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--color-destructive)' }}>한 번에 처리</span>
               </div>
               <button
@@ -4943,7 +4975,7 @@ export default function App() {
                   gap: 3,
                 }}
               >
-                <Icon name="delete_sweep" size={11} />
+                <Icon name="cleaning_services" size={11} />
                 모든 스페이스
               </button>
               <button

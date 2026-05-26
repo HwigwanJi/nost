@@ -353,7 +353,11 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
                 gap: 4,
               }}
             >
-              <Icon name="delete_sweep" size={13} />
+              {/* v1.3.48 — 청소 행위 SSOT: cleaning_services 글리프
+                  통일 (이전 delete_sweep 와 분리됐던 거 사용자 보고로
+                  하나로 합침). 색은 destructive 토큰으로 destructive
+                  의도 시그널링. */}
+              <Icon name="cleaning_services" size={13} />
               청소 ({unpinnedCount})
             </button>
           </div>

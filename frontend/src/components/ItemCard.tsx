@@ -203,6 +203,7 @@ function ItemCardImpl({
     onPinModeClick: onPinModeClickCtx, onNodeModeClick: onNodeModeClickCtx,
     onDeckModeClick: onDeckModeClickCtx,
     onWindowInactiveClick: onWindowInactiveClickCtx,
+    onCleanModeClick: onCleanModeClickCtx,
   } = useAppActions();
 
   // ── Derived values from context ──────────────────────────────
@@ -237,6 +238,7 @@ function ItemCardImpl({
   const onPinModeClick = () => onPinModeClickCtx(item.id);
   const onNodeModeClick = () => onNodeModeClickCtx(item.id);
   const onDeckModeClick = () => onDeckModeClickCtx(item.id);
+  const onCleanModeClick = () => onCleanModeClickCtx(space.id, item.id);
   const onInactiveClick = () => onWindowInactiveClickCtx(item);
 
   // Sync holdDir to ref
@@ -520,9 +522,13 @@ function ItemCardImpl({
     if (activeMode === 'pin') { onPinModeClick(); return; }
     if (activeMode === 'node') { onNodeModeClick(); return; }
     if (activeMode === 'deck') { onDeckModeClick(); return; }
-    // Clean mode owns the pointer: individual card clicks do nothing —
-    // deletion is always space-scoped via the accordion's 청소 button.
-    if (activeMode === 'clean') return;
+    // v1.3.48 — Clean mode 카드 click = 그 카드 단독 삭제 (사용자 기대 정합).
+    // 이전엔 no-op (return) 으로 "스페이스 청소 버튼만 동작" 정책이었는데,
+    // pin/node/deck 모드는 다 카드별 tool action 이 있고 clean 만 빠진 게
+    // policy-매트릭스의 'tool action ✓' 와 어긋남. 핀/컨테이너 카드는
+    // onCleanModeClick 내부에서 가드 (배치 청소와 동일 규칙). undo 토스트
+    // 도 동일.
+    if (activeMode === 'clean') { onCleanModeClick(); return; }
     if (isInactive && item.type === 'window') { onInactiveClick(); return; }
 
     // All cards (including containers): short click = launch normally
@@ -767,8 +773,18 @@ function ItemCardImpl({
         ${isNodeFullNonMember ? 'opacity-60' : ''}
       `}
       onMouseEnter={e => {
-        (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-hover)';
-        if (!item.isContainer) (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-focus)';
+        // v1.3.48 — 청소 모드 + 비고정/비컨테이너 카드 호버 시 destructive
+        // tint. 클릭하면 그 카드 삭제된다는 시각 시그널. 핀/컨테이너는
+        // 보호 대상이라 normal hover.
+        const pinSet = new Set(space.pinnedIds ?? []);
+        const cleanTargetable = activeMode === 'clean' && !pinSet.has(item.id) && !item.isContainer;
+        if (cleanTargetable) {
+          (e.currentTarget as HTMLDivElement).style.background = 'color-mix(in srgb, var(--color-destructive) 12%, var(--surface))';
+          (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--color-destructive)';
+        } else {
+          (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-hover)';
+          if (!item.isContainer) (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-focus)';
+        }
         // Show hint after short dwell — just before hold would fire (HOLD_MS = 450ms)
         if (hintTimerRef.current) clearTimeout(hintTimerRef.current);
         hintTimerRef.current = setTimeout(() => setHintVisible(true), 350);

@@ -72,7 +72,8 @@ export function useNodeDeckMode({
       dismissToast();
 
       if (mode === 'pin')   showToast('📌 고정 모드 — 카드 클릭하면 핀 토글', { persistent: true });
-      if (mode === 'clean') showToast('🧹 청소 모드 — 스페이스의 청소 버튼을 눌러 고정 안 된 카드 삭제 (ESC로 해제)', { persistent: true });
+      // v1.3.48 — 단일 카드 클릭 = 그 카드 삭제, 배치 버튼 = 전체 일괄
+      if (mode === 'clean') showToast('🧹 청소 모드 — 카드 클릭 = 단일 삭제, 청소 버튼 = 일괄 (ESC로 해제)', { persistent: true });
       if (mode === 'node') {
         setNodeEditMode(true);
         setNodeBuilding([]);
