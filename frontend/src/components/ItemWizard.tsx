@@ -140,14 +140,30 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
 }
 
 function TextInput({
-  value, onChange, placeholder, mono = false, readOnly = false,
+  value, onChange, placeholder, mono = false, readOnly = false, onSubmit, autoFocus,
 }: {
-  value: string; onChange?: (v: string) => void; placeholder?: string; mono?: boolean; readOnly?: boolean;
+  value: string;
+  onChange?: (v: string) => void;
+  placeholder?: string;
+  mono?: boolean;
+  readOnly?: boolean;
+  /** v1.3.48 — Enter 키 commit. ItemWizard 의 사용자 보고:
+   *  "enter enter 치다가 Ctrl+Enter 쳐야 생성되는 구조" 가 불편. 인풋
+   *  포커스 상태에서 Enter 한 번에 primary 액션 실행. */
+  onSubmit?: () => void;
+  autoFocus?: boolean;
 }) {
   return (
     <input
       value={value}
+      autoFocus={autoFocus}
       onChange={e => onChange?.(e.target.value)}
+      onKeyDown={e => {
+        if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+          e.preventDefault();
+          onSubmit?.();
+        }
+      }}
       placeholder={placeholder}
       readOnly={readOnly}
       style={{
@@ -526,16 +542,23 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
 
             {/* Name field — card mode only. Memos take the first
                 non-empty line of their body as the title. */}
-            {!isMemo && (
-              <div>
-                <FieldLabel>이름</FieldLabel>
-                <TextInput
-                  value={sugName}
-                  onChange={next => setPhase({ ...phase, sugName: next })}
-                  placeholder="표시될 이름"
-                />
-              </div>
-            )}
+            {!isMemo && (() => {
+              const submitFromInput = () => {
+                if (!sugName.trim()) return;
+                handleSave(type, value, sugName);
+              };
+              return (
+                <div>
+                  <FieldLabel>이름</FieldLabel>
+                  <TextInput
+                    value={sugName}
+                    onChange={next => setPhase({ ...phase, sugName: next })}
+                    placeholder="표시될 이름"
+                    onSubmit={submitFromInput}
+                  />
+                </div>
+              );
+            })()}
 
             {/* Single action row — destination is selected at the top.
                 The "추가" button's icon + label adapt to the active tab. */}
@@ -738,7 +761,12 @@ export function ItemWizard({ open, mode, spaces, defaultSpaceId, docExtensions, 
 
             <div>
               <FieldLabel>이름</FieldLabel>
-              <TextInput value={nameValue} onChange={setNameValue} placeholder="표시될 이름" />
+              <TextInput
+                value={nameValue}
+                onChange={setNameValue}
+                placeholder="표시될 이름"
+                onSubmit={() => { if (nameValue.trim()) handleSave(type, value, nameValue); }}
+              />
             </div>
 
             <div style={{ display: 'flex', gap: 8 }}>

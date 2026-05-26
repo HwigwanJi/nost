@@ -19,6 +19,7 @@ import {
   DropdownMenuSub,
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
+  DropdownMenuShortcut,
 } from '@/components/ui/dropdown-menu';
 
 interface SpaceAccordionProps {
@@ -175,6 +176,10 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isRenaming, setIsRenaming] = useState(false);
   const [draft, setDraft] = useState(space.name);
+  // v1.3.48 — controlled '추가' dropdown 으로 1/2/3 키 바인딩 가능하게
+  // 함. Base UI 의 메뉴는 uncontrolled 일 때 onKeyDown 의 외부 핸들러로
+  // 수동 close 못 시킴 → setAddMenuOpen(false) 로 명시적 닫기.
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const { searchQuery, activeMode } = useAppState();
@@ -579,7 +584,7 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
                   <Icon name={cardLimitState === 'full' ? 'lock' : 'add'} size={18} />
                   {cardLimitState === 'full' ? '한도 도달' : '추가'}
                 </button>
-                <DropdownMenu>
+                <DropdownMenu open={addMenuOpen} onOpenChange={setAddMenuOpen}>
                   <DropdownMenuTrigger
                     className="flex items-center justify-center transition-colors cursor-pointer"
                     style={{
@@ -592,30 +597,76 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
                   >
                     <Icon name="expand_more" size={14} />
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" sideOffset={4}>
+                  <DropdownMenuContent
+                    align="end"
+                    sideOffset={4}
+                    // v1.3.48 — 1/2/3 단축키 직접 처리. Base UI 가 자체로
+                    // 알파-누메릭 단축키 안 잡으므로 onKeyDown 으로 가로채서
+                    // 핸들러 호출 + 명시적 close. 입력 컨텍스트 (modifier
+                    // 없는 평문 키) 만 가로채서 일반 메뉴 네비게이션
+                    // (Enter/Arrow) 안 깨짐.
+                    onKeyDown={(e) => {
+                      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+                      const close = () => setAddMenuOpen(false);
+                      if (e.key === '1') { e.preventDefault(); close(); onQuickAdd(); }
+                      else if (e.key === '2') { e.preventDefault(); close(); onAddItem(); }
+                      else if (e.key === '3') { e.preventDefault(); close(); onScanItem(); }
+                    }}
+                  >
                     {/* v1.3.48 — submenu 구조 (사용자 캡처 참조: "다음에서
                         열기 > 탐색기" 패턴). 빠른추가/직접입력/스마트스캔
                         은 메인 카드 추가 흐름이라 1차 레벨, 위젯 (음악/
                         컬러/메모) 은 한 단계 안쪽으로. 컬러·메모가 위젯의
                         하위라는 사용자 멘탈모델 명시 + 1차 메뉴 노이즈
                         감소. */}
-                    <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
-                    <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
-                    <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
+                    {/* v1.3.48 — 단축키 안내 suffix. 사용자 캡처(모드 메뉴
+                        의 1/2/3/4/5) 패턴 적용. 1차 메뉴는 번호, 위젯 sub
+                        은 첫 글자 (음/컬/메). 실제 키 바인딩은 메뉴 열린
+                        상태에서 onKeyDown 으로 처리 — 전역 단축키 충돌
+                        회피. */}
+                    <DropdownMenuItem onClick={onQuickAdd}>
+                      빠른추가
+                      <DropdownMenuShortcut>1</DropdownMenuShortcut>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={onAddItem}>
+                      직접입력
+                      <DropdownMenuShortcut>2</DropdownMenuShortcut>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={onScanItem}>
+                      스마트스캔
+                      <DropdownMenuShortcut>3</DropdownMenuShortcut>
+                    </DropdownMenuItem>
                     {(onAddWidget || onAddColorSwatch || onAddMemo) && (
                       <>
                         <DropdownMenuSeparator />
                         <DropdownMenuSub>
                           <DropdownMenuSubTrigger>위젯</DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent>
+                          <DropdownMenuSubContent
+                            onKeyDown={(e) => {
+                              if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+                              const close = () => setAddMenuOpen(false);  // 메인 닫으면 sub 도 닫힘
+                              if (e.key === '1' && onAddWidget) { e.preventDefault(); close(); onAddWidget(); }
+                              else if (e.key === '2' && onAddColorSwatch) { e.preventDefault(); close(); onAddColorSwatch(); }
+                              else if (e.key === '3' && onAddMemo) { e.preventDefault(); close(); onAddMemo(); }
+                            }}
+                          >
                             {onAddWidget && (
-                              <DropdownMenuItem onClick={onAddWidget}>음악</DropdownMenuItem>
+                              <DropdownMenuItem onClick={onAddWidget}>
+                                음악
+                                <DropdownMenuShortcut>1</DropdownMenuShortcut>
+                              </DropdownMenuItem>
                             )}
                             {onAddColorSwatch && (
-                              <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
+                              <DropdownMenuItem onClick={onAddColorSwatch}>
+                                컬러
+                                <DropdownMenuShortcut>2</DropdownMenuShortcut>
+                              </DropdownMenuItem>
                             )}
                             {onAddMemo && (
-                              <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
+                              <DropdownMenuItem onClick={onAddMemo}>
+                                메모
+                                <DropdownMenuShortcut>3</DropdownMenuShortcut>
+                              </DropdownMenuItem>
                             )}
                           </DropdownMenuSubContent>
                         </DropdownMenuSub>
