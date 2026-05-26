@@ -71,6 +71,14 @@ export interface ElectronAPI {
     user: unknown;
     configured: boolean;
   }) => void;
+  /** v1.3.48 — Publish sync preview modal state to main; main forwards
+   *  to the settings-dialog satellite (which renders the modal). Pass
+   *  null to dismiss. App owns the lifecycle — satellite is read-only. */
+  publishSyncPreview: (state: {
+    phase: 'loading' | 'preview' | 'syncing' | 'error';
+    diff: unknown;
+    errorMessage?: string | null;
+  } | null) => void;
   /** Stable per-install device identity (uuid + hostname + platform).
    *  Phase 2 sync uses these to identify which PC produced each snapshot
    *  edit and to enforce Free device quotas. deviceId persists across
@@ -312,7 +320,10 @@ export type SettingsDialogAction =
   | { kind: 'open-memo-trash' }
   | { kind: 'extend-all-memos' }
   | { kind: 'empty-memo-trash' }
-  | { kind: 'signout' };
+  | { kind: 'signout' }
+  | { kind: 'sync-preview' }
+  | { kind: 'sync-commit' }
+  | { kind: 'sync-cancel' };
 
 /** Action payloads emitted by the ItemDialog satellite. Each kind maps
  *  1-to-1 to a callback prop the inline dialog used to receive. */
@@ -351,6 +362,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   authKvSet: async () => true,
   authKvList: async () => ({}),
   syncAuthState: noop,
+  publishSyncPreview: noop,
   deviceGetInfo: async () => ({ deviceId: 'noop-device', hostname: 'unknown', platform: 'unknown' }),
   updateShortcut: noop,
   pauseGlobalShortcut: noop,

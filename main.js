@@ -1896,12 +1896,16 @@ function destroySatellite(name) {
 // satellite's pushed state so AccountTab can mirror it through
 // applyExternalAuthState() in the satellite renderer.
 let _authStateCache = { status: 'idle', user: null, configured: false };
+// v1.3.48 — Sync preview / commit lifecycle. App.tsx publishes the
+// current diff and phase via 'sync-preview-state' IPC; we cache and
+// forward to the settings satellite. Null = no modal showing.
+let _syncPreviewCache = null;
 
 function pushSatelliteState(name) {
   const sat = satellites.get(name);
   if (!sat?.win || sat.win.isDestroyed() || !sat.state) return;
   const payload = (name === 'settings-dialog')
-    ? { ...sat.state, auth: _authStateCache }
+    ? { ...sat.state, auth: _authStateCache, syncPreview: _syncPreviewCache }
     : sat.state;
   sat.win.webContents.send(`${name}-state`, payload);
 }
@@ -5020,6 +5024,14 @@ function registerIpcHandlers() {
     // Live-update settings-dialog satellite if it's open — without this,
     // a sign-in completed while settings was already open wouldn't
     // refresh until the user closed and reopened it.
+    pushSatelliteState('settings-dialog');
+  });
+
+  // v1.3.48 — Sync preview/commit lifecycle. App.tsx publishes the
+  // current preview state (null to dismiss the modal) and we forward to
+  // the open settings-dialog satellite.
+  ipcMain.on('sync-preview-state', (_e, syncPreview) => {
+    _syncPreviewCache = (syncPreview && typeof syncPreview === 'object') ? syncPreview : null;
     pushSatelliteState('settings-dialog');
   });
   registerSatelliteIpc('doc-cohort-dialog', {

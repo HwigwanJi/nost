@@ -71,6 +71,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // (which run in separate renderer processes with their own auth.ts
   // module-singleton) can mirror it. Send-only fire-and-forget.
   syncAuthState: (state) => ipcRenderer.send('sync-auth-state', state),
+  // v1.3.48 — Sync preview/commit lifecycle. App publishes the modal's
+  // current phase + diff; main forwards to the settings-dialog satellite.
+  // Pass null to dismiss the modal.
+  publishSyncPreview: (state) => ipcRenderer.send('sync-preview-state', state),
   deviceGetInfo: () => ipcRenderer.invoke('device:get-info'),
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),

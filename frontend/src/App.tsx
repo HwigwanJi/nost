@@ -55,7 +55,8 @@ import { ContainerBloom, hitTestBloomZone, type Dir as BloomDir } from './compon
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
 import { useAuth, signOut } from './lib/auth';
-import { initSync, disposeSync } from './lib/sync';
+import { initSync, disposeSync, syncFull } from './lib/sync';
+import { previewSyncDiff } from './lib/sync/preview';
 import { bumpRender, startPerfFlush } from './lib/perf';
 import { faviconCandidates } from './hooks/useFavicon';
 import { setBusy, whenIdle, isUserBusy } from './lib/userBusy';
@@ -4077,10 +4078,53 @@ export default function App() {
           // → settings-dialog satellite refreshes via applyExternalAuthState.
           void signOut();
           break;
+        // v1.3.48 — Sync preview lifecycle. Main renderer is the only
+        // place with a live supabase session + AppData, so the entire
+        // pull-merge-push flow runs here and we publish phase/diff to
+        // the satellite via publishSyncPreview IPC. Satellite renders
+        // the modal from the pushed state — no direct supabase calls.
+        case 'sync-preview':
+          (async () => {
+            if (!auth.user) {
+              electronAPI.publishSyncPreview({ phase: 'error', diff: null, errorMessage: '로그인이 필요해요.' });
+              return;
+            }
+            electronAPI.publishSyncPreview({ phase: 'loading', diff: null });
+            try {
+              const diff = await previewSyncDiff(auth.user.id, syncDataRef.current);
+              electronAPI.publishSyncPreview({ phase: 'preview', diff });
+            } catch (e) {
+              electronAPI.publishSyncPreview({
+                phase: 'error',
+                diff: null,
+                errorMessage: e instanceof Error ? e.message : String(e),
+              });
+            }
+          })();
+          break;
+        case 'sync-commit':
+          (async () => {
+            electronAPI.publishSyncPreview({ phase: 'syncing', diff: null });
+            const r = await syncFull();
+            if (r.ok) {
+              electronAPI.publishSyncPreview(null);  // dismiss modal
+              showToast('동기화 완료', { duration: 2200 });
+            } else {
+              electronAPI.publishSyncPreview({
+                phase: 'error',
+                diff: null,
+                errorMessage: r.message ?? '동기화 실패',
+              });
+            }
+          })();
+          break;
+        case 'sync-cancel':
+          electronAPI.publishSyncPreview(null);
+          break;
       }
     });
     return off;
-  }, [store]);
+  }, [store, auth.user, showToast]);
 
   useEffect(() => {
     const off = electronAPI.onSettingsDialogClosed(() => {

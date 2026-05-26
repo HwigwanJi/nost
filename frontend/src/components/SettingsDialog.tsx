@@ -499,6 +499,18 @@ function SyncDevicesSection({ userId }: { userId: string }) {
 
   const onSync = useCallback(async () => {
     setErrorMsg(null);
+    // v1.3.48 — SettingsDialog runs in a satellite renderer whose
+    // supabase instance has no session. The preview + commit must be
+    // executed in the main renderer (where useAppData lives and
+    // supabase has the live session). Route via satellite action.
+    const sat = (window as { settingsDialog?: { action: (a: { kind: string }) => void } }).settingsDialog;
+    if (sat) {
+      sat.action({ kind: 'sync-preview' });
+      return;
+    }
+    // Inline fallback path (currently unreachable — SettingsDialog
+    // only mounts as a satellite — but kept for symmetry in case the
+    // dialog is ever inlined back during dev / tests).
     const r = await syncFull();
     if (!r.ok && r.message && r.message !== 'conflict') setErrorMsg(r.message);
   }, []);

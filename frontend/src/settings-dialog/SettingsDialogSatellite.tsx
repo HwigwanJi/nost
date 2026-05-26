@@ -14,10 +14,12 @@
 
 import { useEffect, useState } from 'react';
 import { SettingsDialog } from '../components/SettingsDialog';
+import { SyncPreviewModal } from '../components/SyncPreviewModal';
 import { useSatelliteTheme } from '../lib/satelliteTheme';
 import { applyExternalAuthState } from '../lib/auth';
 import type { AppSettings } from '../types';
 import type { User } from '@supabase/supabase-js';
+import type { SyncDiff } from '../lib/sync/preview';
 
 export interface SettingsDialogSatelliteState {
   settings: AppSettings;
@@ -35,6 +37,15 @@ export interface SettingsDialogSatelliteState {
     user: User | null;
     configured: boolean;
   };
+  // v1.3.48 — Sync preview / commit lifecycle driven from main. The
+  // satellite's supabase client has no session, so all server calls
+  // must go through the main renderer's sync module via action IPC.
+  // When this field is non-null, the satellite shows the preview modal.
+  syncPreview?: {
+    phase: 'loading' | 'preview' | 'syncing' | 'error';
+    diff: SyncDiff | null;
+    errorMessage?: string | null;
+  } | null;
 }
 
 type Action =
@@ -47,7 +58,13 @@ type Action =
   // v1.3.48 — Routed to App.tsx::handleSignOut. Satellite cannot call
   // supabase.auth.signOut() directly because its own supabase client
   // never received a session.
-  | { kind: 'signout' };
+  | { kind: 'signout' }
+  // v1.3.48 — Sync flow: 'sync-preview' → main computes diff, pushes
+  // back via syncPreview state field. 'sync-commit' runs syncFull.
+  // 'sync-cancel' clears the preview modal.
+  | { kind: 'sync-preview' }
+  | { kind: 'sync-commit' }
+  | { kind: 'sync-cancel' };
 
 interface Api {
   onState: (cb: (s: SettingsDialogSatelliteState) => void) => () => void;
@@ -82,23 +99,38 @@ export function SettingsDialogSatellite() {
 
   if (!state) return null;
 
+  const preview = state.syncPreview ?? null;
+
   return (
-    <SettingsDialog
-      open={true}
-      onClose={() => api.action({ kind: 'close' })}
-      settings={state.settings}
-      onSave={(s) => api.action({ kind: 'save', settings: s })}
-      updateDownloaded={state.updateDownloaded}
-      downloadProgress={state.downloadProgress}
-      initialTab={state.initialTab as never}
-      onStartTutorial={(q) => api.action({ kind: 'start-tutorial', quest: q as unknown })}
-      onOpenMemoTrash={() => api.action({ kind: 'open-memo-trash' })}
-      // SettingsDialog displays the returned count in a toast — across
-      // IPC we lose that synchronous return value. Return 0 so the UI
-      // doesn't claim a misleading nonzero count; main app handles the
-      // user-visible toast separately if needed.
-      onExtendAllMemos={() => { api.action({ kind: 'extend-all-memos' }); return 0; }}
-      onEmptyMemoTrash={() => { api.action({ kind: 'empty-memo-trash' }); return 0; }}
-    />
+    <>
+      <SettingsDialog
+        open={true}
+        onClose={() => api.action({ kind: 'close' })}
+        settings={state.settings}
+        onSave={(s) => api.action({ kind: 'save', settings: s })}
+        updateDownloaded={state.updateDownloaded}
+        downloadProgress={state.downloadProgress}
+        initialTab={state.initialTab as never}
+        onStartTutorial={(q) => api.action({ kind: 'start-tutorial', quest: q as unknown })}
+        onOpenMemoTrash={() => api.action({ kind: 'open-memo-trash' })}
+        // SettingsDialog displays the returned count in a toast — across
+        // IPC we lose that synchronous return value. Return 0 so the UI
+        // doesn't claim a misleading nonzero count; main app handles the
+        // user-visible toast separately if needed.
+        onExtendAllMemos={() => { api.action({ kind: 'extend-all-memos' }); return 0; }}
+        onEmptyMemoTrash={() => { api.action({ kind: 'empty-memo-trash' }); return 0; }}
+      />
+      {/* Sync preview modal — mounted at the satellite root so it
+          renders ABOVE the settings dialog. State arrives from main
+          via syncPreview field. */}
+      <SyncPreviewModal
+        open={!!preview}
+        diff={preview?.diff ?? null}
+        phase={preview?.phase ?? 'loading'}
+        errorMessage={preview?.errorMessage ?? null}
+        onClose={() => api.action({ kind: 'sync-cancel' })}
+        onConfirm={() => api.action({ kind: 'sync-commit' })}
+      />
+    </>
   );
 }
