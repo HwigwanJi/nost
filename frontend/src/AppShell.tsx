@@ -84,6 +84,22 @@ export default function AppShell() {
     bootstrapAuth();
   }, []);
 
+  // v1.3.48 — Settings dialog runs in a satellite BrowserWindow with its
+  // own renderer process, so it never sees this window's auth state.
+  // Publish to main on every change; main caches and forwards to
+  // settings-dialog when open. Without this, the AccountTab inside the
+  // satellite reverts to the signed-out "로그인" CTA even while the
+  // StatusBar AuthChip here shows signed-in.
+  useEffect(() => {
+    electronAPI.syncAuthState({
+      status: auth.status,
+      // user can carry Date / Function / etc. via supabase-js — strip to
+      // a plain JSON-serialisable shape for the IPC boundary.
+      user: auth.user ? JSON.parse(JSON.stringify(auth.user)) : null,
+      configured: auth.configured,
+    });
+  }, [auth.status, auth.user, auth.configured]);
+
   // Boot gate. Runs once when auth first leaves 'idle'. Collects the
   // set of promises we want to actually finish before showing the
   // app, races them against a hard ceiling, then dismisses the

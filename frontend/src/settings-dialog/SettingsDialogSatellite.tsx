@@ -15,7 +15,9 @@
 import { useEffect, useState } from 'react';
 import { SettingsDialog } from '../components/SettingsDialog';
 import { useSatelliteTheme } from '../lib/satelliteTheme';
+import { applyExternalAuthState } from '../lib/auth';
 import type { AppSettings } from '../types';
+import type { User } from '@supabase/supabase-js';
 
 export interface SettingsDialogSatelliteState {
   settings: AppSettings;
@@ -24,6 +26,15 @@ export interface SettingsDialogSatelliteState {
   initialTab?: string;
   accentColor?: string;
   theme?: 'light' | 'dark';
+  // v1.3.48 — Main-renderer auth state piggy-backed onto the state push.
+  // Required so AccountTab can show the signed-in profile instead of the
+  // sign-in CTA. Without this, the satellite's auth.ts module-singleton
+  // stays at INITIAL and the panel never reflects the live session.
+  auth?: {
+    status: 'idle' | 'signed-out' | 'authing' | 'signed-in' | 'error';
+    user: User | null;
+    configured: boolean;
+  };
 }
 
 type Action =
@@ -32,7 +43,11 @@ type Action =
   | { kind: 'start-tutorial'; quest: unknown }
   | { kind: 'open-memo-trash' }
   | { kind: 'extend-all-memos' }
-  | { kind: 'empty-memo-trash' };
+  | { kind: 'empty-memo-trash' }
+  // v1.3.48 — Routed to App.tsx::handleSignOut. Satellite cannot call
+  // supabase.auth.signOut() directly because its own supabase client
+  // never received a session.
+  | { kind: 'signout' };
 
 interface Api {
   onState: (cb: (s: SettingsDialogSatelliteState) => void) => () => void;
@@ -46,7 +61,19 @@ export function SettingsDialogSatellite() {
   const [state, setState] = useState<SettingsDialogSatelliteState | null>(null);
 
   useEffect(() => {
-    const off = api.onState(setState);
+    const off = api.onState((s) => {
+      setState(s);
+      // v1.3.48 — Mirror main's auth state into this satellite's local
+      // auth.ts singleton so useAuth() inside AccountTab returns the
+      // correct signed-in/out shape. main publishes on every change.
+      if (s.auth) {
+        applyExternalAuthState({
+          status: s.auth.status,
+          user: s.auth.user,
+          configured: s.auth.configured,
+        });
+      }
+    });
     api.requestState();
     return off;
   }, []);

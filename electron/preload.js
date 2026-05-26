@@ -67,6 +67,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   authKvGet: (key) => ipcRenderer.invoke('auth:kv-get', key),
   authKvSet: (key, value) => ipcRenderer.invoke('auth:kv-set', key, value),
   authKvList: () => ipcRenderer.invoke('auth:kv-list'),
+  // v1.3.48 — Main renderer publishes its auth state so satellites
+  // (which run in separate renderer processes with their own auth.ts
+  // module-singleton) can mirror it. Send-only fire-and-forget.
+  syncAuthState: (state) => ipcRenderer.send('sync-auth-state', state),
   deviceGetInfo: () => ipcRenderer.invoke('device:get-info'),
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),

@@ -54,7 +54,7 @@ import { TileOverlay } from './components/TileOverlay';
 import { ContainerBloom, hitTestBloomZone, type Dir as BloomDir } from './components/ContainerBloom';
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
-import { useAuth } from './lib/auth';
+import { useAuth, signOut } from './lib/auth';
 import { initSync, disposeSync } from './lib/sync';
 import { bumpRender, startPerfFlush } from './lib/perf';
 import { faviconCandidates } from './hooks/useFavicon';
@@ -4069,6 +4069,13 @@ export default function App() {
           break;
         case 'empty-memo-trash':
           store.emptyMemoTrash();
+          break;
+        case 'signout':
+          // v1.3.48 — Satellite cannot call supabase.auth.signOut() itself
+          // (its supabase instance has no session). Route through the main
+          // renderer's auth.ts → onAuthStateChange → syncAuthState → main
+          // → settings-dialog satellite refreshes via applyExternalAuthState.
+          void signOut();
           break;
       }
     });

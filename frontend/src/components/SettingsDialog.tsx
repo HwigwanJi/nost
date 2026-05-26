@@ -412,7 +412,17 @@ function AccountTab() {
             <p style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.55 }}>
               이 PC에서 로그아웃합니다. 로컬 카드·메모는 그대로 유지돼요.
             </p>
-            <GhostBtn onClick={() => { signOut(); }}>로그아웃</GhostBtn>
+            <GhostBtn onClick={() => {
+              // v1.3.48 — In the settings satellite the supabase instance
+              // has no session (auth lives in the main renderer), so a
+              // local signOut() does nothing. Route through main via the
+              // existing satellite-action IPC; App.tsx calls the real
+              // signOut() and the new state propagates back via
+              // sync-auth-state. Inline render keeps the direct path.
+              const sat = (window as { settingsDialog?: { action: (a: { kind: string }) => void } }).settingsDialog;
+              if (sat) sat.action({ kind: 'signout' });
+              else signOut();
+            }}>로그아웃</GhostBtn>
           </div>
         </Section>
       </>

@@ -1888,10 +1888,22 @@ function destroySatellite(name) {
   satellites.delete(name);
 }
 
+// v1.3.48 — Auth state cache shared with settings-dialog satellite.
+// Each satellite renderer has its own auth.ts module-singleton so the
+// signed-in session in main does not auto-propagate. Main renderer
+// (App.tsx) pushes the latest `{status, user, configured}` via
+// 'sync-auth-state' IPC; we cache it here and merge into the settings
+// satellite's pushed state so AccountTab can mirror it through
+// applyExternalAuthState() in the satellite renderer.
+let _authStateCache = { status: 'idle', user: null, configured: false };
+
 function pushSatelliteState(name) {
   const sat = satellites.get(name);
   if (!sat?.win || sat.win.isDestroyed() || !sat.state) return;
-  sat.win.webContents.send(`${name}-state`, sat.state);
+  const payload = (name === 'settings-dialog')
+    ? { ...sat.state, auth: _authStateCache }
+    : sat.state;
+  sat.win.webContents.send(`${name}-state`, payload);
 }
 
 function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, initialState }) {
@@ -4992,6 +5004,23 @@ function registerIpcHandlers() {
     preloadFile: 'preload-settings-dialog.js',
     htmlFile: 'settings-dialog.html',
     closingActions: [],
+  });
+
+  // v1.3.48 — Main renderer (AppShell.tsx::bootstrapAuth) reports its
+  // auth state here so satellites can mirror it. We don't validate the
+  // payload — it's already typed at the renderer boundary, and main is
+  // not the SSOT (main renderer's auth.ts is).
+  ipcMain.on('sync-auth-state', (_e, authState) => {
+    if (!authState || typeof authState !== 'object') return;
+    _authStateCache = {
+      status: authState.status ?? 'idle',
+      user: authState.user ?? null,
+      configured: !!authState.configured,
+    };
+    // Live-update settings-dialog satellite if it's open — without this,
+    // a sign-in completed while settings was already open wouldn't
+    // refresh until the user closed and reopened it.
+    pushSatelliteState('settings-dialog');
   });
   registerSatelliteIpc('doc-cohort-dialog', {
     width: 640, height: 600,

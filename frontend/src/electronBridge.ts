@@ -63,6 +63,14 @@ export interface ElectronAPI {
   authKvGet: (key: string) => Promise<string | null>;
   authKvSet: (key: string, value: string | null) => Promise<boolean>;
   authKvList: () => Promise<Record<string, string>>;
+  /** v1.3.48 — Publish current auth state to main so the settings-dialog
+   *  satellite (separate renderer process, fresh auth.ts singleton) can
+   *  mirror it. Fire-and-forget; main caches + forwards. */
+  syncAuthState: (state: {
+    status: 'idle' | 'signed-out' | 'authing' | 'signed-in' | 'error';
+    user: unknown;
+    configured: boolean;
+  }) => void;
   /** Stable per-install device identity (uuid + hostname + platform).
    *  Phase 2 sync uses these to identify which PC produced each snapshot
    *  edit and to enforce Free device quotas. deviceId persists across
@@ -303,7 +311,8 @@ export type SettingsDialogAction =
   | { kind: 'start-tutorial'; quest: unknown }
   | { kind: 'open-memo-trash' }
   | { kind: 'extend-all-memos' }
-  | { kind: 'empty-memo-trash' };
+  | { kind: 'empty-memo-trash' }
+  | { kind: 'signout' };
 
 /** Action payloads emitted by the ItemDialog satellite. Each kind maps
  *  1-to-1 to a callback prop the inline dialog used to receive. */
@@ -341,6 +350,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   authKvGet: async () => null,
   authKvSet: async () => true,
   authKvList: async () => ({}),
+  syncAuthState: noop,
   deviceGetInfo: async () => ({ deviceId: 'noop-device', hostname: 'unknown', platform: 'unknown' }),
   updateShortcut: noop,
   pauseGlobalShortcut: noop,

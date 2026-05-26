@@ -236,6 +236,38 @@ export async function signOut(): Promise<void> {
   await electronAPI.authSetSession(null);
 }
 
+/**
+ * Inject auth state from outside (used by satellite renderers).
+ *
+ * Background: each Electron satellite window (SettingsDialog etc.) runs
+ * in its own renderer process, so its auth.ts module-singleton starts at
+ * INITIAL and never hydrates — bootstrapAuth runs only in the main
+ * window. Without this hook the satellite's `useAuth()` always returns
+ * 'idle'/'signed-out' even when the user is signed in.
+ *
+ * Pattern: main renderer (App.tsx) watches its auth state and pushes
+ * `{ status, user, configured }` through main process IPC; the
+ * satellite's main.tsx receives the push and calls this to mirror
+ * state into its local module. The satellite never talks to Supabase
+ * directly — main is the SSOT, satellite is read-only view.
+ */
+export function applyExternalAuthState(s: {
+  status: AuthStatus;
+  user: User | null;
+  configured: boolean;
+}): void {
+  setState(prev => ({
+    ...prev,
+    status: s.status,
+    user: s.user,
+    configured: s.configured,
+    // session / errorMessage are main-only — leave undefined here so
+    // satellite code that depends on them (rare) falls back to null.
+    session: null,
+    errorMessage: null,
+  }));
+}
+
 /** Dismiss an error without retrying. */
 export function clearAuthError(): void {
   setState(prev => prev.errorMessage ? { ...prev, errorMessage: null, status: prev.session ? 'signed-in' : 'signed-out' } : prev);
