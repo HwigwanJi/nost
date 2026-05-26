@@ -1092,7 +1092,13 @@ export function MemoEditor({
           </div>
           )}
           <HeaderBtn
-            icon={pinned ? 'lock' : 'lock_open'}
+            // v1.3.48 — pin icon SSOT 통일. 이전엔 lock / lock_open 으로
+            // 카드 핀(push_pin)과 다른 글리프 사용해서 사용자 혼란 (같은
+            // '고정' 행위인데 아이콘이 다름). 메모 의미상 "보호 = 자동
+            // 만료 안 됨" 이라 lock 도 적합하지만, ui-vocabulary 의 '고정'
+            // 행위 일관성이 우선. active=true 일 때 HeaderBtn 자체가
+            // accent 톤으로 강조되므로 상태 시각 구분 유지.
+            icon="push_pin"
             title={pinned ? '보호 해제 (Ctrl+P)' : '보호 · 자동 만료 안 됨 (Ctrl+P)'}
             onClick={onTogglePin}
             active={pinned}
