@@ -395,12 +395,11 @@ mergePerField(local, server) {
 - **검증**: 로그인 → 프로필 표시 → 재시작 후 세션 유지 → 로그아웃
 
 ### Phase 2 — 기본 sync (3주)
-- app_data_snapshots 테이블 + RLS
-- push/pull + LWW per-field 머지
-- Realtime 채널 구독
-- 마이그레이션 (기존 로컬 → 첫 push)
-- **Cohort A만** 우선 동기화 (url/memo/text/widget/structure)
-- **검증**: PC1에서 카드 추가 → PC2에 즉시 반영. PC2에서 수정 → PC1에 즉시 반영. 오프라인 → 온라인 복귀 시 머지
+- **P2.A (완료, v1.3.34~)**: app_data_snapshots 테이블 + RLS, push/pull 라운드트립, **로컬-우선 머지** (LWW per-field 는 P2.C 로 연기), 수동 sync (백그라운드 polling 없음), Cohort A + Cohort B/C 카드도 메타까지는 sync
+- **P2.B (완료, v1.3.48)**: **동기화 미리보기 모달** — "지금 동기화" 클릭 시 즉시 push 안 하고 `previewSyncDiff()` 로 dry-run + 모달에 push/pull/unchanged 카운트 표시 → 사용자 확인 후 `syncFull()` 실행. SettingsDialog 가 satellite 이므로 IPC 라우팅: 위성 action 'sync-preview' → 메인 renderer 계산 → `publishSyncPreview()` → 위성 모달. cross-cutting state injection 패턴 (`ssot-index.md A.18`).
+- **P2.C (TODO)**: per-entity `lastModifiedAt` 도입 → 같은 id 의 본문/위치 충돌 시 LWW. 삭제는 tombstone 으로 마킹 + sync 페이로드 포함 → 한쪽 삭제가 다른 쪽에도 전파. 30일 후 hard delete.
+- **P2.D (TODO)**: Realtime 채널 구독 (다른 디바이스의 update 즉시 인지)
+- **검증**: PC1에서 카드 추가 → PC2 sync 후 반영 ✓ (P2.A). PC2 가 미리보기에서 "+N 카드 가져오기" 확인 후 [확인] ✓ (P2.B). PC1 에서 메모 본문 수정 + PC2 에서 같은 메모 위치 이동 → sync 후 둘 다 살아남음 (P2.C 미완료, 현재 한쪽 잃음). 한쪽 삭제 → 다른 쪽 sync 시에도 삭제 (P2.C 미완료, 현재 부활).
 
 ### Phase 3 — Cohort B (path resolver) (2주)
 - 자동 매칭 알고리즘 + device_path_cache

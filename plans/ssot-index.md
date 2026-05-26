@@ -120,6 +120,20 @@
 - **금지**: `style={{ width: 480 }}` 같은 인라인 너비 박기 → size 토큰 사용. 너비가 토큰과 안 맞으면 toolkit 에 새 토큰 추가 (`xs`/`2xl` 등) 후 사용.
 - **이행 현황 (2026-05-14)**: DocCohortDialog 만 size 사용 (squeeze bug fix 동기). 나머지 8 곳은 점진 마이그레이션. 마이그 끝나면 dialog.tsx 의 `!size && ...` 레거시 분기 제거 가능.
 
+### A.18 Satellite cross-cutting state injection (v1.3.48+)
+- **무엇**: satellite BrowserWindow (SettingsDialog 등) 가 메인 윈도우의 글로벌 상태 (auth 세션 / sync 진행 상황) 를 보여줘야 할 때 — satellite 의 자체 supabase / sync module-singleton 은 항상 빈 상태이므로 직접 호출 불가. 메인을 SSOT 로 두고 satellite 는 read-only view.
+- **메커니즘**:
+  1. 메인 renderer 가 상태 변경 감지 → `electronAPI.{syncAuthState|publishSyncPreview}()` 로 main 에 publish
+  2. `main.js` 의 캐시 (`_authStateCache` / `_syncPreviewCache`) 에 저장 + `pushSatelliteState('settings-dialog')` 트리거
+  3. `pushSatelliteState` 가 settings-dialog 의 sat.state 에 cross-cutting 필드 (`auth`, `syncPreview`) 를 자동 주입해서 send
+  4. satellite renderer 가 onState 에서 받음 → `applyExternalAuthState()` 같은 inject 함수로 자체 외부 store 에 mirror
+- **위성 → 메인 액션 (write)**: satellite 의 `signOut` / `sync-preview` 같은 사용자 액션은 직접 호출 X. 반드시 `settings-dialog-action` IPC 의 `kind: signout|sync-preview|sync-commit|sync-cancel` 로 라우팅 → App.tsx 가 실제 실행.
+- **금지**:
+  - satellite renderer 에서 `supabase.auth.signOut()` / `syncFull()` 직접 호출 (세션 없으므로 silent 실패)
+  - cross-cutting 필드를 위성 자체 state machine 에 write back
+  - 새 cross-cutting state 영역 추가 시 — main.js 캐시 + pushSatelliteState 주입 + electronBridge publish 함수 + 위성 inject 함수 4-tuple 모두 동기화 필수
+- **읽는 곳**: `frontend/src/AppShell.tsx`, `frontend/src/App.tsx` (publish 측) / `frontend/src/settings-dialog/SettingsDialogSatellite.tsx` (consume 측) / `main.js` (forward 측)
+
 ### A.16 Auth KV 영속화 (v1.3.34+)
 - **SSOT**: `main.js` `auth:kv-get` / `auth:kv-set` / `auth:kv-list` IPC (safeStorage 암호화). store key `authKv.<key>` 아래.
 - **읽는 곳**: `frontend/src/lib/supabase.ts` `safeStorageAdapter` + `hydrateSession()`

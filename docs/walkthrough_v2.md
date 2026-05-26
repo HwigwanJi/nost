@@ -599,10 +599,21 @@ taskkill /f /im electron.exe      # 포트/프로세스 충돌
 
 ---
 
-## 10. 현재 WIP 상태 (v1.3.42 출시 완료, Free/Pro 조정 미커밋)
+## 10. 현재 WIP 상태 (v1.3.47 출시 완료, v1.3.48 미커밋 작업)
 
 > 매 세션마다 갱신 — `git status --short`로 직접 확인하세요.
-> v1.3.37 ~ v1.3.42 전부 출시됨 (GitHub Releases). 자세히는 §0 변경 요약 + §11 해결됨.
+> v1.3.37 ~ v1.3.47 전부 출시됨 (GitHub Releases). 자세히는 §0 변경 요약 + §11 해결됨.
+
+### v1.3.48 미커밋 작업 (2026-05-22)
+
+**Satellite cross-cutting state injection 패턴 도입** — settings-dialog 위성이 자체 supabase / sync 인스턴스의 빈 상태를 보여주던 문제 fix. 이제 메인 renderer 의 상태를 IPC 로 push 해서 mirror. `plans/ssot-index.md A.18` 에 패턴 등록.
+
+- **Auth state gap fix**: AuthChip 은 signed-in 인데 설정창은 '로그인' CTA 였던 증상 — satellite 의 auth.ts 가 INITIAL 상태였기 때문. 메인이 `electronAPI.syncAuthState()` 로 publish → main.js `_authStateCache` → settings-dialog state push 에 `auth` 필드 자동 주입 → satellite 의 `applyExternalAuthState()` 가 외부 store mirror. signOut 도 satellite action 으로 라우팅.
+- **동기화 미리보기 모달**: '지금 동기화' 클릭 → 즉시 push 안 하고 `previewSyncDiff()` (pull + dry merge) → 모달에 push/pull/unchanged 카운트 표시 → 사용자 확인 후 syncFull. satellite IPC 라우팅: 'sync-preview' / 'sync-commit' / 'sync-cancel' action + `publishSyncPreview` IPC. SyncPreviewModal.tsx 신설.
+
+변경 파일: `frontend/src/lib/auth.ts` (applyExternalAuthState), `frontend/src/lib/sync/preview.ts` (신규), `frontend/src/components/SyncPreviewModal.tsx` (신규), `frontend/src/settings-dialog/SettingsDialogSatellite.tsx`, `frontend/src/components/SettingsDialog.tsx`, `frontend/src/App.tsx`, `frontend/src/AppShell.tsx`, `frontend/src/electronBridge.ts`, `electron/preload.js`, `main.js`.
+
+자세히 `plans/sync-and-auth.md` §11 P2.B + `plans/ssot-index.md` A.18.
 
 ### 미커밋 변경 (2026-05-16)
 
