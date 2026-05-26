@@ -46,7 +46,8 @@ interface PresetRule {
   toComparable: (caps: Record<string, string>) => Array<number | string> | null;
 }
 
-const RX_INT  = '(?<v>\\d+)';
+// (v1.3.48: RX_INT 폐기 — numeric preset 이 minor.patch 까지 인라인
+// 캡처하도록 바뀜. semver / date 프리셋은 자체 패턴.)
 const RX_SEMVER = '(?<v>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)';
 const RX_DATE_YYMMDD   = '(?<y>\\d{2})(?<m>\\d{2})(?<d>\\d{2})';
 const RX_DATE_YYYYMMDD = '(?<y>\\d{4})(?<m>\\d{2})(?<d>\\d{2})';
@@ -55,10 +56,20 @@ const RX_DATE_DOTTED   = '(?<y>\\d{4})\\.(?<m>\\d{2})\\.(?<d>\\d{2})';
 
 const PRESETS: Record<Exclude<TokenPreset, 'mtime'>, PresetRule> = {
   numeric: {
-    // Matches `_v3.docx`, `-v10.pdf`, `_v3_final.docx`.
-    regex: new RegExp(`(?<base>.*?)[_\\-]v${RX_INT}(?<suffix>.*?)(?<ext>\\.[^.]+)?$`),
-    groups: ['v'],
-    toComparable: c => [parseInt(c.v, 10)],
+    // Matches `_v3.docx`, `-v10.pdf`, `_v3_final.docx`, AND dotted
+    // minor/patch like `_v0.14.xlsx`, `_v0.16.pdf`.
+    // v1.3.48 fix: 이전엔 `\d+` 만 매치해서 v0.14 / v0.16 / v0.1 가 모두
+    // token=[0] 동률로 잡혀 알파벳 순 첫 파일이 가짜 winner. minor/patch
+    // 옵셔널 캡처 추가 → [0,14] > [0,16] 처럼 dotted 도 비교됨.
+    // 단일 정수 (v3) 와 dotted (v0.14) 가 한 폴더에 섞일 가능성 낮지만,
+    // 섞여도 minor=0 패딩으로 v3 = [3,0,0] vs v0.14 = [0,14,0] 비교 가능.
+    regex: new RegExp(`(?<base>.*?)[_\\-]v(?<v>\\d+)(?:\\.(?<minor>\\d+))?(?:\\.(?<patch>\\d+))?(?<suffix>.*?)(?<ext>\\.[^.]+)?$`),
+    groups: ['v', 'minor', 'patch'],
+    toComparable: c => [
+      parseInt(c.v, 10),
+      c.minor ? parseInt(c.minor, 10) : 0,
+      c.patch ? parseInt(c.patch, 10) : 0,
+    ],
   },
   semver: {
     // Matches `1.2.3` somewhere in the basename (not date-like 1234.56.78).

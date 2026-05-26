@@ -261,7 +261,12 @@ input:focus {
 }
 
 /* ─── Dropdown / context menu items ──────────────────────── */
+/* v1.3.48 — submenu 도 동일 스타일 적용. 이전엔 sub-content / sub-trigger
+   selector 가 빠져있어서 부모 메뉴와 폭/패딩 어긋남 (사용자 보고: "정렬
+   폰트크기 깨지지...토큰기반이 아니라 하드코딩"). 토큰화는 별도 디자인
+   시스템 작업 — 이번엔 selector 누락만 메꿔서 일관성 회복. */
 [data-slot="dropdown-menu-item"],
+[data-slot="dropdown-menu-sub-trigger"],
 [data-slot="context-menu-item"] {
   display: flex !important;
   align-items: center !important;
@@ -272,9 +277,20 @@ input:focus {
 
 /* ─── Dropdown / context menu content padding ────────────── */
 [data-slot="dropdown-menu-content"],
+[data-slot="dropdown-menu-sub-content"],
 [data-slot="context-menu-content"] {
   padding: 4px !important;
   min-width: 160px !important;
+}
+
+/* ─── Dropdown menu label (그룹 헤더, 위계 표시용) ─────────── */
+[data-slot="dropdown-menu-label"] {
+  padding: 6px 12px 2px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  color: var(--text-dim) !important;
+  letter-spacing: 0.04em !important;
+  text-transform: uppercase;
 }
 
 /* ─── Slider (shadcn/base-ui) ────────────────────────────── */
