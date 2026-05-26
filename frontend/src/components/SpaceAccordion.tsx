@@ -16,6 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuSeparator,
+  DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
 
 interface SpaceAccordionProps {
@@ -590,17 +591,30 @@ function SpaceAccordionImpl(props: SpaceAccordionProps) {
                     <Icon name="expand_more" size={14} />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" sideOffset={4}>
+                    {/* v1.3.48 — 2단 정리. 위계 정정 사용자 피드백:
+                        '위젯/컬러/메모' 가 평면 나열돼 있었는데 컬러랑
+                        메모도 사실상 위젯의 한 종류라 같은 레벨에 두면
+                        혼란. 카드 추가 (launchable / 의미있는 항목) vs.
+                        위젯 (음악/컬러/메모 — 인 플레이스 인터랙션) 으로
+                        명확히 분리. */}
+                    <DropdownMenuLabel>카드 추가</DropdownMenuLabel>
                     <DropdownMenuItem onClick={onQuickAdd}>빠른추가</DropdownMenuItem>
                     <DropdownMenuItem onClick={onAddItem}>직접입력</DropdownMenuItem>
                     <DropdownMenuItem onClick={onScanItem}>스마트스캔</DropdownMenuItem>
-                    {onAddWidget && (
-                      <DropdownMenuItem onClick={onAddWidget}>위젯</DropdownMenuItem>
-                    )}
-                    {onAddColorSwatch && (
-                      <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
-                    )}
-                    {onAddMemo && (
-                      <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
+                    {(onAddWidget || onAddColorSwatch || onAddMemo) && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuLabel>위젯</DropdownMenuLabel>
+                        {onAddWidget && (
+                          <DropdownMenuItem onClick={onAddWidget}>음악</DropdownMenuItem>
+                        )}
+                        {onAddColorSwatch && (
+                          <DropdownMenuItem onClick={onAddColorSwatch}>컬러</DropdownMenuItem>
+                        )}
+                        {onAddMemo && (
+                          <DropdownMenuItem onClick={onAddMemo}>메모</DropdownMenuItem>
+                        )}
+                      </>
                     )}
                   </DropdownMenuContent>
                 </DropdownMenu>

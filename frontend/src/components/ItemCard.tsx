@@ -781,26 +781,37 @@ function ItemCardImpl({
         setHintVisible(false);
       }}
     >
-      {/* ── Top-right corner glyph ──────────────────────────────────
-           Single visual slot, decided by priority:
-             (1) Container → grid_view (this is the most important state
-                 because it changes drag/click behaviour)
-             (2) else Pinned → bookmark (was previously encoded as a
-                 colour override on the bottom stripe; users said the
-                 pin signal got lost in the soup of stripes)
-           Both render at the same coords so only one shows at a time
-           — no visual conflict, no double-encoding. */}
-      {item.isContainer ? (
-        <Icon name="grid_view" size={10} color="var(--accent)" style={{ position:'absolute', top:5, right:5, opacity:0.7 }} />
-      ) : pinned ? (
-        <Icon
-          name="bookmark"
-          size={11}
-          color="var(--accent)"
-          style={{ position:'absolute', top:3, right:5, opacity:0.55, transition:'opacity 0.15s' }}
-          className="group-hover:!opacity-90"
-        />
-      ) : null}
+      {/* ── Top-right state chip (v1.3.48) ──────────────────────────
+           통합 chip 시스템:
+             - 우상단 (top-right): 상태 chip — 컨테이너 OR 고정 (mutually
+               exclusive, accent 색)
+             - 우하단 (bottom-right): type chip (muted 색)
+             둘 다 동일 박스 (18×18, var(--bg-rgba), var(--border-rgba)) 로
+             "시각적으로 정리된 느낌". 사용자 피드백: 이전엔 chip 이 너무
+             작고 (12-14px) pin 은 bookmark / 컨테이너는 grid_view 가 자유
+             좌표에 흩어져 있어 일관성 없음.
+           Pin 아이콘: bookmark → push_pin 통일 (Sidebar / CommandBar /
+           ContextMenu 와 동일 어휘). */}
+      {(item.isContainer || pinned) && (
+        <span
+          title={item.isContainer ? '컨테이너' : '고정됨'}
+          aria-label={item.isContainer ? '컨테이너' : '고정됨'}
+          style={{
+            position: 'absolute', top: 4, right: 4,
+            width: 18, height: 18, borderRadius: 5,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'var(--bg-rgba)',
+            border: '1px solid var(--accent)',
+            opacity: 0.85,
+            transition: 'opacity 0.15s',
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+          className="group-hover:!opacity-100"
+        >
+          <Icon name={item.isContainer ? 'grid_view' : 'push_pin'} size={11} color="var(--accent)" />
+        </span>
+      )}
 
       {/* Container slot direction ghost rectangles on hover were removed in
           v1.3.34 — they were visually faint AND redundant with the hold
@@ -1109,25 +1120,20 @@ function ItemCardImpl({
       )}
 
       {/* ── Type chip — bottom-right (v1.3.48) ─────────────────────
-          사용자 보고: "카드 유형이 너무 안 보임 — 클립보드든 URL이든".
-          원인 분석:
-            (1) getTypeColor 가 죽어서 (line 118: 항상 muted) 아이콘 배경
-                tint 가 type 을 인코딩하지 않음
-            (2) 본문 아이콘이 user-icon(파비콘) 으로 덮여서 type 시그널 소실
-            (3) type 정보는 호버 tooltip 텍스트에만 존재
-          Fix: 우하단에 12px type 글리프 chip 항상 노출. 본문 아이콘이
-          파비콘이어도 type 은 별도로 보임. 자명한 타입 (image 썸네일 /
+          사용자 피드백: 이전 14px chip 너무 작음. 우상단 state chip 과
+          동일한 18×18 박스로 통일 — 시각적으로 정리된 느낌. 컬러도
+          디자인 시스템 토큰만 (text-muted, bg-rgba, border-rgba — accent
+          은 안 씀, 그건 state chip 의 영역). 자명한 타입 (image 썸네일 /
           memo body / widget UI / container grid) 은 chip 생략 — 중복.
-          위치: space stripe(bottom 0, h:2px) 위쪽. left:5/bottom:5 의
-          monitor 칩과는 좌-우 분리. 컨테이너 슬롯 점(right:3)은 컨테이너
-          전용이라 충돌 없음 (chip 자체가 컨테이너 제외). */}
+          위치 충돌 가드: 좌하단 monitor chip 과 좌-우 분리, 컨테이너 슬롯
+          점은 chip 비대상이라 자동 회피. */}
       {!isWidget && !isMemo && !item.isContainer && item.type !== 'image' && (
         <span
           title={getTypeLabel(item.type)}
           aria-label={getTypeLabel(item.type)}
           style={{
-            position: 'absolute', bottom: 5, right: 5,
-            width: 14, height: 14, borderRadius: 4,
+            position: 'absolute', bottom: 4, right: 4,
+            width: 18, height: 18, borderRadius: 5,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: 'var(--bg-rgba)',
             border: '1px solid var(--border-rgba)',
@@ -1138,7 +1144,7 @@ function ItemCardImpl({
           }}
           className="group-hover:!opacity-100"
         >
-          <Icon name={getTypeIcon(item.type)} size={9} color="var(--text-muted)" />
+          <Icon name={getTypeIcon(item.type)} size={11} color="var(--text-muted)" />
         </span>
       )}
 
@@ -1367,18 +1373,20 @@ function ItemCardImpl({
             <Icon name="edit" className="text-sm" />카드 수정
           </ContextMenuItem>
           <ContextMenuItem onClick={onTogglePin} className="gap-2 cursor-pointer">
-            <Icon name={pinned ? 'push_pin' : 'keep'} className="text-sm" />
+            {/* v1.3.48 — pin icon SSOT: push_pin 만 사용 (Sidebar /
+                CommandBar / Card top-right chip / 본 컨텍스트 메뉴 모두
+                동일 어휘). 이전엔 unpinned 상태에서 'keep' 아이콘이 떠서
+                "이게 뭐지?" 혼란. 동일 행위는 동일 글리프. */}
+            <Icon name="push_pin" className="text-sm" />
             {pinned ? '핀 해제' : '위치 고정'}
           </ContextMenuItem>
 
-          {/* 최신 버전 확인 — only meaningful for file-path-ish cards.
-              The dispatcher (App.tsx) further gates by value shape, so
-              we surface the menu item whenever the callback is wired.
-              Hidden for widgets, memos, and the obviously-non-file
-              types (url / text / cmd / window) where a directory scan
-              has nothing to find. */}
-          {onCheckDocCohort && !isWidget && !isMemo
-            && item.type !== 'url' && item.type !== 'text' && item.type !== 'cmd' && item.type !== 'window' && (
+          {/* 최신 버전 확인 — 문서 코호트 전용. v1.3.48 사용자 피드백:
+              이전엔 app/folder/doc/image 모두 노출됐는데, 사실 doc cohort
+              스캐너 (dirname + 파일명 패턴) 가 의미있는 건 doc type 뿐임.
+              app/folder 는 폴더 안 파일들이 같은 family 일 가능성 낮고,
+              image 는 버전 관리 대상 아님. type === 'doc' 만 남김. */}
+          {onCheckDocCohort && item.type === 'doc' && (
             <>
               <ContextMenuSeparator />
               <ContextMenuItem onClick={onCheckDocCohort} className="gap-2 cursor-pointer">
