@@ -44,6 +44,7 @@ export default defineConfig({
         docCohortDialog: path.resolve(__dirname, 'doc-cohort-dialog.html'),
         batchDropDialog: path.resolve(__dirname, 'batch-drop-dialog.html'),
         containerSlotPicker: path.resolve(__dirname, 'container-slot-picker.html'),
+        imageViewer: path.resolve(__dirname, 'image-viewer.html'),
       },
     },
   },

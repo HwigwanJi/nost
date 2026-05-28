@@ -454,12 +454,16 @@ function ItemCardImpl({
           break;
         case 'left':
           closeHoldPopup();
-          // v1.3.49 — 이미지 카드는 클릭이 이미 "클립보드 복사" 역할이라
-          // hold-left 가 launch (=다시 복사) 와 의미 중복. 사용자 요청:
-          // hold-left = OS 기본 이미지 뷰어로 보기. openPath 가 Windows /
-          // macOS 의 default app 으로 열어줌.
+          // v1.3.49 — 이미지 카드는 자체 ImageViewerSatellite (다크 backdrop +
+          // wheel zoom + drag pan + ESC 닫기) 로 보기. OS default viewer 무거운
+          // 거 회피, 톤앤매너 (메모 에디터) 일관. 카드 클릭은 여전히 클립보드
+          // 복사.
           if (item.type === 'image' && item.value) {
-            electronAPI.openPath(item.value, false);
+            electronAPI.openImageViewer({
+              path: item.value,
+              label: item.title,
+              accentColor: item.color,
+            });
           } else {
             executeLaunchNoClose();
           }

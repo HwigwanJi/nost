@@ -295,6 +295,11 @@ export interface ElectronAPI {
   openContainerSlotPicker: (payload: unknown) => void;
   onContainerSlotPickerAction: (cb: (action: ContainerSlotPickerAction) => void) => () => void;
   onContainerSlotPickerClosed: (cb: () => void) => () => void;
+
+  // ── Satellite ImageViewer (v1.3.49) ─────────────────────────────
+  /** OS default viewer 대신 내부 뷰어로 띄움. PNG/JPG/GIF/WEBP/SVG/AVIF
+   *  지원. close 액션만 라우팅 (readonly viewer). */
+  openImageViewer: (payload: { path: string; label?: string; accentColor?: string; theme?: 'light' | 'dark' }) => void;
 }
 
 export type DocCohortDialogAction =
@@ -463,4 +468,5 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   openContainerSlotPicker: noop,
   onContainerSlotPickerAction: () => () => {},
   onContainerSlotPickerClosed: () => () => {},
+  openImageViewer: noop,
 };

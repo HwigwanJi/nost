@@ -373,4 +373,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('container-slot-picker-closed', h);
     return () => ipcRenderer.removeListener('container-slot-picker-closed', h);
   },
+
+  // ── Satellite ImageViewer (v1.3.49) ─────────────────────────────
+  // 자체 가벼운 이미지 뷰어 (PNG/JPG/SVG/GIF/WEBP 등). payload =
+  // { path, label?, accentColor?, theme? }. close 액션 외엔 action
+  // 라우팅 필요 없음 (viewer 가 readonly).
+  openImageViewer: (payload) => ipcRenderer.send('open-image-viewer', payload),
 });

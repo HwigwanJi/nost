@@ -5052,6 +5052,17 @@ function registerIpcHandlers() {
     htmlFile: 'container-slot-picker.html',
     closingActions: ['save'],
   });
+  // v1.3.49 — 자체 이미지 뷰어. PNG/JPG/GIF/WEBP/SVG/AVIF native 렌더 +
+  // CSS transform 으로 zoom/pan. 무거운 OS default viewer 띄우는 대신
+  // 가볍게 보고 ESC 로 바로 닫기. 톤앤매너 (다크 backdrop + frameless)
+  // 메모 에디터와 일관. width/height 는 1024×720 적당히 큰 사이즈 —
+  // 사용자가 zoom 으로 더 보고 싶으면 휠.
+  registerSatelliteIpc('image-viewer', {
+    width: 1024, height: 720,
+    preloadFile: 'preload-image-viewer.js',
+    htmlFile: 'image-viewer.html',
+    closingActions: ['close'],
+  });
 
   // Reset to default position. Drag-to-move itself now goes through
   // Electron's native -webkit-app-region drag (BrowserWindow 'moved'
