@@ -401,6 +401,16 @@ export function ItemDialog({
     return 0;
   })();
   const [phase, setPhase] = useState<Phase>(initialPhase);
+  // v1.3.49 — 편집 모드 전용 상단 탭: '기본' (phase shell) ↔ '꾸미기'
+  // (아이콘/색 picker). 신규 생성 (isEdit=false) 일 땐 항상 '기본'.
+  // 토스트의 '꾸미기' 버튼이 startAdvanced=true 로 다이얼로그 열면 'advanced'
+  // 로 초기화. 일반 카드 수정 경로 (우클릭 → 수정) 에서도 사용자가 탭
+  // 클릭으로 advanced 화면 진입 가능 — 이전엔 토스트 한 번 놓치면 진입점
+  // 없었던 dead-end 해소.
+  const [editTab, setEditTab] = useState<'basic' | 'advanced'>(startAdvanced ? 'advanced' : 'basic');
+  // startAdvanced prop 이 reopen 시 바뀌면 동기화 (예: 같은 다이얼로그
+  // 인스턴스 재활용 시).
+  useEffect(() => { setEditTab(startAdvanced ? 'advanced' : 'basic'); }, [startAdvanced]);
 
   /* ── Validation + derived title ─────────────────────────── */
   const valueError = useMemo(() => {
@@ -880,17 +890,53 @@ export function ItemDialog({
     return () => window.clearTimeout(t);
   }, [open, startAdvanced, phase]);
 
-  /* ── Render: advanced (re-open) mode ────────────────────── */
-  if (startAdvanced) {
+  /* ── Edit-mode tab strip helper (v1.3.49) ─────────────────────
+     편집 모드 전용 상단 탭. 두 진입점 (우클릭 수정 / 토스트 꾸미기) 모두
+     같은 다이얼로그 인스턴스에서 탭으로 전환 가능 — 사용자가 토스트
+     놓쳐도 우클릭 → 수정 → '꾸미기' 탭으로 진입 가능. */
+  const editTabStrip = isEdit ? (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 4,
+      padding: '8px 20px 0', borderBottom: '1px solid var(--border-rgba)',
+    }}>
+      {(['basic', 'advanced'] as const).map(t => {
+        const active = editTab === t;
+        return (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setEditTab(t)}
+            style={{
+              padding: '6px 12px', fontSize: 11, fontWeight: 600,
+              background: 'transparent', border: 'none',
+              borderBottom: `2px solid ${active ? 'var(--accent)' : 'transparent'}`,
+              color: active ? 'var(--accent)' : 'var(--text-muted)',
+              cursor: 'pointer', fontFamily: 'inherit',
+              transition: 'color 0.12s, border-color 0.12s',
+              marginBottom: -1,
+            }}
+          >
+            {t === 'basic' ? '기본' : '꾸미기'}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
+  /* ── Render: advanced mode ────────────────────────────────
+     진입: (1) startAdvanced=true 로 reopen (토스트 꾸미기 버튼 경로),
+            (2) 편집 모드에서 사용자가 '꾸미기' 탭 클릭. */
+  if (editTab === 'advanced' && isEdit) {
     return (
       <Dialog open={open} onOpenChange={v => !v && onClose()}>
         <DialogContent style={{ width: 560, maxWidth: '92vw', padding: 0, overflow: 'hidden' }}>
           <DialogHeader style={{ padding: '14px 20px 12px', borderBottom: '1px solid var(--border-rgba)' }}>
             <DialogTitle style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-color)' }}>
-              꾸미기 — {form.title || derivedTitle || '카드'}
+              카드 수정 — {form.title || derivedTitle || '카드'}
             </DialogTitle>
           </DialogHeader>
-          <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14, maxHeight: 'calc(82vh - 110px)', overflowY: 'auto' }}>
+          {editTabStrip}
+          <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14, maxHeight: 'calc(82vh - 150px)', overflowY: 'auto' }}>
             {renderAdvancedSection({
               form, cropSrc, setCropSrc, imgRef, handleCropApply,
               setAutoFavicon, setForm, iconTab, setIconTab,
@@ -901,11 +947,6 @@ export function ItemDialog({
           </div>
           <DialogFooter style={{ padding: '12px 20px', borderTop: '1px solid var(--border-rgba)' }}>
             <Button variant="ghost" onClick={onClose}>닫기</Button>
-            {/* Inline shortcut chip removed (was producing the awkward
-                left-only margin on the dark Save button). Modern apps
-                surface keyboard hints in the hover tooltip — see
-                `title` below — and document them in the help / shortcut
-                cheat sheet, not on the button face. */}
             <Button onClick={() => handleSave()} title="저장 (Ctrl + Enter)">
               저장
             </Button>
@@ -929,6 +970,9 @@ export function ItemDialog({
             {isEdit ? '카드 수정' : '카드 추가'}
           </DialogTitle>
         </DialogHeader>
+
+        {/* v1.3.49 — 편집 모드 상단 탭 strip: 기본 / 꾸미기 */}
+        {editTabStrip}
 
         {/* Phase tabs — clickable progress dots with labels. Below
             them, a 2px progress line that grows with the active phase
