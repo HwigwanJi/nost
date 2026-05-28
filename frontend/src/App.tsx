@@ -2902,11 +2902,13 @@ export default function App() {
   }, [containerSlotItem, store]);
 
   const handleTogglePin = useCallback((space: Space, itemId: string) => {
-    const current = space.pinnedIds ?? [];
-    const next = current.includes(itemId)
-      ? current.filter(i => i !== itemId)
-      : [...current, itemId];
-    store.lockSpaceSort(space.id, next);
+    // v1.3.49 — store.togglePinId 가 prev 기반 함수형 머지로 atomic toggle.
+    // 이전엔 closure 의 space.pinnedIds 로 next 계산 → lockSpaceSort 호출
+    // 했는데, 사용자가 핀 모드에서 4개 카드 연속 클릭 시 같은 tick 의
+    // 두번째/세번째 클릭이 stale data 로 next 계산 → 이전 핀 덮어쓰는
+    // Pattern A 잔재. main.log: pin 토글 4회 빠르게 → store 에 마지막
+    // 1개만 저장되는 증상.
+    store.togglePinId(space.id, itemId);
   }, [store]);
 
 

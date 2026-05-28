@@ -798,6 +798,24 @@ export function useAppData() {
     }));
   }, [save]);
 
+  /** v1.3.49 — Atomic pin toggle. Caller passes spaceId + itemId only;
+   *  current pinnedIds 는 save 안의 prev 에서 직접 읽어 다음 상태 계산
+   *  → 같은 tick 의 여러 토글 (사용자가 1/2/3/4 빠르게 누름) 이 서로
+   *  덮어쓰지 않음. 이전엔 App.tsx::handleTogglePin 이 closure 의
+   *  space.pinnedIds 로 next 계산 후 lockSpaceSort 호출 → stale write
+   *  로 직전 핀이 원복되는 버그 (Pattern A 잔재). */
+  const togglePinId = useCallback((spaceId: string, itemId: string) => {
+    save(prev => ({
+      ...prev,
+      spaces: prev.spaces.map(s => {
+        if (s.id !== spaceId) return s;
+        const cur = s.pinnedIds ?? [];
+        const next = cur.includes(itemId) ? cur.filter(x => x !== itemId) : [...cur, itemId];
+        return { ...s, pinnedIds: next };
+      }),
+    }));
+  }, [save]);
+
   // ── Items ────────────────────────────────────────────────
   // v1.3.48 Phase 2.C: every Item / Space mutation stamps lastModifiedAt
   // so sync's LWW per-entity merger can pick the freshly-edited side on
@@ -1855,6 +1873,7 @@ export function useAppData() {
     toggleSpaceCollapsed,
     sortSpaceByUsage,
     lockSpaceSort,
+    togglePinId,
     addItem,
     addItems,
     updateItem,
