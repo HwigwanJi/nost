@@ -42,6 +42,14 @@ function DropdownMenuContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        // v1.3.48 — 사용자 보고: nost BrowserWindow 하단 근처에서 드롭다운
+        // 열면 메뉴 밑부분이 창 경계 밖으로 잘림. transparent / frameless
+        // BrowserWindow 에선 OS 가 창 밖을 안 그리므로 popover 가 창 안에
+        // 맞아야 함. collisionAvoidance='flip' (위로 뒤집기) +
+        // collisionPadding=8 (창 가장자리 8px 여백) 명시. Base UI 가
+        // boundary=clipping-ancestors(=viewport) 기준으로 자동 위치 결정.
+        collisionAvoidance={{ side: 'flip', align: 'shift', fallbackAxisSide: 'end' }}
+        collisionPadding={8}
       >
         <MenuPrimitive.Popup
           data-slot="dropdown-menu-content"

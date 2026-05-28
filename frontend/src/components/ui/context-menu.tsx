@@ -47,6 +47,10 @@ function ContextMenuContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        // v1.3.48 — frameless BrowserWindow 경계 밖으로 잘리는 거 회피.
+        // 카드 우클릭이 화면 가장자리에서 발생할 때 menu 가 창 밖 안 나가게.
+        collisionAvoidance={{ side: 'flip', align: 'shift', fallbackAxisSide: 'end' }}
+        collisionPadding={8}
       >
         <ContextMenuPrimitive.Popup
           data-slot="context-menu-content"
