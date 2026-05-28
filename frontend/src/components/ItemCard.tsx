@@ -81,6 +81,17 @@ const CARD_ACTIONS: Record<SlotDir, { icon: string; label: string }> = {
   right: { icon: 'content_copy', label: '값 복사' },
 };
 
+/** v1.3.49 — Type-specific override for the 4-direction hold actions.
+ *  Image card 의 좌측 (open) 은 일반 카드처럼 "새창으로 열기" 가 아니라
+ *  OS 기본 이미지 뷰어로 직접 열기. 카드 click 은 이미 클립보드 복사
+ *  역할이라 hold-left = "보기" 의 의도 명확. */
+function getCardAction(type: LauncherItem['type'], dir: SlotDir): { icon: string; label: string } {
+  if (type === 'image' && dir === 'left') {
+    return { icon: 'image', label: '이미지 뷰어로 보기' };
+  }
+  return CARD_ACTIONS[dir];
+}
+
 function getRightLabel(type: LauncherItem['type']) {
   if (type === 'url' || type === 'browser') return 'URL 복사';
   if (type === 'folder' || type === 'app') return '경로 복사';
@@ -443,7 +454,15 @@ function ItemCardImpl({
           break;
         case 'left':
           closeHoldPopup();
-          executeLaunchNoClose();
+          // v1.3.49 — 이미지 카드는 클릭이 이미 "클립보드 복사" 역할이라
+          // hold-left 가 launch (=다시 복사) 와 의미 중복. 사용자 요청:
+          // hold-left = OS 기본 이미지 뷰어로 보기. openPath 가 Windows /
+          // macOS 의 default app 으로 열어줌.
+          if (item.type === 'image' && item.value) {
+            electronAPI.openPath(item.value, false);
+          } else {
+            executeLaunchNoClose();
+          }
           break;
         case 'right':
           closeHoldPopup();
@@ -1192,7 +1211,7 @@ function ItemCardImpl({
       return si ? si.title : `${DIR_LABELS[holdDir]} 슬롯 추가`;
     }
     if (holdDir === 'right') return getRightLabel(item.type);
-    return CARD_ACTIONS[holdDir].label;
+    return getCardAction(item.type, holdDir).label;
   })() : null;
 
   const holdPopup = holdOpen && hRect && createPortal(
@@ -1277,7 +1296,7 @@ function ItemCardImpl({
         DIRS.map(dir => {
           const isSelected = holdDir === dir;
           const slotItem = slotItems?.[dir];
-          const cardAction = !item.isContainer ? CARD_ACTIONS[dir] : null;
+          const cardAction = !item.isContainer ? getCardAction(item.type, dir) : null;
           const isEmpty = item.isContainer && !slotItem;
 
           const positions: Record<SlotDir, React.CSSProperties> = {
