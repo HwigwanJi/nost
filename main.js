@@ -1886,6 +1886,12 @@ function destroySatellite(name) {
   const sat = satellites.get(name);
   if (sat?.win && !sat.win.isDestroyed()) sat.win.destroy();
   satellites.delete(name);
+  // v1.3.49 — 위성 닫힐 때 autoHide suppress source 도 같이 풀기.
+  // 위성 안의 useBusyMark 가 cleanup 으로 'busy:*' 도 풀지만, 그건
+  // 위성 renderer 가 살아있을 때 발생. destroy 시 renderer 가 즉시
+  // 죽으면 cleanup IPC 가 안 갈 수도 있어 main 측 도장 (satellite:*)
+  // 으로 결정적 해제 보장.
+  suppressAutoHideSources.delete(`satellite:${name}`);
 }
 
 // v1.3.48 — Auth state cache shared with settings-dialog satellite.
@@ -1911,6 +1917,18 @@ function pushSatelliteState(name) {
 }
 
 function createSatelliteWindow(name, { width, height, preloadFile, htmlFile, initialState }) {
+  // v1.3.49 — Pre-suppress autoHide BEFORE the satellite window appears
+  // and steals focus from main. Otherwise:
+  //   1) satellite show 직후 main 의 'blur' 이벤트 즉시 발화
+  //   2) 그 시점엔 satellite renderer 가 mount 전 → useBusyMark 의
+  //      `busy:modal:*` suppression 등록되지 않은 상태
+  //   3) suppress 비어있고 autoHide=true 사용자는 → main hide
+  //   4) 사용자: "뭘 눌러도 창이 내려가요"
+  // 결정적 fix — main process 가 satellite create 시점에 도장 찍고
+  // destroy 시점에 제거 (위 destroySatellite 참조). 위성 안의
+  // useBusyMark 와 중복 suppress 되지만 set 이라 idempotent.
+  suppressAutoHideSources.add(`satellite:${name}`);
+
   const existing = satellites.get(name);
   if (existing?.win && !existing.win.isDestroyed()) {
     // Re-use: just refresh state and refocus.
