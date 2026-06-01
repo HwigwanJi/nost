@@ -335,6 +335,13 @@ export interface AppSettings {
    * so subsequent loads respect the user's post-migration choice.
    */
   _defaultsV146Migrated?: boolean;
+  /**
+   * v1.3.49 — Safety rollback: autoHide=true 사용자들이 "위성 open 시
+   *   main blur → race window 안에 hide" 버그 (커밋 69b0d76) 를 경험.
+   * race fix 도 같이 들어가지만 만일을 위해 모든 사용자의 autoHide 를
+   * 일회성으로 false 로 force-flip. 사용자가 의도적으로 다시 켜면
+   * 그 선택은 보존됨. */
+  _autoHideOffMigratedV149?: boolean;
   license?: License;             // Phase 5: paid-tier entitlement cache
   memo?: MemoSettings;           // Memo feature (v1.3.16+)
   /**

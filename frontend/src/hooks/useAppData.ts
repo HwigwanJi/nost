@@ -181,12 +181,21 @@ function migrateData(parsed: AppData): AppData {
   // choice on later loads. Users who genuinely prefer 'cursor' can
   // toggle it back in settings after the migration.
   const needs1346 = !parsed.settings._defaultsV146Migrated;
+  // v1.3.49 safety rollback — autoHide=true 사용자들이 위성 open race 로
+  // hide 당하는 버그 (커밋 69b0d76 에서 main 측 도장으로 race fix) 의
+  // 안전망. fix 적용됐어도 모든 사용자의 autoHide 를 일회성으로 false
+  // 로 강제. 의도적으로 다시 켜는 사용자는 그 선택 보존 (플래그 한
+  // 번만 강제 flip).
+  const needs1349AutoHideOff = !parsed.settings._autoHideOffMigratedV149;
   // ── Settings defaults (global — same as before) ─────────────
   parsed.settings = {
     ...parsed.settings,
     theme: parsed.settings.theme ?? 'dark',
     autoLaunch: parsed.settings.autoLaunch ?? false,
-    autoHide: parsed.settings.autoHide ?? false,
+    autoHide: needs1349AutoHideOff
+      ? false  // ← migration: force OFF once per install
+      : (parsed.settings.autoHide ?? false),
+    _autoHideOffMigratedV149: true,
     // 'last' for missing, 'cursor' only when explicitly chosen post-
     // migration. The migration block below force-flips legacy 'cursor'
     // to 'last' once.
@@ -392,6 +401,14 @@ export function useAppData() {
           // No-op when nothing changed (purge returns ===).
           electronAPI.storeSave(swept);
         }
+        // v1.3.49 — migrateData 가 autoHide=true 사용자를 false 로
+        // force-flip 했으면 main 의 cachedAutoHide 도 갱신해야 함.
+        // main 은 boot 시점에 store 에서 한 번만 읽고 그 뒤로 IPC
+        // set-auto-hide 만 듣기 때문. 일회성 migration 직후엔
+        // storeSave 만으론 main 캐시가 stale. setAutoHide IPC 명시 push.
+        try {
+          electronAPI.setAutoHide(!!swept.settings?.autoHide);
+        } catch { /* preload missing in tests */ }
       } else {
         const localRaw = localStorage.getItem(STORAGE_KEY);
         if (!localRaw) setIsFirstRun(true);
