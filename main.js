@@ -3051,23 +3051,16 @@ function buildTrayTemplate() {
   };
 
   // ── Update fully downloaded — offer install ───────────────────────
+  // v1.3.50 — showMessageBox modal 제거. 트레이 클릭 = 즉시 quitAndInstall.
+  // 사용자가 트레이 메뉴까지 와서 항목 골랐으면 의도 명확 (재시작 OK).
+  // 한 번 더 확인 dialog 는 모던 UX 와 안 어울림 (Claude/VS Code/Slack
+  // 모두 1-click 재시작).
   if (updateState === 'downloaded') {
     return [
       { label: versionLabel, enabled: false },
       {
         label: `🆕 v${updateNewVersion} 준비됨 — 재시작하여 설치`,
-        click: () => {
-          dialog.showMessageBox({
-            type: 'info',
-            title: 'nost 업데이트',
-            message: `v${updateNewVersion} 업데이트가 준비됐습니다.`,
-            detail: '지금 재시작하면 업데이트가 자동으로 설치됩니다.',
-            buttons: ['재시작하여 설치', '나중에'],
-            defaultId: 0,
-          }).then(({ response }) => {
-            if (response === 0) autoUpdater.quitAndInstall(false, true);
-          });
-        },
+        click: () => { autoUpdater.quitAndInstall(false, true); },
       },
       floatingToggleItem,
       { type: 'separator' },
@@ -3092,22 +3085,13 @@ function buildTrayTemplate() {
     {
       label: '업데이트 확인',
       click: async () => {
-        // Re-read state in case it changed since menu was opened
-        if (updateState === 'downloaded') {
-          const { response } = await dialog.showMessageBox({
-            type: 'info', title: 'nost 업데이트',
-            message: `v${updateNewVersion} 업데이트가 준비됐습니다.`,
-            detail: '지금 재시작하면 업데이트가 자동으로 설치됩니다.',
-            buttons: ['재시작하여 설치', '나중에'], defaultId: 0,
-          });
-          if (response === 0) autoUpdater.quitAndInstall(false, true);
-          return;
-        }
+        // v1.3.50 — downloaded 상태에선 별도 메뉴 항목 ('🆕 v... 준비됨')
+        // 이 노출되므로 이 분기 도달 불가능. (이전 dead branch 제거)
         if (updateState === 'downloading') {
           dialog.showMessageBox({
             type: 'info', title: '업데이트 다운로드 중',
             message: `v${updateNewVersion} 다운로드 중입니다 (${updatePct}%).`,
-            detail: 'nost 앱 창을 열면 진행 상황을 확인할 수 있습니다.',
+            detail: '완료되면 nost 알림센터에 표시됩니다.',
           });
           return;
         }
@@ -3119,7 +3103,7 @@ function buildTrayTemplate() {
         } else if (result.status === 'update-available') {
           dialog.showMessageBox({ type: 'info', title: '업데이트 발견',
             message: `새 버전 v${result.newVersion}이 있습니다.`,
-            detail: '백그라운드에서 자동으로 다운로드됩니다.\n완료되면 트레이 알림으로 알려드립니다.' });
+            detail: '백그라운드에서 자동으로 다운로드됩니다.\n완료되면 nost 알림센터에 표시됩니다.' });
         } else if (result.status === 'dev-mode') {
           dialog.showMessageBox({ type: 'info', title: '업데이트',
             message: '개발 모드에서는 업데이트를 확인할 수 없습니다.' });
@@ -5951,14 +5935,10 @@ app.whenReady().then(() => {
       sendSafe('update-downloaded', { version: info.version });
       rebuildTrayMenu();
 
-      // Balloon notification so the user sees the result even if the app is hidden
-      try {
-        tray?.displayBalloon({
-          title:   'nost 업데이트 준비됨',
-          content: `v${info.version}이 다운로드됐습니다.\n트레이 아이콘 우클릭 → 재시작하여 설치`,
-          iconType: 'info',
-        });
-      } catch (_) { /* balloon not supported on all Windows versions */ }
+      // v1.3.50 — Windows balloon (tray.displayBalloon) 제거.
+      // 알림센터 (NotificationPanel) 가 단일 surface. OS-level 풍선
+      // 알림은 사용자가 다른 작업 중일 때 방해 + nost 알림 SSOT 우회.
+      // 사용자가 nost 안 켜놨다면 다음 부팅 시 알림센터에서 확인 가능.
     });
 
     // Reset UI state if the download fails

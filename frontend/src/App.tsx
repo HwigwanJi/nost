@@ -3794,9 +3794,9 @@ export default function App() {
   useEffect(() => {
     electronAPI.onUpdateAvailable((info) => {
       setUpdateNewVer(info.version);
-      // Bell-only — the toast used to fire here too, but it doubled with
-      // the persistent notification below. The download-complete event
-      // still surfaces a toast (it has an actionable "지금 설치" button).
+      // v1.3.50 — 알림센터 단일화. 토스트 / 하단 스트립 / Windows balloon
+      // 제거. 다운로드 중 / 완료 둘 다 알림센터의 같은 row 가 dedupKey
+      // 로 갱신됨 (addNotification 의 dedup 머지 패턴).
       store.addNotification({
         kind: 'update',
         title: `새 버전 v${info.version}`,
@@ -3806,19 +3806,25 @@ export default function App() {
     });
     electronAPI.onUpdateDownloadProgress((info) => {
       setDownloadProgress(info ? info.percent : null);
+      // v1.3.50 — 진행률을 알림센터에 반영. 같은 dedupKey 로 addNotification
+      // 부르면 기존 row 의 body 만 갱신 (useAppData.addNotification 의
+      // dedup 분기 참조). 사용자가 벨 누르면 그 시점의 % 보임.
+      if (info && updateNewVer) {
+        store.addNotification({
+          kind: 'update',
+          title: `새 버전 v${updateNewVer}`,
+          body: `다운로드 중 — ${Math.round(info.percent)}%`,
+          dedupKey: `update-available-${updateNewVer}`,
+        });
+      }
     });
     electronAPI.onUpdateDownloaded((info) => {
       setUpdateNewVer(info.version);
       setDownloadProgress(null);
       setUpdateDownloaded(true);
-      // Toast with direct install action button
-      showToast(`v${info.version} 다운로드 완료`, {
-        duration: 10000,
-        actions: [{ label: '지금 설치', icon: 'restart_alt', onClick: () => electronAPI.installUpdate() }],
-      });
-      // Replace the "downloading" notification with an "install ready"
-      // one. Same dedupKey on the v-pair, so the panel doesn't show
-      // both rows for the same version.
+      // v1.3.50 — 토스트 제거, 알림센터로 단일화. 모던 앱 UX (Claude/
+      // VS Code) 처럼 다운로드 완료 = 알림센터에 1건 + 상태바의 update
+      // chip 으로 명시. 토스트 중복 알림은 사용자 피로 유발.
       store.addNotification({
         kind: 'update',
         title: `v${info.version} 설치 준비 완료`,
@@ -5286,57 +5292,11 @@ export default function App() {
           </DndContext>
         </div>{/* close inner-row */}
 
-        {/* ── Update progress strip — spans full glass-card width ──── */}
-        {(downloadProgress != null || updateDownloaded) && (
-          <div style={{
-            flexShrink: 0,
-            borderTop: '1px solid var(--border-rgba)',
-            background: 'var(--surface)',
-            padding: '6px 14px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-          }}>
-            {updateDownloaded ? (
-              <>
-                <Icon name="system_update" size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
-                <span style={{ flex: 1, fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>
-                  {updateNewVer ? `v${updateNewVer}` : '업데이트'} 준비됨
-                </span>
-                <button
-                  onClick={() => electronAPI.installUpdate()}
-                  style={{
-                    flexShrink: 0, padding: '4px 12px', borderRadius: 6,
-                    background: 'var(--accent)', border: 'none',
-                    color: '#fff', fontSize: 11, fontWeight: 600,
-                    cursor: 'pointer', fontFamily: 'inherit',
-                    display: 'flex', alignItems: 'center', gap: 5,
-                  }}
-                >
-                  <Icon name="restart_alt" size={13} />
-                  재시작하여 설치
-                </button>
-              </>
-            ) : (
-              <>
-                <Icon name="download" size={14} color="var(--text-dim)" style={{ flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 10, color: 'var(--text-dim)' }}>
-                    <span>{updateNewVer ? `v${updateNewVer} 다운로드 중...` : '업데이트 다운로드 중...'}</span>
-                    <span>{downloadProgress}%</span>
-                  </div>
-                  <div style={{ height: 3, background: 'var(--border-rgba)', borderRadius: 2, overflow: 'hidden' }}>
-                    <div style={{
-                      width: `${downloadProgress}%`, height: '100%',
-                      background: 'var(--accent)', borderRadius: 2,
-                      transition: 'width 0.5s ease',
-                    }} />
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        )}
+        {/* v1.3.50 — 하단 update progress strip 제거.
+            알림센터 (NotificationBell 옆 ●) 가 단일 진입점. 진행률은
+            알림 body 에 표시, 완료 시 알림의 '지금 설치' 버튼이 install
+            트리거. 이전 strip 은 카드 영역 침범 + 다른 알림 surface
+            (토스트/balloon/showMessageBox) 와 중복 = noise. */}
 
         {/* ── Persistent status bar — spans full glass-card width ───── */}
         <StatusBar
