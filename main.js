@@ -3429,6 +3429,29 @@ function registerIpcHandlers() {
 
   ipcMain.handle('store-load', () => store.get('appData', null));
 
+  // v1.3.50 — Boot resilience: renderer 의 migrateData 가 throw 했을 때
+  // 사용 가능한 rolling backup 5개 (nost-data.bak.{0..4}.json) 의 내용을
+  // 차례로 읽어줌. renderer 가 가장 최근 backup 부터 시도 → 모두 실패 시
+  // 빈 store 로 fresh start. 결정: corrupt store 로 사용자 영구 잠금 보다는
+  // 어제 상태로 복귀가 압도적으로 나음.
+  ipcMain.handle('store-load-backups', () => {
+    const dir = path.join(app.getPath('userData'), 'backups');
+    const out = [];
+    for (let i = 0; i < 5; i++) {
+      const p = path.join(dir, `nost-data.bak.${i}.json`);
+      try {
+        if (fs.existsSync(p)) {
+          const raw = fs.readFileSync(p, 'utf-8');
+          const parsed = JSON.parse(raw);
+          out.push({ slot: i, data: parsed, mtime: fs.statSync(p).mtimeMs });
+        }
+      } catch (e) {
+        log.warn(`[backup] read failed slot=${i}: ${e?.message ?? e}`);
+      }
+    }
+    return out;
+  });
+
   ipcMain.handle('store-save', (_, data) => {
     // Diff badgeSize BEFORE we overwrite the store so we can detect a
     // change and live-push it to the overlays. Without this, settings

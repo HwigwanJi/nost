@@ -382,33 +382,70 @@ export function useAppData() {
     (window as { __bootStatus?: (s: string) => void }).__bootStatus?.('데이터 불러오는 중...');
     electronAPI.setLoadingStatus('데이터 불러오는 중...');
     log.info('[boot] electronAPI.storeLoad() →');
-    electronAPI.storeLoad().then(stored => {
+    electronAPI.storeLoad().then(async stored => {
       const hasStore = !!(stored && typeof stored === 'object' && (
         'presets' in (stored as AppData) || 'spaces' in (stored as AppData)
       ));
       log.info(`[boot] storeLoad resolved. hasStore=${hasStore}`);
       (window as { __bootStatus?: (s: string) => void }).__bootStatus?.('마무리하는 중...');
       if (hasStore) {
-        // Run the memo auto-purge sweep RIGHT after migration so the
-        // first paint already reflects expired→trash and trash→deleted
-        // transitions. We persist the swept shape so the store on disk
-        // matches what's in memory (otherwise an unchanged-on-render
-        // close+reopen would resurrect ghosts).
-        const migrated = migrateData(stored as AppData);
-        const swept = purgeExpiredMemos(migrated, Date.now());
-        setRawData(swept);
-        if (swept !== migrated) {
-          // No-op when nothing changed (purge returns ===).
-          electronAPI.storeSave(swept);
-        }
-        // v1.3.49 — migrateData 가 autoHide=true 사용자를 false 로
-        // force-flip 했으면 main 의 cachedAutoHide 도 갱신해야 함.
-        // main 은 boot 시점에 store 에서 한 번만 읽고 그 뒤로 IPC
-        // set-auto-hide 만 듣기 때문. 일회성 migration 직후엔
-        // storeSave 만으론 main 캐시가 stale. setAutoHide IPC 명시 push.
+        // v1.3.50 — Boot resilience: migrateData / purge 가 throw 시
+        // 사용자가 빈 shell 영구 잠금되는 거 회피. 결정 트리:
+        //   1. 정상 store 시도
+        //   2. throw → rolling backup 5개 (mtime 최신순) 차례 시도
+        //   3. 모두 throw → fresh defaults (loadDataSync) + 토스트 통지
+        //
+        // 정상 케이스 시 비용 0 (try 본문이 즉시 성공). 실패 시에만
+        // backup 폴 IPC. backup 인프라는 v1.3.47 rolling backup 활용.
+        const tryLoadWith = (candidate: AppData) => {
+          const migrated = migrateData(candidate);
+          const swept = purgeExpiredMemos(migrated, Date.now());
+          return { migrated, swept };
+        };
+        let loaded: { migrated: AppData; swept: AppData } | null = null;
         try {
-          electronAPI.setAutoHide(!!swept.settings?.autoHide);
-        } catch { /* preload missing in tests */ }
+          loaded = tryLoadWith(stored as AppData);
+        } catch (migrationErr) {
+          log.error('[boot] migrateData failed on main store — trying backups', migrationErr);
+          try {
+            const backups = await electronAPI.storeLoadBackups();
+            const sorted = [...backups].sort((a, b) => b.mtime - a.mtime);  // 최신 먼저
+            for (const b of sorted) {
+              try {
+                loaded = tryLoadWith(b.data as AppData);
+                log.warn(`[boot] recovered from backup slot ${b.slot}`);
+                break;
+              } catch (e) {
+                log.warn(`[boot] backup slot ${b.slot} also failed`, e);
+              }
+            }
+          } catch (backupErr) {
+            log.error('[boot] storeLoadBackups IPC failed', backupErr);
+          }
+        }
+        if (loaded) {
+          setRawData(loaded.swept);
+          if (loaded.swept !== loaded.migrated) {
+            // No-op when nothing changed (purge returns ===).
+            electronAPI.storeSave(loaded.swept);
+          }
+          // v1.3.49 — migrateData 가 autoHide=true 사용자를 false 로
+          // force-flip 했으면 main 의 cachedAutoHide 도 갱신해야 함.
+          try { electronAPI.setAutoHide(!!loaded.swept.settings?.autoHide); }
+          catch { /* preload missing in tests */ }
+        } else {
+          // 모든 시도 실패 — fresh defaults 로 부팅. 사용자 데이터 손실
+          // 위험이 있지만 빈 shell 영구 잠금보다 압도적으로 나음.
+          log.error('[boot] all migration attempts failed — booting with defaults');
+          const localData = loadDataSync();
+          setRawData(localData);
+          electronAPI.storeSave(localData);
+          // 사용자 시야에 명시 — 부팅 후 첫 토스트로 알림. window 전역
+          // 이벤트로 전달 (useAppData 는 showToast 직접 못 부름).
+          try {
+            window.dispatchEvent(new CustomEvent('nost:boot-recovery-failed'));
+          } catch { /* noop */ }
+        }
       } else {
         const localRaw = localStorage.getItem(STORAGE_KEY);
         if (!localRaw) setIsFirstRun(true);

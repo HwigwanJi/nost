@@ -1148,6 +1148,20 @@ export default function App() {
     }
   }, [showToast]);
 
+  // v1.3.50 — Boot recovery 안내. useAppData 가 migrateData / 모든
+  // backup 시도 실패 시 fresh defaults 로 부팅하면서 'nost:boot-recovery-
+  // failed' 발화. 사용자에게 데이터가 빈 상태일 가능성 알림.
+  useEffect(() => {
+    const handler = () => {
+      showToast(
+        '데이터를 복구하지 못했어요 — 빈 상태로 시작합니다. 백업 파일이 있다면 설정 → 데이터에서 가져오기 해주세요.',
+        { duration: 10000 },
+      );
+    };
+    window.addEventListener('nost:boot-recovery-failed', handler);
+    return () => window.removeEventListener('nost:boot-recovery-failed', handler);
+  }, [showToast]);
+
   // App-level Ctrl+Z / Ctrl+Shift+Z. Yields to native browser undo
   // when focus is on an editable surface (input / textarea /
   // contenteditable) — typing inside a memo body still uses the

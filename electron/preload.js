@@ -88,6 +88,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detectDialog: () => ipcRenderer.invoke('detect-dialog'),
   jumpToDialogFolder: (folderPath) => ipcRenderer.send('jump-to-dialog-folder', folderPath),
   storeLoad: () => ipcRenderer.invoke('store-load'),
+  // v1.3.50 — Boot resilience fallback: 정상 store 가 손상되었거나
+  // migrateData 가 throw 했을 때 호출. 가장 최근 backup 부터 차례로 시도.
+  storeLoadBackups: () => ipcRenderer.invoke('store-load-backups'),
   storeSave: (data) => ipcRenderer.invoke('store-save', data),
   getWindowPosition: () => ipcRenderer.invoke('get-window-position'),
   moveWindow: (x, y) => ipcRenderer.send('window-move', x, y),

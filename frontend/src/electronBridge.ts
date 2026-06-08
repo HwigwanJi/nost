@@ -92,6 +92,10 @@ export interface ElectronAPI {
   detectDialog: () => Promise<{ isDialog: boolean; title?: string; className?: string }>;
   jumpToDialogFolder: (folderPath: string) => void;
   storeLoad: () => Promise<unknown>;
+  /** v1.3.50 — Boot resilience: rolling backup (5 슬롯) 의 내용을 가장
+   *  최근부터 정렬해서 반환. migrateData 가 main store 에 throw 했을 때
+   *  fallback 으로 사용. mtime 기준 정렬은 renderer 쪽에서. */
+  storeLoadBackups: () => Promise<Array<{ slot: number; data: unknown; mtime: number }>>;
   storeSave: (data: unknown) => Promise<boolean>;
   getWindowPosition: () => Promise<[number, number]>;
   moveWindow: (x: number, y: number) => void;
@@ -375,6 +379,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   detectDialog: async () => ({ isDialog: false }),
   jumpToDialogFolder: noop,
   storeLoad: async () => null,
+  storeLoadBackups: async () => [],
   storeSave: async () => true,
   getWindowPosition: async () => [0, 0] as [number, number],
   moveWindow: noop,
