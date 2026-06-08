@@ -47,3 +47,11 @@ frontend/.env.*.local
 # hardcoded GH tokens). The PS scripts the app actually ships live in
 # ps-scripts/ and chrome-extension/ — those are NOT blocked.
 /*.ps1
+
+# v1.3.50 — repo cleanup
+# 사용자 백업 .nost 파일 (수동 export / 테스트용)
+*.nost
+# 별도 프로젝트 (Next.js landing page) — 다른 repo 로 옮기거나 별도 관리
+site/
+# 다른 프로젝트 (제안서 분석) 의 임시 텍스트 — repo 와 무관
+모집단 조사*.txt
