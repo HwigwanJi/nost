@@ -61,6 +61,17 @@ const CANCEL_BUTTON_RE = /^(?:취소|닫기|Cancel|Close)(?:\([A-Za-z]\))?$/;
  *  Save-As. Slack/Discord notification titles don't match these verbs. */
 const TITLE_FILE_VERB_RE = /(?:다른 이름으로 저장|이름으로 저장|저장|열기|불러오기|다운로드|업로드|첨부|파일 선택|폴더 선택|가져오기|내보내기|Save As|Save|Open|Download|Upload|Attach|Choose File|Choose Folder|Browse For|Select File|Select Folder|Import|Export)/i;
 
+// v1.3.49 — 브라우저 / 콘텐츠 본체 창 클래스. 이 창들은 절대 네이티브
+// 파일 다이얼로그가 아니다 (실제 Save-As 는 별도 #32770 창으로 뜸).
+// 문제: 웹 PDF / 다운로드 URL 탭의 제목에 verb(Download/저장/Open 등)가
+// 들어가면 title-verb 안전망이 isFileDialog=true 로 오판 → 스트립 오발.
+// 따라서 이 클래스들은 "버튼쌍(accept+cancel)" 으로만 다이얼로그 판정하고,
+// 제목만으로는 절대 판정하지 않는다. (HWP/Office/Adobe 자체 다이얼로그는
+// 이 목록에 없으므로 title-net 그대로 적용된다.)
+//   - Chrome_WidgetWin_N : Chrome / Edge / Whale / Brave / Electron 앱
+//   - MozillaWindowClass  : Firefox
+const NON_DIALOG_CLASS_RE = /^(?:Chrome_WidgetWin_\d+|MozillaWindowClass)$/;
+
 function init() {
   if (initialised) return supported;
   initialised = true;
@@ -152,6 +163,9 @@ function detect() {
     // verb-net으로 그 케이스도 잡힌다. className 게이트만 풀면 false
     // positive가 늘어나니, verb-net 매치를 사전 조건으로 둠.
     const titleHasVerb = TITLE_FILE_VERB_RE.test(title);
+    // v1.3.49 — 브라우저/콘텐츠 창이면 제목만으로는 다이얼로그 판정 금지
+    // (버튼쌍은 여전히 허용). 웹 PDF false-positive 차단.
+    const isBrowserClass = NON_DIALOG_CLASS_RE.test(className);
 
     // File-dialog precision check — walk descendants (BFS up to depth 5,
     // 1000 windows cap) looking for the accept+cancel button pair.
@@ -220,15 +234,17 @@ function detect() {
         }
         isFileDialog = sawAccept && sawCancel;
 
-        // Title-based safety net (see comment above).
-        if (!isFileDialog && TITLE_FILE_VERB_RE.test(title)) {
+        // Title-based safety net (see comment above) — 단, 브라우저/콘텐츠
+        // 창은 제외 (웹 PDF / 다운로드 URL 탭 false-positive 차단). 버튼쌍이
+        // 잡힌 경우는 위에서 이미 true 라 영향 없음.
+        if (!isFileDialog && !isBrowserClass && TITLE_FILE_VERB_RE.test(title)) {
           isFileDialog = true;
         }
       } catch (e) {
         // Don't fail the whole detect — fall back to title heuristic so
-        // the caller can still decide. Log once.
+        // the caller can still decide. Log once. (브라우저 창은 제외)
         log.warn('foreground-window: child-walk failed —', e?.message ?? e);
-        isFileDialog = TITLE_FILE_VERB_RE.test(title);
+        isFileDialog = !isBrowserClass && TITLE_FILE_VERB_RE.test(title);
       }
     }
 
