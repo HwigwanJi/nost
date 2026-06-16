@@ -159,6 +159,12 @@ export async function bootstrapAuth(): Promise<void> {
   }
 }
 
+// v1.3.49 — 마지막으로 교환을 시도한 code. PKCE code 는 single-use 라
+// 같은 code 를 두 번 exchange 하면 두 번째가 "invalid request / code not
+// found" 로 실패. 중복 delivery (loopback + consume-pending 동시, 또는
+// 연타) 를 가드. 성공/실패 무관 한 code 는 한 번만 시도.
+let lastExchangedCode: string | null = null;
+
 async function handleDeepLink(url: string): Promise<void> {
   if (!supabase) return;
   try {
@@ -166,8 +172,20 @@ async function handleDeepLink(url: string): Promise<void> {
     const u = new URL(url);
     const code = u.searchParams.get('code');
     if (code) {
+      // v1.3.49 — 중복 교환 방어. 같은 code 가 두 번 들어오면 두 번째는
+      // 이미 소비됐으므로 무시 (에러로 status 를 망치지 않음).
+      if (code === lastExchangedCode) {
+        console.warn('[auth] duplicate code delivery ignored');
+        return;
+      }
+      lastExchangedCode = code;
       const { error } = await supabase.auth.exchangeCodeForSession(code);
-      if (error) throw error;
+      if (error) {
+        // v1.3.49 — 정확한 supabase 에러를 main.log 에 남김. 이전엔
+        // setState(error) 만 하고 로그를 안 남겨 원인 진단 불가였음.
+        console.error('[auth] exchangeCodeForSession failed:', error.message, '(code:', error.code ?? 'n/a', 'status:', error.status ?? 'n/a', ')');
+        throw error;
+      }
       return;
     }
     // Implicit flow: callback contains #access_token=…&refresh_token=…
@@ -184,10 +202,12 @@ async function handleDeepLink(url: string): Promise<void> {
     const errorDesc = u.searchParams.get('error_description') ?? params.get('error_description');
     if (errorDesc) throw new Error(errorDesc);
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[auth] handleDeepLink failed:', msg);
     setState(prev => ({
       ...prev,
       status: 'error',
-      errorMessage: err instanceof Error ? err.message : String(err),
+      errorMessage: msg,
     }));
   }
 }
@@ -199,6 +219,9 @@ export async function signIn(provider: Provider): Promise<void> {
     setState(prev => ({ ...prev, status: 'error', errorMessage: 'Supabase가 설정되지 않았어요. .env 확인.' }));
     return;
   }
+  // v1.3.49 — 새 로그인 시도는 깨끗한 상태에서. 직전 실패의 dedup 가드를
+  // 풀어 같은 브라우저 세션이 같은 code 를 다시 줘도 (드묾) 교환 시도 가능.
+  lastExchangedCode = null;
   setState(prev => ({ ...prev, status: 'authing', errorMessage: null }));
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider,
