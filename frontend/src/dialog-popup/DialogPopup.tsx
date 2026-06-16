@@ -20,7 +20,7 @@
  * makes the popup auto-vanish; the ✕ button only hides for the current
  * dialog session.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 
 interface FolderRef {
   id: string;
@@ -173,6 +173,28 @@ export function DialogPopup() {
 
   const drillSpace = drillSpaceId ? visibleSpaces.find(s => s.id === drillSpaceId) : null;
 
+  // v1.3.49 — 칩 스트립 가로 스크롤. 880px 고정 폭 창에 스페이스/폴더 칩이
+  // 넘치면 우측 칩이 잘려 보였음 (사용자: "클리핑"). overflowX:auto 는 있었지만
+  // scrollbarWidth:none + 휠→가로 매핑 없음이라 넘친 칩에 도달할 방법이 없었음.
+  // 세로 휠을 가로 스크롤로 변환 + 우측 fade 마스크로 "더 있음" 표시.
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [scrollHint, setScrollHint] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const updateScrollHint = useCallback(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    setScrollHint({ left: el.scrollLeft > 2, right: el.scrollLeft < maxScroll - 2 });
+  }, []);
+  // 칩 목록 변화 / drill 전환 시 힌트 재계산.
+  useEffect(() => { updateScrollHint(); }, [updateScrollHint, visibleSpaces.length, drillSpaceId]);
+  const onStripWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const el = stripRef.current;
+    if (!el) return;
+    // 세로 휠이 더 크면 가로로 변환 (트랙패드 가로 제스처는 deltaX 그대로).
+    const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
+    if (delta !== 0) { el.scrollLeft += delta; updateScrollHint(); }
+  }, [updateScrollHint]);
+
   // Theme.
   const bg     = light ? C.bgLight : C.bg;
   const border = light ? C.borderL : C.border;
@@ -253,6 +275,9 @@ export function DialogPopup() {
 
       {/* Scrollable chip row */}
       <div
+        ref={stripRef}
+        onWheel={onStripWheel}
+        onScroll={updateScrollHint}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -261,6 +286,15 @@ export function DialogPopup() {
           minWidth: 0,
           overflowX: 'auto',
           scrollbarWidth: 'none',
+          // v1.3.49 — 넘친 칩이 있는 쪽 가장자리를 fade 로 표시 (스크롤 가능
+          // 신호). 양쪽 상태에 따라 mask 동적 적용.
+          maskImage: scrollHint.left && scrollHint.right
+            ? 'linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent)'
+            : scrollHint.right
+              ? 'linear-gradient(to right, black calc(100% - 24px), transparent)'
+              : scrollHint.left
+                ? 'linear-gradient(to right, transparent, black 24px)'
+                : undefined,
         }}
       >
         {drillSpace
