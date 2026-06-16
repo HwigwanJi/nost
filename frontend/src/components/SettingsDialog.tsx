@@ -128,6 +128,19 @@ interface SettingsDialogProps {
   onExtendAllMemos?: () => number;
   /** Empty the trash hard. Returns count purged. */
   onEmptyMemoTrash?: () => number;
+  /** v1.3.49 — 메인 렌더러가 인증된 supabase 로 조회한 기기 목록 + sync
+   *  상태. satellite 의 supabase 는 세션이 없어 직접 못 가져옴 → 메인이
+   *  push. 이게 있으면 SyncDevicesSection 은 직접 supabase 호출 대신 이
+   *  데이터로 렌더하고 mutation 은 settings-dialog action 으로 라우팅. */
+  syncDevices?: SyncDevicesPushed | null;
+}
+
+export interface SyncDevicesPushed {
+  devices: DeviceRow[];
+  currentDeviceTag: string | null;
+  lastSyncedAt: number | null;
+  generation: number;
+  errorMessage?: string | null;
 }
 
 // ── Settings design tokens (v1.3.34 polish) ─────────────────────────
@@ -361,7 +374,7 @@ function MemoTrashRetentionPicker({ value, onChange }: { value: 24 | 72 | 168; o
   );
 }
 
-function AccountTab() {
+function AccountTab({ syncDevices }: { syncDevices?: SyncDevicesPushed | null }) {
   const auth = useAuth();
   if (!auth.configured) {
     return (
@@ -405,7 +418,7 @@ function AccountTab() {
             </div>
           </div>
         </Section>
-        <SyncDevicesSection userId={u.id} />
+        <SyncDevicesSection userId={u.id} pushed={syncDevices ?? null} />
         <Section>
           <SectionLabel icon="logout" text="로그아웃" />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -463,61 +476,73 @@ function AccountTab() {
   );
 }
 
-function SyncDevicesSection({ userId }: { userId: string }) {
+function SyncDevicesSection({ userId, pushed }: { userId: string; pushed?: SyncDevicesPushed | null }) {
   const sync = useSyncState();
-  const [devices, setDevices] = useState<DeviceRow[] | null>(null);
-  const [currentTag, setCurrentTag] = useState<string | null>(null);
+  // v1.3.49 — satellite 모드: pushed 가 있으면 메인이 인증된 supabase 로
+  // 조회/등록/삭제하고 그 결과를 push. satellite 의 supabase 는 세션이
+  // 없어 직접 못 함 (이전엔 "로그인 필요" / 빈 목록 버그). 모든 mutation 은
+  // settings-dialog action 으로 라우팅. pushed 가 없으면 (inline/dev) 기존
+  // 직접 호출 경로 유지.
+  const satMode = !!pushed;
+  const sat = (window as { settingsDialog?: { action: (a: unknown) => void } }).settingsDialog;
+
+  const [localDevices, setLocalDevices] = useState<DeviceRow[] | null>(null);
+  const [localTag, setLocalTag] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
+    if (satMode) { sat?.action({ kind: 'sync-refresh-devices' }); return; }
     const [rows, identity] = await Promise.all([
       listDevices(userId),
       getDeviceIdentity().catch(() => null),
     ]);
-    setDevices(rows);
-    setCurrentTag(identity?.deviceId ?? null);
-  }, [userId]);
+    setLocalDevices(rows);
+    setLocalTag(identity?.deviceId ?? null);
+  }, [satMode, sat, userId]);
 
-  useEffect(() => { void refresh(); }, [refresh, sync.lastSyncedAt, sync.deviceRowId]);
+  // satellite 모드 첫 mount 에 목록 1회 요청 (App 도 settings 열릴 때 push
+  // 하지만, 이미 열려있는 채로 계정 탭 진입 시 보강).
+  useEffect(() => { if (satMode) sat?.action({ kind: 'sync-refresh-devices' }); }, [satMode, sat]);
+  useEffect(() => { if (!satMode) void refresh(); }, [satMode, refresh, sync.lastSyncedAt, sync.deviceRowId]);
 
   const onDelete = useCallback(async (rowId: string) => {
+    if (satMode) { setBusyId(rowId); sat?.action({ kind: 'sync-delete-device', rowId }); return; }
     setBusyId(rowId);
-    setErrorMsg(null);
+    setLocalError(null);
     const r = await deleteDevice(rowId);
     setBusyId(null);
-    if (!r.ok) { setErrorMsg(r.message ?? '삭제 실패'); return; }
+    if (!r.ok) { setLocalError(r.message ?? '삭제 실패'); return; }
     await refresh();
-  }, [refresh]);
+  }, [satMode, sat, refresh]);
 
   const onAddDevice = useCallback(async () => {
-    setErrorMsg(null);
+    if (satMode) { sat?.action({ kind: 'sync-register-device' }); return; }
+    setLocalError(null);
     const r = await registerThisDevice();
-    if (!r.ok) setErrorMsg(r.message ?? '등록 실패');
+    if (!r.ok) setLocalError(r.message ?? '등록 실패');
     await refresh();
-  }, [refresh]);
+  }, [satMode, sat, refresh]);
 
   const onSync = useCallback(async () => {
-    setErrorMsg(null);
-    // v1.3.48 — SettingsDialog runs in a satellite renderer whose
-    // supabase instance has no session. The preview + commit must be
-    // executed in the main renderer (where useAppData lives and
-    // supabase has the live session). Route via satellite action.
-    const sat = (window as { settingsDialog?: { action: (a: { kind: string }) => void } }).settingsDialog;
-    if (sat) {
-      sat.action({ kind: 'sync-preview' });
-      return;
-    }
-    // Inline fallback path (currently unreachable — SettingsDialog
-    // only mounts as a satellite — but kept for symmetry in case the
-    // dialog is ever inlined back during dev / tests).
+    setLocalError(null);
+    if (satMode) { sat?.action({ kind: 'sync-preview' }); return; }
     const r = await syncFull();
-    if (!r.ok && r.message && r.message !== 'conflict') setErrorMsg(r.message);
-  }, []);
+    if (!r.ok && r.message && r.message !== 'conflict') setLocalError(r.message);
+  }, [satMode, sat]);
+
+  // 표시 데이터 — satellite 모드면 pushed, 아니면 local.
+  const devices: DeviceRow[] | null = satMode ? (pushed!.devices ?? []) : localDevices;
+  const currentTag = satMode ? pushed!.currentDeviceTag : localTag;
+  const errorMsg = satMode ? (pushed!.errorMessage ?? null) : localError;
+  const lastSyncedAt = satMode ? pushed!.lastSyncedAt : sync.lastSyncedAt;
+  const generation = satMode ? pushed!.generation : sync.generation;
 
   const syncing = sync.phase === 'syncing';
-  const ago = sync.lastSyncedAt ? formatRelativeShort(Date.now() - sync.lastSyncedAt) : null;
+  const ago = lastSyncedAt ? formatRelativeShort(Date.now() - lastSyncedAt) : null;
   const thisDeviceRegistered = (devices ?? []).some(d => d.deviceTag === currentTag);
+  // satMode 에서 등록 직후 busyId 를 다음 push 가 도착하면 해제 (목록 갱신).
+  useEffect(() => { if (satMode) setBusyId(null); }, [satMode, pushed]);
 
   return (
     <Section>
@@ -539,7 +564,7 @@ function SyncDevicesSection({ userId }: { userId: string }) {
       </div>
       <div style={{ fontSize: 10, color: 'var(--text-dim)', lineHeight: 1.55, marginBottom: 12 }}>
         {ago
-          ? <>마지막 동기화 <strong style={{ color: 'var(--text-muted)' }}>{ago} 전</strong> · gen {sync.generation}</>
+          ? <>마지막 동기화 <strong style={{ color: 'var(--text-muted)' }}>{ago} 전</strong> · gen {generation}</>
           : '아직 동기화되지 않았어요. 누르면 서버에 없는 항목은 받아오고, 내 최신 상태를 올립니다.'}
       </div>
 
@@ -959,7 +984,7 @@ function ShortcutCapture({ value, onChange }: { value: string; onChange: (v: str
 
 // ── Main component ───────────────────────────────────────────────────
 
-export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onStartTutorial, onOpenMemoTrash, onEmptyMemoTrash }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, settings, onSave, updateDownloaded, downloadProgress, initialTab, onStartTutorial, onOpenMemoTrash, onEmptyMemoTrash, syncDevices }: SettingsDialogProps) {
   // onExtendAllMemos was destructured for the "모든 메모 +수명" button
   // in the now-removed 일괄정리 section. Prop stays in the interface for
   // back-compat but is no longer consumed here.
@@ -1222,7 +1247,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
 
               {/* ══ 계정 ═══════════════════════════════════════════ */}
               {tab === 'account' && (
-                <AccountTab />
+                <AccountTab syncDevices={syncDevices} />
               )}
 
               {/* ══ 화면 (Appearance) ════════════════════════════════ */}

@@ -79,6 +79,17 @@ export interface ElectronAPI {
     diff: unknown;
     errorMessage?: string | null;
   } | null) => void;
+  /** v1.3.49 — Publish the device list + sync status to main → settings
+   *  satellite. Satellite has no supabase session, so the authenticated
+   *  main renderer does the listDevices/register/delete and pushes the
+   *  result here. Pass null on sign-out. */
+  publishSyncDevices: (state: {
+    devices: unknown[];
+    currentDeviceTag: string | null;
+    lastSyncedAt: number | null;
+    generation: number;
+    errorMessage?: string | null;
+  } | null) => void;
   /** Stable per-install device identity (uuid + hostname + platform).
    *  Phase 2 sync uses these to identify which PC produced each snapshot
    *  edit and to enforce Free device quotas. deviceId persists across
@@ -332,7 +343,11 @@ export type SettingsDialogAction =
   | { kind: 'signout' }
   | { kind: 'sync-preview' }
   | { kind: 'sync-commit' }
-  | { kind: 'sync-cancel' };
+  | { kind: 'sync-cancel' }
+  // v1.3.49 — device 작업도 메인 라우팅 (satellite supabase 세션 없음)
+  | { kind: 'sync-register-device' }
+  | { kind: 'sync-delete-device'; rowId: string }
+  | { kind: 'sync-refresh-devices' };
 
 /** Action payloads emitted by the ItemDialog satellite. Each kind maps
  *  1-to-1 to a callback prop the inline dialog used to receive. */
@@ -372,6 +387,7 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   authKvList: async () => ({}),
   syncAuthState: noop,
   publishSyncPreview: noop,
+  publishSyncDevices: noop,
   deviceGetInfo: async () => ({ deviceId: 'noop-device', hostname: 'unknown', platform: 'unknown' }),
   updateShortcut: noop,
   pauseGlobalShortcut: noop,

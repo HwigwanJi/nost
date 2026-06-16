@@ -75,6 +75,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // current phase + diff; main forwards to the settings-dialog satellite.
   // Pass null to dismiss the modal.
   publishSyncPreview: (state) => ipcRenderer.send('sync-preview-state', state),
+  // v1.3.49 — Device list + sync status. Main renderer (authenticated)
+  // publishes; main forwards to settings satellite (which has no session).
+  publishSyncDevices: (state) => ipcRenderer.send('sync-devices-state', state),
   deviceGetInfo: () => ipcRenderer.invoke('device:get-info'),
   getOpenWindows: () => ipcRenderer.invoke('get-open-windows'),
   focusWindow: (title, closeAfter) => ipcRenderer.invoke('focus-window', title, closeAfter),

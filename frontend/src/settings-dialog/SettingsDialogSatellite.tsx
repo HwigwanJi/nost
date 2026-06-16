@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from 'react';
 import { SettingsDialog } from '../components/SettingsDialog';
+import type { SyncDevicesPushed } from '../components/SettingsDialog';
 import { SyncPreviewModal } from '../components/SyncPreviewModal';
 import { useSatelliteTheme } from '../lib/satelliteTheme';
 import { applyExternalAuthState } from '../lib/auth';
@@ -46,6 +47,9 @@ export interface SettingsDialogSatelliteState {
     diff: SyncDiff | null;
     errorMessage?: string | null;
   } | null;
+  // v1.3.49 — 기기 목록 + sync 상태. 메인 렌더러(인증된 supabase)가 조회해
+  // push. satellite 는 supabase 세션이 없어 직접 listDevices 못 함.
+  syncDevices?: SyncDevicesPushed | null;
 }
 
 type Action =
@@ -64,7 +68,11 @@ type Action =
   // 'sync-cancel' clears the preview modal.
   | { kind: 'sync-preview' }
   | { kind: 'sync-commit' }
-  | { kind: 'sync-cancel' };
+  | { kind: 'sync-cancel' }
+  // v1.3.49 — 기기 작업 메인 라우팅
+  | { kind: 'sync-register-device' }
+  | { kind: 'sync-delete-device'; rowId: string }
+  | { kind: 'sync-refresh-devices' };
 
 interface Api {
   onState: (cb: (s: SettingsDialogSatelliteState) => void) => () => void;
@@ -119,6 +127,7 @@ export function SettingsDialogSatellite() {
         // user-visible toast separately if needed.
         onExtendAllMemos={() => { api.action({ kind: 'extend-all-memos' }); return 0; }}
         onEmptyMemoTrash={() => { api.action({ kind: 'empty-memo-trash' }); return 0; }}
+        syncDevices={state.syncDevices ?? null}
       />
       {/* Sync preview modal — mounted at the satellite root so it
           renders ABOVE the settings dialog. State arrives from main

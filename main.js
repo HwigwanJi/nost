@@ -1906,12 +1906,17 @@ let _authStateCache = { status: 'idle', user: null, configured: false };
 // current diff and phase via 'sync-preview-state' IPC; we cache and
 // forward to the settings satellite. Null = no modal showing.
 let _syncPreviewCache = null;
+// v1.3.49 — Sync device list + status. 설정 satellite 의 supabase 는 세션이
+// 없어서 listDevices/registerThisDevice 를 직접 못 함 (RLS 차단). 메인
+// 렌더러가 인증된 supabase 로 조회한 결과를 'sync-devices-state' IPC 로
+// publish → 캐시 → settings 상태 push 에 주입. satellite 는 read-only.
+let _syncDevicesCache = null;
 
 function pushSatelliteState(name) {
   const sat = satellites.get(name);
   if (!sat?.win || sat.win.isDestroyed() || !sat.state) return;
   const payload = (name === 'settings-dialog')
-    ? { ...sat.state, auth: _authStateCache, syncPreview: _syncPreviewCache }
+    ? { ...sat.state, auth: _authStateCache, syncPreview: _syncPreviewCache, syncDevices: _syncDevicesCache }
     : sat.state;
   sat.win.webContents.send(`${name}-state`, payload);
 }
@@ -5057,6 +5062,12 @@ function registerIpcHandlers() {
   // the open settings-dialog satellite.
   ipcMain.on('sync-preview-state', (_e, syncPreview) => {
     _syncPreviewCache = (syncPreview && typeof syncPreview === 'object') ? syncPreview : null;
+    pushSatelliteState('settings-dialog');
+  });
+  // v1.3.49 — device list + sync status from the authenticated main
+  // renderer → cache → settings satellite. Null clears (signed out).
+  ipcMain.on('sync-devices-state', (_e, payload) => {
+    _syncDevicesCache = (payload && typeof payload === 'object') ? payload : null;
     pushSatelliteState('settings-dialog');
   });
   registerSatelliteIpc('doc-cohort-dialog', {

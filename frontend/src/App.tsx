@@ -55,8 +55,9 @@ import { ContainerBloom, hitTestBloomZone, type Dir as BloomDir } from './compon
 import type { ParsedCommand } from './components/CommandBar';
 import { useAppData } from './hooks/useAppData';
 import { useAuth, signOut } from './lib/auth';
-import { initSync, disposeSync, syncFull } from './lib/sync';
+import { initSync, disposeSync, syncFull, registerThisDevice, getSyncState } from './lib/sync';
 import { previewSyncDiff } from './lib/sync/preview';
+import { listDevices, deleteDevice, getDeviceIdentity } from './lib/sync/device';
 import { bumpRender, startPerfFlush } from './lib/perf';
 import { faviconCandidates } from './hooks/useFavicon';
 import { setBusy, whenIdle, isUserBusy } from './lib/userBusy';
@@ -1127,6 +1128,40 @@ export default function App() {
     return () => { disposeSync(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.status, auth.user?.id]);
+
+  // v1.3.49 — 설정 satellite 의 동기화 섹션이 보여줄 기기 목록 + 상태를
+  // 인증된 메인 렌더러에서 조회해 publish. satellite 는 supabase 세션이
+  // 없어 직접 listDevices 못 함 (RLS 차단 → "로그인 필요" / 빈 목록).
+  const pushDeviceList = useCallback(async (errorMessage?: string | null) => {
+    const uid = auth.user?.id;
+    if (!uid) { electronAPI.publishSyncDevices(null); return; }
+    try {
+      const [devices, identity] = await Promise.all([
+        listDevices(uid),
+        getDeviceIdentity().catch(() => null),
+      ]);
+      const s = getSyncState();
+      electronAPI.publishSyncDevices({
+        devices,
+        currentDeviceTag: identity?.deviceId ?? null,
+        lastSyncedAt: s.lastSyncedAt,
+        generation: s.generation,
+        errorMessage: errorMessage ?? null,
+      });
+    } catch (e) {
+      electronAPI.publishSyncDevices({
+        devices: [], currentDeviceTag: null, lastSyncedAt: null, generation: 0,
+        errorMessage: e instanceof Error ? e.message : '기기 목록 조회 실패',
+      });
+    }
+  }, [auth.user?.id]);
+
+  // 설정창이 열리면 (signed-in) 기기 목록 1회 push — satellite 가 즉시
+  // 최신 상태로 렌더. dialog 가 settings 로 전환될 때마다.
+  useEffect(() => {
+    if (dialog === 'settings' && auth.status === 'signed-in') void pushDeviceList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialog, auth.status, pushDeviceList]);
 
   // One-shot "로그인됐어요" toast on first mount after a signed-in
   // transition. The auth subscriber in lib/auth.ts drops a
@@ -4163,6 +4198,7 @@ export default function App() {
             if (r.ok) {
               electronAPI.publishSyncPreview(null);  // dismiss modal
               showToast('동기화 완료', { duration: 2200 });
+              void pushDeviceList();  // lastSyncedAt / deviceRowId 갱신 반영
             } else {
               electronAPI.publishSyncPreview({
                 phase: 'error',
@@ -4175,13 +4211,35 @@ export default function App() {
         case 'sync-cancel':
           electronAPI.publishSyncPreview(null);
           break;
+        // v1.3.49 — 기기 등록/삭제/목록도 메인에서 (인증된 supabase).
+        // satellite 는 supabase 세션이 없어 직접 못 함. 작업 후 최신 목록
+        // 을 publishSyncDevices 로 다시 push.
+        case 'sync-register-device':
+          (async () => {
+            const r = await registerThisDevice();
+            if (!r.ok) {
+              await pushDeviceList(r.message ?? '등록 실패');
+            } else {
+              await pushDeviceList();
+            }
+          })();
+          break;
+        case 'sync-delete-device':
+          (async () => {
+            const r = await deleteDevice(action.rowId);
+            await pushDeviceList(r.ok ? null : (r.message ?? '삭제 실패'));
+          })();
+          break;
+        case 'sync-refresh-devices':
+          void pushDeviceList();
+          break;
       }
     });
     return off;
     // v1.3.48: dep 은 user.id 만 — user 객체 참조는 매 render 다를 수 있어
     // listener 재등록이 빈번. id 는 supabase 가 보장하는 stable key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, auth.user?.id, showToast]);
+  }, [store, auth.user?.id, showToast, pushDeviceList]);
 
   useEffect(() => {
     const off = electronAPI.onSettingsDialogClosed(() => {
