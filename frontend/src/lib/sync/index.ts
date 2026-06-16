@@ -119,14 +119,25 @@ export async function registerThisDevice(): Promise<{ ok: boolean; message?: str
   return { ok: true };
 }
 
+/** Sync direction (v1.3.49 사용자 요청 — 단방향 선택).
+ *  - 'both' : 양방향. server 변경을 local 에 적용 + local 을 server 에 push (기본)
+ *  - 'push' : 이 PC → 클라우드. server 에만 쓰고 local 은 안 건드림.
+ *  - 'pull' : 클라우드 → 이 PC. local 에만 적용하고 server 는 안 건드림.
+ *  머지는 항상 비파괴 union (mergeServerIntoLocal) — 방향은 "어느 쪽에
+ *  쓸지" 게이트만 한다. 그래서 push-only 가 server-only 카드를 지우거나
+ *  pull-only 가 local-only 카드를 지우지 않음. */
+export type SyncDirection = 'both' | 'push' | 'pull';
+
 /** Manual button: "동기화하기". One round-trip:
- *    pull → merge (local-first union) → apply → push.
+ *    pull → merge (local-first union) → (apply?) → (push?).
  *  Lazy-registers this device if the user hasn't clicked "현재 기기 추가"
  *  yet, so a fresh login can sync without two-step UX. */
-export async function syncFull(): Promise<{ ok: boolean; message?: string }> {
+export async function syncFull(direction: SyncDirection = 'both'): Promise<{ ok: boolean; message?: string }> {
   if (!currentUserId || !getCurrentLocal || !applyMergedData) {
     return { ok: false, message: '로그인 필요' };
   }
+  const doApply = direction === 'both' || direction === 'pull';  // local 에 쓸지
+  const doPush  = direction === 'both' || direction === 'push';  // server 에 쓸지
   setState(prev => ({ ...prev, phase: 'syncing', errorMessage: null }));
 
   try {
@@ -142,14 +153,25 @@ export async function syncFull(): Promise<{ ok: boolean; message?: string }> {
     // Step 1: pull
     const pulled = await pullSnapshot(currentUserId);
 
-    // Step 2 + 3: merge + apply (only if server has data — first push
-    // for a new account skips straight to insert).
+    // Step 2 + 3: merge + (apply if direction allows local writes).
     let merged: AppData = getCurrentLocal();
     let expectedGen = 0;
     if (pulled.found && pulled.data) {
       merged = mergeServerIntoLocal(merged, pulled.data);
       expectedGen = pulled.generation;
-      applyMergedData(merged);
+      if (doApply) applyMergedData(merged);
+    }
+
+    // v1.3.49 — pull-only: server 는 안 건드림. local 적용까지만 하고 종료.
+    if (!doPush) {
+      setState(prev => ({
+        ...prev,
+        phase: 'ready',
+        // generation 은 server 가 안 바뀌었으니 pulled 기준 유지.
+        generation: pulled.found ? pulled.generation : prev.generation,
+        lastSyncedAt: Date.now(),
+      }));
+      return { ok: true };
     }
 
     // Step 4: push the merged result. If there's no server row, insert;
@@ -180,7 +202,7 @@ export async function syncFull(): Promise<{ ok: boolean; message?: string }> {
       const repulled = await pullSnapshot(currentUserId);
       if (repulled.found && repulled.data) {
         merged = mergeServerIntoLocal(getCurrentLocal(), repulled.data);
-        applyMergedData(merged);
+        if (doApply) applyMergedData(merged);  // push-only 면 local 안 건드림
         pushed = await pushSnapshot(currentUserId, merged, repulled.generation, deviceId);
       }
     }

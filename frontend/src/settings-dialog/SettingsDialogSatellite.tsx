@@ -67,7 +67,7 @@ type Action =
   // back via syncPreview state field. 'sync-commit' runs syncFull.
   // 'sync-cancel' clears the preview modal.
   | { kind: 'sync-preview' }
-  | { kind: 'sync-commit' }
+  | { kind: 'sync-commit'; direction: 'both' | 'push' | 'pull' }
   | { kind: 'sync-cancel' }
   // v1.3.49 — 기기 작업 메인 라우팅
   | { kind: 'sync-register-device' }
@@ -138,7 +138,7 @@ export function SettingsDialogSatellite() {
         phase={preview?.phase ?? 'loading'}
         errorMessage={preview?.errorMessage ?? null}
         onClose={() => api.action({ kind: 'sync-cancel' })}
-        onConfirm={() => api.action({ kind: 'sync-commit' })}
+        onConfirm={(direction) => api.action({ kind: 'sync-commit', direction })}
       />
     </>
   );

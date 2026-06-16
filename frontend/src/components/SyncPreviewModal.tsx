@@ -16,15 +16,19 @@
  *   - phase='syncing' → 스피너 + 비활성 버튼
  */
 
+import { useState, useEffect } from 'react';
 import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { Icon } from './ui/Icon';
 import type { SyncDiff } from '../lib/sync/preview';
 import { isNoOpDiff } from '../lib/sync/preview';
+import type { SyncDirection } from '../lib/sync';
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  /** v1.3.49 — 선택한 방향과 함께 commit. 'both'(양방향) / 'push'(이PC→클라우드)
+   *  / 'pull'(클라우드→이PC). */
+  onConfirm: (direction: SyncDirection) => void;
   diff: SyncDiff | null;
   /** preview 계산 중 / commit 중 / 일반 */
   phase: 'loading' | 'preview' | 'syncing' | 'error';
@@ -64,9 +68,25 @@ function SectionHeader({ icon, title, count, color }: { icon: string; title: str
 }
 
 export function SyncPreviewModal({ open, onClose, onConfirm, diff, phase, errorMessage }: Props) {
-  // v1.3.48 UX: 변경 없음일 때 확인 버튼 disable — 의미 없는 round-trip 방지.
-  const noOp = !!(diff && isNoOpDiff(diff));
-  const canConfirm = phase === 'preview' && !!diff && !noOp;
+  // v1.3.49 — 방향 선택. 기본 양방향. 모달 열릴 때마다 'both' 로 리셋.
+  const [direction, setDirection] = useState<SyncDirection>('both');
+  useEffect(() => { if (open) setDirection('both'); }, [open]);
+
+  // 방향별로 실제 적용될 변경량 — '확인' 버튼 disable 판단에 사용.
+  const pushTotal = diff ? diff.push.items + diff.push.spaces + diff.push.presets + diff.push.nodeGroups + diff.push.decks : 0;
+  const pullTotal = diff ? diff.pull.items + diff.pull.spaces + diff.pull.presets + diff.pull.nodeGroups + diff.pull.decks : 0;
+  // 선택 방향에서 실제로 변하는 게 있는지 (없으면 no-op).
+  const effectiveChange =
+    direction === 'push' ? pushTotal :
+    direction === 'pull' ? pullTotal :
+    (pushTotal + pullTotal + (diff?.changedItems ?? 0) + (diff?.tombstonedItems ?? 0));
+  // 첫 sync (server row 없음) 는 무조건 push 필요 → 'pull' 은 무의미.
+  const firstSync = !!(diff && !diff.serverHasRow);
+  const noOp = !!diff && diff.serverHasRow && effectiveChange === 0;
+  const canConfirm = phase === 'preview' && !!diff && !noOp && !(firstSync && direction === 'pull');
+
+  const showPush = direction !== 'pull';   // push 섹션 강조 여부
+  const showPull = direction !== 'push';   // pull 섹션 강조 여부
   return (
     <Dialog
       open={open}
@@ -104,8 +124,41 @@ export function SyncPreviewModal({ open, onClose, onConfirm, diff, phase, errorM
 
           {phase !== 'loading' && diff && (
             <>
+              {/* v1.3.49 — 방향 토글 (양방향 / 이PC→클라우드 / 클라우드→이PC) */}
+              <div style={{ display: 'flex', gap: 4, marginBottom: 14, padding: 3, borderRadius: 8, background: 'var(--surface)' }}>
+                {([
+                  { k: 'both', label: '양방향', icon: 'sync_alt' },
+                  { k: 'push', label: '이 PC → 클라우드', icon: 'cloud_upload' },
+                  { k: 'pull', label: '클라우드 → 이 PC', icon: 'cloud_download' },
+                ] as const).map(opt => {
+                  const active = direction === opt.k;
+                  const optDisabled = firstSync && opt.k === 'pull';  // 첫 sync 는 pull 무의미
+                  return (
+                    <button
+                      key={opt.k}
+                      type="button"
+                      onClick={() => !optDisabled && setDirection(opt.k)}
+                      disabled={optDisabled || phase === 'syncing'}
+                      title={optDisabled ? '클라우드에 아직 데이터가 없어요' : ''}
+                      style={{
+                        flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3,
+                        padding: '7px 4px', borderRadius: 6, border: 'none',
+                        background: active ? 'var(--accent)' : 'transparent',
+                        color: active ? '#fff' : optDisabled ? 'var(--text-dim)' : 'var(--text-muted)',
+                        cursor: optDisabled || phase === 'syncing' ? 'default' : 'pointer',
+                        fontFamily: 'inherit', fontSize: 10, fontWeight: active ? 700 : 500,
+                        opacity: optDisabled ? 0.4 : 1, transition: 'background 0.12s, color 0.12s',
+                      }}
+                    >
+                      <Icon name={opt.icon} size={14} color={active ? '#fff' : 'var(--text-muted)'} />
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+
               {/* Push */}
-              <div style={{ marginBottom: 14 }}>
+              <div style={{ marginBottom: 14, opacity: showPush ? 1 : 0.35, transition: 'opacity 0.15s' }}>
                 <SectionHeader
                   icon="cloud_upload"
                   title="이 PC → 클라우드"
@@ -120,7 +173,7 @@ export function SyncPreviewModal({ open, onClose, onConfirm, diff, phase, errorM
               </div>
 
               {/* Pull */}
-              <div style={{ marginBottom: 14 }}>
+              <div style={{ marginBottom: 14, opacity: showPull ? 1 : 0.35, transition: 'opacity 0.15s' }}>
                 <SectionHeader
                   icon="cloud_download"
                   title="클라우드 → 이 PC"
@@ -232,7 +285,7 @@ export function SyncPreviewModal({ open, onClose, onConfirm, diff, phase, errorM
           >닫기</button>
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm(direction)}
             disabled={!canConfirm && phase !== 'syncing'}
             title={noOp ? '변경 사항이 없어 동기화할 항목이 없어요.' : ''}
             style={{

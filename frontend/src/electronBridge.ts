@@ -342,7 +342,7 @@ export type SettingsDialogAction =
   | { kind: 'empty-memo-trash' }
   | { kind: 'signout' }
   | { kind: 'sync-preview' }
-  | { kind: 'sync-commit' }
+  | { kind: 'sync-commit'; direction: 'both' | 'push' | 'pull' }
   | { kind: 'sync-cancel' }
   // v1.3.49 — device 작업도 메인 라우팅 (satellite supabase 세션 없음)
   | { kind: 'sync-register-device' }

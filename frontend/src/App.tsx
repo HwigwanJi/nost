@@ -4194,7 +4194,8 @@ export default function App() {
         case 'sync-commit':
           (async () => {
             electronAPI.publishSyncPreview({ phase: 'syncing', diff: null });
-            const r = await syncFull();
+            // v1.3.49 — 방향 선택 반영 (both / push / pull)
+            const r = await syncFull(action.direction);
             if (r.ok) {
               electronAPI.publishSyncPreview(null);  // dismiss modal
               showToast('동기화 완료', { duration: 2200 });
