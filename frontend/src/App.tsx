@@ -3929,9 +3929,10 @@ export default function App() {
     allItems,
     monitorDirections: data.settings.monitorDirections as Record<number, string> | undefined,
     closeAfter: data.settings.closeAfterOpen,
+    cardActionGesture: data.settings.cardActionGesture ?? 'ctrl-click',
     searchQuery: query,
     justAddedItemIds,
-  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, monitors, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, query, justAddedItemIds]);
+  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, monitors, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, data.settings.cardActionGesture, query, justAddedItemIds]);
 
   const appActions = useMemo<AppActions>(() => ({
     showToast,

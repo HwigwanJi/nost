@@ -329,6 +329,15 @@ export interface AppSettings {
    */
   windowOpenAt?: 'cursor' | 'last';
   /**
+   * v1.3.50 — 카드 4방향 액션 팝업을 여는 제스처.
+   *   'hold'         : 길게 누르기 (~450ms). 역사적 기본.
+   *   'ctrl-click'   : Ctrl(또는 ⌘)+클릭. 신규 설치 기본.
+   *   'double-click' : 더블클릭. 단일클릭(실행)이 ~220ms 지연되는 비용 있음.
+   * hold 는 어떤 설정이든 항상 보조로 동작 (근육기억 보존, 무충돌).
+   * 이 값은 "추가로 어떤 제스처를 켤지 + 더블클릭 지연 모드 여부"를 정함.
+   */
+  cardActionGesture?: 'hold' | 'ctrl-click' | 'double-click';
+  /**
    * One-shot migration flag set by useAppData::migrateData when the
    * v1.3.46 defaults pass runs (currently: flip legacy 'cursor' →
    * 'last' for users who never explicitly chose). Persists in store

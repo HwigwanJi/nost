@@ -35,6 +35,8 @@ export interface AppState {
   allItems: LauncherItem[];
   monitorDirections: Record<number, string> | undefined;
   closeAfter: boolean;
+  /** v1.3.50 — 카드 4방향 액션 팝업 제스처 ('hold' | 'ctrl-click' | 'double-click'). */
+  cardActionGesture: 'hold' | 'ctrl-click' | 'double-click';
   searchQuery: string;
   justAddedItemIds: Set<string>;
 }

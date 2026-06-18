@@ -176,6 +176,9 @@ function ItemCardImpl({
   const [holdDir, setHoldDir] = useState<SlotDir | null>(null);
   const [holdMonitorMode, setHoldMonitorMode] = useState(false);
   const [holdClosing, setHoldClosing] = useState(false);
+  // v1.3.50 — 팝업이 클릭(ctrl/더블)으로 열렸는지. true 면 바깥클릭 백드롭
+  // 렌더 (hold 는 pointerup 으로 닫혀서 백드롭 불필요).
+  const [clickOpened, setClickOpened] = useState(false);
 
   // Refs
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -205,7 +208,7 @@ function ItemCardImpl({
     activeMode = 'normal', nodeGroups = [], nodeBuilding = [], decks = [],
     deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, monitors = [], allItems = [],
     monitorDirections, closeAfter, searchQuery = '',
-    justAddedItemIds,
+    justAddedItemIds, cardActionGesture = 'ctrl-click',
   } = useAppState();
   const isJustAdded = justAddedItemIds?.has(item.id) ?? false;
   const {
@@ -390,11 +393,30 @@ function ItemCardImpl({
       setHoldClosing(false);
       setHoldDir(null);
       setHoldMonitorMode(false);
+      setClickOpened(false);
       holdCardRectRef.current = null;
       isHoldActiveRef.current = false;
       holdExecutedRef.current = false;
       removeGlobalHandlers();
     }
+  };
+
+  // v1.3.50 — ctrl-click / double-click 으로 4방향 팝업 열기. hold 와 달리
+  // 누르고 있는 포인터가 없으므로 global pointermove/up 핸들러를 붙이지
+  // 않음 — 사용자는 방향 버튼을 직접 '클릭'하거나 (버튼 onClick=doHoldAction),
+  // 바깥/center 버튼/ESC/blur 로 닫는다. clickOpened state 가 바깥클릭
+  // 백드롭 렌더를 트리거.
+  const openActionPopupViaClick = () => {
+    const rect = cardRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    holdCardRectRef.current = { x: rect.left, y: rect.top, w: rect.width, h: rect.height };
+    isHoldActiveRef.current = true;
+    holdExecutedRef.current = false;
+    (document.activeElement as HTMLElement)?.blur();
+    setClickOpened(true);
+    setHoldOpen(true);
+    setHoldDir(null);
+    setHoldMonitorMode(false);
   };
 
   const launchSlot = useCallback((slotItemId: string) => {
@@ -559,22 +581,38 @@ function ItemCardImpl({
     }
   }, [item, closeAfter, loading, onClickCountIncrement, onLaunchAndPosition]);
 
-  const handleClick = useCallback(() => {
+  const handleClick = useCallback((e?: React.MouseEvent) => {
     if (monitorBadgeClickedRef.current) { monitorBadgeClickedRef.current = false; return; }
     if (wasHoldRef.current || holdOpen) return;
     if (activeMode === 'pin') { onPinModeClick(); return; }
     if (activeMode === 'node') { onNodeModeClick(); return; }
     if (activeMode === 'deck') { onDeckModeClick(); return; }
-    // v1.3.48 — Clean mode 카드 click = 그 카드 단독 삭제 (사용자 기대 정합).
-    // 이전엔 no-op (return) 으로 "스페이스 청소 버튼만 동작" 정책이었는데,
-    // pin/node/deck 모드는 다 카드별 tool action 이 있고 clean 만 빠진 게
-    // policy-매트릭스의 'tool action ✓' 와 어긋남. 핀/컨테이너 카드는
-    // onCleanModeClick 내부에서 가드 (배치 청소와 동일 규칙). undo 토스트
-    // 도 동일.
     if (activeMode === 'clean') { onCleanModeClick(); return; }
     if (isInactive && item.type === 'window') { onInactiveClick(); return; }
 
-    // All cards (including containers): short click = launch normally
+    // v1.3.50 — ctrl-click 제스처: Ctrl/⌘+클릭 → 4방향 팝업. 단일클릭
+    // (실행) 과 modifier 로 분리돼 지연 없음. 설정이 'ctrl-click' 일 때만.
+    if (cardActionGesture === 'ctrl-click' && (e?.ctrlKey || e?.metaKey)) {
+      openActionPopupViaClick();
+      return;
+    }
+
+    // v1.3.50 — double-click 제스처: 더블클릭 → 4방향 팝업. 단일클릭
+    // (실행) 은 두번째 클릭을 기다려야 하므로 DBLCLICK_MS 지연. 이 모드
+    // 에서만 모든 실행이 ~220ms 늦어지는 비용 (설정 화면에서 안내).
+    if (cardActionGesture === 'double-click') {
+      if (clickTimerRef.current) {
+        clearTimeout(clickTimerRef.current);
+        clickTimerRef.current = null;
+        openActionPopupViaClick();   // 두번째 클릭 = 팝업
+      } else {
+        clickTimerRef.current = setTimeout(() => { clickTimerRef.current = null; executeLaunch(false); }, DBLCLICK_MS);
+      }
+      return;
+    }
+
+    // 기본 단일클릭 = 실행. window/app/folder 는 더블클릭=최대화 (gesture
+    // 가 double-click 이 아닐 때만 — 그 모드는 위에서 팝업으로 가로챔).
     if (item.type === 'window' || item.type === 'app' || item.type === 'folder') {
       if (clickTimerRef.current) {
         clearTimeout(clickTimerRef.current);
@@ -587,7 +625,7 @@ function ItemCardImpl({
       executeLaunch(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMode, item, isInactive, holdOpen, executeLaunch]);
+  }, [activeMode, item, isInactive, holdOpen, executeLaunch, cardActionGesture]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button === 2) {
@@ -1253,6 +1291,17 @@ function ItemCardImpl({
         pointerEvents:'none',
       }}
     >
+      {/* v1.3.50 — 바깥클릭 닫기 백드롭. 클릭(ctrl/더블)으로 연 팝업은
+          hold 처럼 pointerup 으로 안 닫히므로 명시적 백드롭 필요. 첫 자식
+          이라 방향 버튼들(이후 렌더)이 위에 깔림 — 버튼 클릭은 버튼이,
+          그 외 영역 클릭은 백드롭이 받아 닫음. hold-open 시엔 미렌더. */}
+      {clickOpened && (
+        <div
+          data-hold-popup
+          onClick={() => closeHoldPopup(true)}
+          style={{ position:'fixed', inset:0, pointerEvents:'auto', background:'transparent' }}
+        />
+      )}
       {/* Center button — minimal */}
       <button
         data-hold-popup

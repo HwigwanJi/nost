@@ -203,6 +203,10 @@ function migrateData(parsed: AppData): AppData {
       ? 'last'   // ← migration: ignore stored value for old installs
       : (parsed.settings.windowOpenAt === 'cursor' ? 'cursor' : 'last'),
     _defaultsV146Migrated: true,
+    // v1.3.50 — 카드 액션 제스처. 기본 ctrl-click. hold 는 ItemCard 에서
+    // 설정과 무관하게 항상 보조 동작하므로 기존 사용자 근육기억 무손실 —
+    // fresh/existing 구분 없이 모두 ctrl-click 기본 줘도 안전.
+    cardActionGesture: parsed.settings.cardActionGesture ?? 'ctrl-click',
     accentColor: parsed.settings.accentColor ?? '#6366f1',
     documentExtensions: parsed.settings.documentExtensions ?? [],
     floatingButton: parsed.settings.floatingButton ?? {
