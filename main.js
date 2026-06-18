@@ -2223,7 +2223,19 @@ function buildBadgePayload(data) {
   }
 
   const out = [];
+  // A badge is identified by what it references (refType:refId). Legacy /
+  // cross-device-synced stores can hold two entries with the same ref but
+  // different `id` (two devices each pinned the same node group → LWW union
+  // by id kept both). The overlay keys by refType:refId, so emitting both
+  // triggers React's "two children with the same key, node:…" warning and
+  // stacks two identical badges. Emit the first occurrence per ref only.
+  // (snapshot.ts/dedupeBadgesByRef cleans this at the source on next sync;
+  //  this guards the overlay for stores that haven't re-synced yet.)
+  const seenRefs = new Set();
   for (const b of badges) {
+    const refKey = `${b.refType}:${b.refId}`;
+    if (seenRefs.has(refKey)) continue;
+    seenRefs.add(refKey);
     if (b.refType === 'space') {
       const s = spaces.find(x => x.id === b.refId);
       if (!s) {

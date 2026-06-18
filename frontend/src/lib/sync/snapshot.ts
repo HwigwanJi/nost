@@ -96,7 +96,7 @@ export function mergeServerIntoLocal(local: AppData, server: Partial<AppData>): 
       spaces: mergeSpacesLWW(p.spaces, sp.spaces, mergedTombstones),
       nodeGroups: mergeListLWW<NodeGroup>(p.nodeGroups ?? [], sp.nodeGroups ?? [], mergedTombstones.nodeGroups),
       decks: mergeListLWW<Deck>(p.decks ?? [], sp.decks ?? [], mergedTombstones.decks),
-      floatingBadges: mergeListLWW<FloatingBadge>(p.floatingBadges ?? [], sp.floatingBadges ?? [], mergedTombstones.floatingBadges),
+      floatingBadges: dedupeBadgesByRef(mergeListLWW<FloatingBadge>(p.floatingBadges ?? [], sp.floatingBadges ?? [], mergedTombstones.floatingBadges)),
     };
   });
   // Server-only presets: add if not tombstoned
@@ -124,7 +124,7 @@ export function mergeServerIntoLocal(local: AppData, server: Partial<AppData>): 
     presets: mergedPresets,
     nodeGroups:     mergeListLWW<NodeGroup>(local.nodeGroups ?? [], server.nodeGroups ?? [], mergedTombstones.nodeGroups),
     decks:          mergeListLWW<Deck>(local.decks ?? [], server.decks ?? [], mergedTombstones.decks),
-    floatingBadges: mergeListLWW<FloatingBadge>(local.floatingBadges ?? [], server.floatingBadges ?? [], mergedTombstones.floatingBadges),
+    floatingBadges: dedupeBadgesByRef(mergeListLWW<FloatingBadge>(local.floatingBadges ?? [], server.floatingBadges ?? [], mergedTombstones.floatingBadges)),
     collapsedSpaceIds: local.collapsedSpaceIds,
     settings,
     activePresetId: local.activePresetId,
@@ -180,6 +180,28 @@ function mergeListLWW<T extends { id: string; lastModifiedAt?: number }>(
     byId.set(x.id, sv > lv ? x : existing);
   }
   return Array.from(byId.values());
+}
+
+/** Collapse floating badges that reference the SAME thing.
+ *
+ *  A badge is uniquely identified by what it points at (refType:refId) —
+ *  there is no meaning to two badges for the same node group / deck / space.
+ *  But mergeListLWW keys by `id`, and two devices that each pinned the same
+ *  ref produce entries with DIFFERENT ids and the SAME refType:refId; the
+ *  id-keyed union keeps both. Rendered, those collide on the overlay's
+ *  `refType:refId` React key ("two children with the same key, node:…") and
+ *  stack two identical badges at the same spot. Collapse to the LWW winner
+ *  (latest lastModifiedAt = most recent pin / reposition). */
+function dedupeBadgesByRef(list: readonly FloatingBadge[]): FloatingBadge[] {
+  const byRef = new Map<string, FloatingBadge>();
+  for (const b of list) {
+    const key = `${b.refType}:${b.refId}`;
+    const existing = byRef.get(key);
+    if (!existing || (b.lastModifiedAt ?? 0) > (existing.lastModifiedAt ?? 0)) {
+      byRef.set(key, b);
+    }
+  }
+  return Array.from(byRef.values());
 }
 
 /** LWW merge for spaces — nested because each space carries an `items`
