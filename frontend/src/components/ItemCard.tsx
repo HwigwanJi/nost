@@ -338,6 +338,26 @@ function ItemCardImpl({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [holdOpen, holdMonitorMode, monitorCount]);
 
+  // ── Hold 팝업 — 포커스 이탈 시 강제 닫기 (v1.3.50) ──────────────
+  // 버그: 4방향 중 하나를 골라 새 창(이미지 뷰어 / 카드 수정 satellite /
+  // 새창 열기)을 띄우면 메인 윈도우가 blur 됨. 그 창을 보고 ESC 로
+  // 돌아오면 4방향 팝업이 그대로 남아있는 경우가 있었음 (분기·타이밍
+  // 따라 closeHoldPopup 이 누락되거나, 닫기 애니메이션 도중 포커스가
+  // 빠지면서 후처리가 어긋남). 분기마다 개별로 잡는 대신, "팝업이 떠
+  // 있는데 메인 윈도우가 포커스를 잃었다 = 사용자가 다른 창으로 갔다"
+  // 는 단일 신호로 무조건 닫는다. 어떤 방향/액션이든 일관되게 정리됨.
+  useEffect(() => {
+    if (!holdOpen) return;
+    const dismiss = () => closeHoldPopup();
+    window.addEventListener('blur', dismiss);
+    document.addEventListener('visibilitychange', dismiss);
+    return () => {
+      window.removeEventListener('blur', dismiss);
+      document.removeEventListener('visibilitychange', dismiss);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdOpen]);
+
   // ── Cleanup on unmount ───────────────────────────────────────
   useEffect(() => {
     return () => {
