@@ -4453,6 +4453,24 @@ function registerIpcHandlers() {
     maybeCloseAfter(closeAfter, 700);
   });
 
+  // v1.3.50 — 이미지 뷰어 크롭 결과를 클립보드로. 크롭은 파일이 아니라
+  // canvas dataURL 이라 path 기반 copy-image-to-clipboard 로는 못 보냄.
+  // dataURL → nativeImage → clipboard.writeImage.
+  ipcMain.handle('copy-image-data-to-clipboard', async (_e, dataUrl) => {
+    try {
+      if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+        return { success: false, reason: 'bad-data-url' };
+      }
+      const img = nativeImage.createFromDataURL(dataUrl);
+      if (img.isEmpty()) return { success: false, reason: 'empty' };
+      clipboard.writeImage(img);
+      return { success: true };
+    } catch (e) {
+      log.warn('[copy-image-data-to-clipboard] failed:', e?.message);
+      return { success: false, reason: String(e?.message ?? e) };
+    }
+  });
+
   ipcMain.handle('delete-image-file', async (_e, filePath) => {
     const safe = resolveImagePath(filePath);
     if (!safe) return { success: false, reason: 'outside-images-dir' };

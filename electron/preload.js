@@ -385,4 +385,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // { path, label?, accentColor?, theme? }. close 액션 외엔 action
   // 라우팅 필요 없음 (viewer 가 readonly).
   openImageViewer: (payload) => ipcRenderer.send('open-image-viewer', payload),
+  // v1.3.50 — 뷰어 크롭 결과 (canvas dataURL) 를 클립보드로.
+  copyImageDataToClipboard: (dataUrl) => ipcRenderer.invoke('copy-image-data-to-clipboard', dataUrl),
 });

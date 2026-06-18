@@ -315,6 +315,8 @@ export interface ElectronAPI {
   /** OS default viewer 대신 내부 뷰어로 띄움. PNG/JPG/GIF/WEBP/SVG/AVIF
    *  지원. close 액션만 라우팅 (readonly viewer). */
   openImageViewer: (payload: { path: string; label?: string; accentColor?: string; theme?: 'light' | 'dark' }) => void;
+  /** v1.3.50 — 뷰어 크롭 결과 (PNG data URL) 를 클립보드에 씀. */
+  copyImageDataToClipboard: (dataUrl: string) => Promise<{ success: boolean; reason?: string }>;
 }
 
 export type DocCohortDialogAction =
@@ -490,4 +492,5 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   onContainerSlotPickerAction: () => () => {},
   onContainerSlotPickerClosed: () => () => {},
   openImageViewer: noop,
+  copyImageDataToClipboard: async () => ({ success: false, reason: 'dev-mode' }),
 };
