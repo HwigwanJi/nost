@@ -1399,7 +1399,7 @@ export function SettingsDialog({ open, onClose, settings, onSave, updateDownload
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {([
                       { value: 'ctrl-click',   icon: 'ads_click',     title: 'Ctrl + 클릭',  desc: 'Ctrl(⌘)을 누른 채 카드를 클릭합니다. 일반 클릭(실행)은 그대로 즉시 동작.' },
-                      { value: 'double-click', icon: 'touch_app',     title: '더블클릭',     desc: '카드를 빠르게 두 번 클릭합니다. 단, 일반 클릭(실행)이 약 0.2초 늦게 반응해요.' },
+                      { value: 'double-click', icon: 'touch_app',     title: '더블클릭',     desc: '카드를 빠르게 두 번 클릭합니다.' },
                       { value: 'hold',         icon: 'back_hand',     title: '꾹 누르기만',  desc: '길게 누르기만 사용합니다 (Ctrl·더블클릭 비활성).' },
                     ] as const).map(opt => {
                       const active = (form.cardActionGesture ?? 'ctrl-click') === opt.value;

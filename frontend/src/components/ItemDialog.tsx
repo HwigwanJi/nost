@@ -267,6 +267,11 @@ export function ItemDialog({
 
   const isWidgetMode = form.type === 'widget';
   const isColorSwatch = isWidgetMode && editItem?.widget?.kind === 'color-swatch';
+  // v1.3.50 — '꾸미기'(아이콘 picker + 색) 탭은 위젯/메모엔 무의미:
+  //   color-swatch 위젯은 색이 곧 content(아이콘 palette 고정),
+  //   미디어 위젯은 자체 UI, 메모는 아이콘 개념 자체가 없음.
+  // 일반 카드(url/app/folder/doc/...) 편집일 때만 꾸미기 진입 허용.
+  const advancedAllowed = isEdit && !isWidgetMode && form.type !== 'memo';
   const initialColorOpts = (editItem?.widget?.kind === 'color-swatch')
     ? editItem.widget.options
     : null;
@@ -894,7 +899,7 @@ export function ItemDialog({
      편집 모드 전용 상단 탭. 두 진입점 (우클릭 수정 / 토스트 꾸미기) 모두
      같은 다이얼로그 인스턴스에서 탭으로 전환 가능 — 사용자가 토스트
      놓쳐도 우클릭 → 수정 → '꾸미기' 탭으로 진입 가능. */
-  const editTabStrip = isEdit ? (
+  const editTabStrip = advancedAllowed ? (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 4,
       padding: '8px 20px 0', borderBottom: '1px solid var(--border-rgba)',
@@ -926,7 +931,7 @@ export function ItemDialog({
   /* ── Render: advanced mode ────────────────────────────────
      진입: (1) startAdvanced=true 로 reopen (토스트 꾸미기 버튼 경로),
             (2) 편집 모드에서 사용자가 '꾸미기' 탭 클릭. */
-  if (editTab === 'advanced' && isEdit) {
+  if (editTab === 'advanced' && advancedAllowed) {
     return (
       <Dialog open={open} onOpenChange={v => !v && onClose()}>
         <DialogContent style={{ width: 560, maxWidth: '92vw', padding: 0, overflow: 'hidden' }}>

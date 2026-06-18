@@ -78,6 +78,10 @@ function SelectContent({
         align={align}
         alignOffset={alignOffset}
         alignItemWithTrigger={alignItemWithTrigger}
+        // v1.3.50 — frameless BrowserWindow 경계 밖 잘림 회피 (dropdown/
+        // context 와 동일). 화면 가장자리 Select 가 창 밖으로 안 나가게.
+        collisionAvoidance={{ side: 'flip', align: 'shift', fallbackAxisSide: 'end' }}
+        collisionPadding={8}
         className="isolate z-50"
       >
         <SelectPrimitive.Popup

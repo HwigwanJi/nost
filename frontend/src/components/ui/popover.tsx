@@ -30,6 +30,9 @@ function PopoverContent({
         alignOffset={alignOffset}
         side={side}
         sideOffset={sideOffset}
+        // v1.3.50 — frameless BrowserWindow 경계 밖 잘림 회피.
+        collisionAvoidance={{ side: 'flip', align: 'shift', fallbackAxisSide: 'end' }}
+        collisionPadding={8}
         className="isolate z-50"
       >
         <PopoverPrimitive.Popup
