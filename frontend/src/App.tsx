@@ -3930,9 +3930,18 @@ export default function App() {
     monitorDirections: data.settings.monitorDirections as Record<number, string> | undefined,
     closeAfter: data.settings.closeAfterOpen,
     cardActionGesture: data.settings.cardActionGesture ?? 'ctrl-click',
+    // v1.3.50 — 카드 trigger 가 canPerform 통과에 쓰는 전역 충돌 상태.
+    // App 의 다른 canPerform 호출 (cmd.open 등) 과 동일 shape.
+    policyCtx: {
+      activeMode, nodeEditMode, deckBuilding,
+      editingMemoId: editingMemoId ? editingMemoId.itemId : null,
+      dialog,
+      tileOverlayGroup,
+      cmdOpen,
+    },
     searchQuery: query,
     justAddedItemIds,
-  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, monitors, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, data.settings.cardActionGesture, query, justAddedItemIds]);
+  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, monitors, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, data.settings.cardActionGesture, query, justAddedItemIds, nodeEditMode, deckBuilding, editingMemoId, dialog, tileOverlayGroup, cmdOpen]);
 
   const appActions = useMemo<AppActions>(() => ({
     showToast,

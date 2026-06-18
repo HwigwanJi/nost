@@ -51,7 +51,9 @@
 - **정책 SSOT**: `plans/conflict-avoidance-policy.md` — 모드/모달 충돌 매트릭스 + 규칙
 - **코드 SSOT**: `frontend/src/lib/conflictPolicy.ts` `canPerform(actionId, ctx)` — 모든 trigger 가 실행 전 통과
 - **피드백 SSOT**: `frontend/src/lib/conflictFeedback.ts` — `shakeElement(el)` (220ms micro-shake) + `BLOCK_TOAST_DEFAULTS`. 차단 시 visible/audible 반응 일관성.
-- **현재 마이그레이션 위치**: `ItemCard.handlePointerDown` (hold-press), `App.tsx` Tab key (preset cycle)
+- **현재 마이그레이션 위치**: `ItemCard.handlePointerDown` (hold-press), `ItemCard.handleClick` (card.launch — v1.3.50), `ItemCard` contextmenu (card.edit), `App.tsx` Tab key (preset cycle), `App.tsx` cmd.open
+- **policyCtx 전달**: ItemCard 등 카드 trigger 는 window-전역 충돌 상태를 `useAppState().policyCtx` (App 이 build) 로 받아 canPerform 에 넘김. ItemCard 가 dialog/memo/overlay/cmd 를 직접 못 보던 갭(satellite 다이얼로그 뒤 그리드 클릭) 해소 — v1.3.50.
+- **주의**: `useLaunchPipeline.launchAndPosition` 은 canPerform 가드 **금지** — cmd 팔레트·badge 등 정당한 cross-context launch 의 공용 SSOT. 가드는 trigger 레이어 (카드 클릭) 에만.
 - **금지**: 컴포넌트마다 `if (activeMode !== 'normal') return;` 같은 ad-hoc 모드 체크. 새 trigger 는 반드시 `canPerform` 통과 후 실행. 새 mode/modal 추가 시 정책 문서의 매트릭스 한 줄 + `conflictPolicy.ts:MODE_ALLOWLIST` 한 줄 추가가 유일한 의무.
 
 ### A.7 "현재 열린 창" 스캔

@@ -208,7 +208,7 @@ function ItemCardImpl({
     activeMode = 'normal', nodeGroups = [], nodeBuilding = [], decks = [],
     deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, monitors = [], allItems = [],
     monitorDirections, closeAfter, searchQuery = '',
-    justAddedItemIds, cardActionGesture = 'ctrl-click',
+    justAddedItemIds, cardActionGesture = 'ctrl-click', policyCtx,
   } = useAppState();
   const isJustAdded = justAddedItemIds?.has(item.id) ?? false;
   const {
@@ -590,6 +590,18 @@ function ItemCardImpl({
     if (activeMode === 'clean') { onCleanModeClick(); return; }
     if (isInactive && item.type === 'window') { onInactiveClick(); return; }
 
+    // v1.3.50 — 전역 충돌 가드 (conflict-avoidance-policy.md §3). 여기
+    // 도달 = activeMode==='normal' (tool 모드는 위에서 처리). 남은 차단
+    // 상태는 memo 편집 / 오버레이 / satellite 다이얼로그 / cmd 팔레트 —
+    // 그땐 launch 도 4방향 팝업도 모두 차단(matrix). 단일 게이트로 커버.
+    // 이전엔 ItemCard 가 activeMode 만 봐서, 다이얼로그(별도 창) 뒤
+    // 그리드 카드 클릭이 launch 되던 정책 위반. cmd 팔레트 자체 launch 는
+    // App.launchItem 경유라 이 게이트와 무관 (regression 없음).
+    if (policyCtx && canPerform('card.launch', policyCtx) !== true) {
+      shakeElement(cardRef.current);
+      return;
+    }
+
     // v1.3.50 — ctrl-click 제스처: Ctrl/⌘+클릭 → 4방향 팝업. 단일클릭
     // (실행) 과 modifier 로 분리돼 지연 없음. 설정이 'ctrl-click' 일 때만.
     if (cardActionGesture === 'ctrl-click' && (e?.ctrlKey || e?.metaKey)) {
@@ -625,7 +637,7 @@ function ItemCardImpl({
       executeLaunch(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMode, item, isInactive, holdOpen, executeLaunch, cardActionGesture]);
+  }, [activeMode, item, isInactive, holdOpen, executeLaunch, cardActionGesture, policyCtx]);
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button === 2) {
@@ -668,21 +680,14 @@ function ItemCardImpl({
     // tool intent and launches the card on release. The policy
     // gate also covers memo-editor / dialog / overlay / cmd states
     // for free, so this single check supersedes the older ad-hoc
-    // `if (activeMode !== 'normal')` line.
-    // ItemCard doesn't see every state directly (memo editor / dialog /
-    // tile overlay all eat pointer events at higher layers anyway).
-    // The only field that matters at this surface is `activeMode` —
-    // pass the rest as their "not active" values so the policy gate
-    // can still telemeter correctly and so a later refactor that
-    // surfaces those flags here Just Works.
-    const verdict = canPerform('card.hold-press', {
-      activeMode,
-      nodeEditMode: nodeBuilding.length > 0,
-      deckBuilding: false,
-      editingMemoId: null,
-      dialog: 'none',
-      tileOverlayGroup: null,
-      cmdOpen: false,
+    // v1.3.50 — 이전엔 dialog/memo/overlay/cmd 를 'none' 하드코딩해서
+    // hold 가 그 상태들에서 안 막혔음 ("activeMode 외엔 상위 레이어가
+    // 포인터를 먹는다" 가정인데, satellite 다이얼로그는 별도 창이라
+    // 메인 그리드가 그대로 클릭됨 → 가정 깨짐). 이제 App 이 내려주는
+    // 실제 policyCtx 로 전체 충돌 상태 반영.
+    const verdict = canPerform('card.hold-press', policyCtx ?? {
+      activeMode, nodeEditMode: nodeBuilding.length > 0, deckBuilding: false,
+      editingMemoId: null, dialog: 'none', tileOverlayGroup: null, cmdOpen: false,
     });
     if (verdict !== true) {
       shakeElement(cardRef.current);
@@ -826,14 +831,11 @@ function ItemCardImpl({
         // mid-tool-mode lets the user "수정 / 삭제" the very card
         // they should be slotting / linking / cleaning — silently
         // breaks the tool flow. Block + shake instead.
-        const verdict = canPerform('card.edit', {
-          activeMode,
-          nodeEditMode: nodeBuilding.length > 0,
-          deckBuilding: false,
-          editingMemoId: null,
-          dialog: 'none',
-          tileOverlayGroup: null,
-          cmdOpen: false,
+        // v1.3.50 — 실제 policyCtx 사용 (이전 하드코딩 'none' → 전체 충돌
+        // 상태 반영).
+        const verdict = canPerform('card.edit', policyCtx ?? {
+          activeMode, nodeEditMode: nodeBuilding.length > 0, deckBuilding: false,
+          editingMemoId: null, dialog: 'none', tileOverlayGroup: null, cmdOpen: false,
         });
         if (verdict !== true) {
           e.preventDefault();

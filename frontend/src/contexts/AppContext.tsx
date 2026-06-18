@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { LauncherItem, AppMode, NodeGroup, Deck } from '../types';
 import type { ToastAction } from '../hooks/useToastQueue';
+import type { PolicyContext } from '../lib/conflictPolicy';
 
 export type ShowToast = (
   msg: string,
@@ -37,6 +38,12 @@ export interface AppState {
   closeAfter: boolean;
   /** v1.3.50 — 카드 4방향 액션 팝업 제스처 ('hold' | 'ctrl-click' | 'double-click'). */
   cardActionGesture: 'hold' | 'ctrl-click' | 'double-click';
+  /** v1.3.50 — 윈도우 전역 충돌-회피 상태 (conflict-avoidance-policy.md §3).
+   *  카드 trigger (click / hold / ctrl·더블클릭) 가 canPerform 통과에 사용.
+   *  이전엔 ItemCard 가 activeMode 만 봐서, satellite 다이얼로그·메모
+   *  에디터·오버레이·cmd 열린 채 카드 클릭 시 정책 매트릭스(=차단)와
+   *  달리 launch 되던 갭. */
+  policyCtx: PolicyContext;
   searchQuery: string;
   justAddedItemIds: Set<string>;
 }
