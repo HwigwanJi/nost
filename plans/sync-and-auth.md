@@ -399,9 +399,38 @@ mergePerField(local, server) {
 - **P2.B (완료, v1.3.48)**: **동기화 미리보기 모달** — "지금 동기화" 클릭 시 즉시 push 안 하고 `previewSyncDiff()` 로 dry-run + 모달에 push/pull/unchanged 카운트 표시 → 사용자 확인 후 `syncFull()` 실행. SettingsDialog 가 satellite 이므로 IPC 라우팅: 위성 action 'sync-preview' → 메인 renderer 계산 → `publishSyncPreview()` → 위성 모달. cross-cutting state injection 패턴 (`ssot-index.md A.18`).
 - **P2.C (완료, v1.3.48)**: per-entity `lastModifiedAt` 도입 + LWW per-entity 머지 + tombstone (deletes 전파). 30일 후 tombstone hard purge. push 충돌 시 1회 auto-retry.
 - **P2.D (완료, v1.3.48)**: 위치 / 컨텐츠 분리. reorder/move 가 item.lastModifiedAt 을 도장하지 않도록 수정 (위치는 space.items[] 배열이 소유) + mergeItemsLWW 가 winner-space 의 items[] 순서를 primary 로 채택. 결과: "한쪽 본문 수정 + 다른 쪽 reorder/move" 케이스에 양쪽 다 살아남음.
-- **P2.E (TODO, resource-light alternative to realtime)**: Per-field 타임스탬프 + CRDT-식 머지 (같은 item 의 title 과 icon 이 다른 PC 에서 동시 편집 시 둘 다 살아남는 진짜 field-level LWW). 현재는 item 통째 LWW 라 같은 item 의 다른 필드 동시 편집은 한쪽이 이김. 사용자 시나리오 빈도 낮아서 deferred.
+- **P2.E (DEFERRED — 설계만, 구현 보류)**: Per-field LWW. 같은 item 의
+  다른 필드를 두 PC 가 동기화 사이에 각각 편집 시 둘 다 보존.
+  **현재 한계**: P2.C 의 entity 통째 LWW → 더 최근에 만진 쪽이 그 item 의
+  *모든* 필드를 가져감. 예: PC1 제목 수정(14:00) + PC2 색 변경(14:05) →
+  sync 시 PC2 승 → PC1 제목 수정 묻힘.
+  **판단 (2026-06 사용자 합의)**: 굳이 필요 없는 기능. 데이터 손실 아님
+  (한쪽 *편집*만 묻힘, 카드 자체는 살아있음) + 빈도 극히 낮음 (같은
+  카드의 다른 필드를, 동기화 사이에, 두 PC 가 동시 편집). 구현 비용 ↔
+  가치 비대칭이 큼. 실사용 충돌 보고 들어오면 그때 착수.
+  **설계 (착수 시 따를 청사진)**:
+    1. **스키마**: 현재 `item.lastModifiedAt:number` (단일) →
+       `item.fieldStamps?: Record<string, number>` 추가 (title/value/icon/
+       iconType/color/monitor/slots 등 sync 대상 필드별 ts). lastModifiedAt
+       은 "entity 존재/위치" 레벨 용도로 유지 (P2.D 의 reorder 도장과 공존).
+    2. **mutator 도장**: updateItem 등이 *바뀐 필드만* fieldStamps 갱신.
+       useAppData 에 `stampFields(item, changedKeys, ts)` 헬퍼 — 어떤 필드가
+       바뀌었는지 diff 후 해당 키만 도장. (전체 도장하면 per-field 의미 없음.)
+    3. **머지** (snapshot.ts mergeItemsLWW): 같은 id 의 local/server item 을
+       만나면 entity 통째 비교 대신 **필드별로** `fieldStamps[k]` 큰 쪽
+       채택해 새 item 합성. fieldStamps 없는 레거시 필드는 entity
+       lastModifiedAt 으로 fallback (마이그 안전).
+    4. **마이그레이션**: 기존 item 은 fieldStamps 없음 → 첫 로드 시 빈
+       객체로 두고, 그 시점 이후 변경부터 필드 도장. 옛 데이터는 entity
+       lastModifiedAt fallback 으로 비교 (P2.C 호환).
+    5. **비용 주의**: fieldStamps 가 sync 페이로드 크기 ↑ (item 당 ~7키 ×
+       8바이트). 카드 수백 개면 수십 KB 추가 — snapshot jsonb 라 허용 범위.
+       perf-patterns.md §2 (JSON.stringify hot path) 와 무관 (sync 는 수동).
+  **CRDT 아님 주의**: 진짜 CRDT (동시성 벡터/LWW-map) 가 아니라 단순
+  per-field LWW. 동일 필드를 양쪽이 동시 편집하면 여전히 한쪽이 이김 —
+  그건 P2.E 범위 밖 (그 빈도는 더 낮아 영구 비목표).
 - **P2.F (영구 보류)**: Realtime 채널 구독 — 리소스 부담 (상시 WebSocket 연결, 디바이스당 무료 티어 한도 차감) 대비 가치 낮음. 수동 sync (P2.B 미리보기 모달) 가 명시적이라 사용자 선호도도 높음.
-- **검증**: PC1 카드 추가 → PC2 sync 반영 ✓ (P2.A). PC2 미리보기 확인 후 [확인] ✓ (P2.B). PC1 본문 수정 + PC2 reorder → 둘 다 살아남음 ✓ (P2.D). PC1 삭제 → PC2 sync 시 삭제 전파 ✓ (P2.C). 동시 push race → auto-retry ✓ (P2.C).
+- **검증**: PC1 카드 추가 → PC2 sync 반영 ✓ (P2.A). PC2 미리보기 확인 후 [확인] ✓ (P2.B). PC1 본문 수정 + PC2 reorder → 둘 다 살아남음 ✓ (P2.D). PC1 삭제 → PC2 sync 시 삭제 전파 ✓ (P2.C). 동시 push race → auto-retry ✓ (P2.C). (P2.E 미구현 — 같은 카드 *다른 필드* 동시 편집 시 한쪽 편집 묻힘은 알려진 한계, deferred.)
 
 ### Phase 3 — Cohort B (path resolver) (2주)
 - 자동 매칭 알고리즘 + device_path_cache
