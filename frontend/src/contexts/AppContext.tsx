@@ -44,6 +44,10 @@ export interface AppState {
    *  에디터·오버레이·cmd 열린 채 카드 클릭 시 정책 매트릭스(=차단)와
    *  달리 launch 되던 갭. */
   policyCtx: PolicyContext;
+  /** v1.3.50 — doc 코호트 "새 버전 있음" 카드 id 집합. in-memory only
+   *  (store 미영속). 런처 show 시점에만 opt-in(docCohort 바인딩) 카드
+   *  스캔. ItemCard 가 자기 id 포함 여부로 모서리 배지 표시. */
+  docCohortOutdated: Set<string>;
   searchQuery: string;
   justAddedItemIds: Set<string>;
 }

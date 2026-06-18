@@ -209,7 +209,9 @@ function ItemCardImpl({
     deckAnchorItemIds, inactiveWindowIds, monitorCount = 1, monitors = [], allItems = [],
     monitorDirections, closeAfter, searchQuery = '',
     justAddedItemIds, cardActionGesture = 'ctrl-click', policyCtx,
+    docCohortOutdated,
   } = useAppState();
+  const isDocOutdated = item.type === 'doc' && !!item.docCohort && !!docCohortOutdated?.has(item.id);
   const isJustAdded = justAddedItemIds?.has(item.id) ?? false;
   const {
     launchAndPosition: onLaunchAndPosition,
@@ -909,6 +911,31 @@ function ItemCardImpl({
           className="group-hover:!opacity-100"
         >
           <Icon name={item.isContainer ? 'grid_view' : 'push_pin'} size={11} color="var(--accent)" />
+        </span>
+      )}
+
+      {/* ── Doc cohort "새 버전 있음" 배지 (v1.3.50) ────────────────
+          좌상단 (우상단 state chip / 우하단 type chip / 좌하단 monitor
+          chip 과 안 겹침). "최신" 은 무배지 — outdated 만 표시 (알림
+          노이즈 0). 클릭 동작 없음 (순수 시그널) — 실제 교체는 우클릭
+          '최신 버전 확인'. node 모드 order 배지(좌상단)와 겹칠 수 있어
+          node 모드일 땐 숨김 (order 배지 우선). */}
+      {isDocOutdated && activeMode === 'normal' && (
+        <span
+          title="새 버전이 있어요 — 우클릭 → 최신 버전 확인"
+          aria-label="새 버전 있음"
+          style={{
+            position: 'absolute', top: 4, left: 4,
+            width: 18, height: 18, borderRadius: 5,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'var(--bg-rgba)',
+            border: '1px solid var(--color-destructive)',
+            opacity: 0.9,
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+        >
+          <Icon name="new_releases" size={11} color="var(--color-destructive)" />
         </span>
       )}
 

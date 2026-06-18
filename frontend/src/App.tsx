@@ -63,6 +63,7 @@ import { faviconCandidates } from './hooks/useFavicon';
 import { setBusy, whenIdle, isUserBusy } from './lib/userBusy';
 import { useToastQueue, type ToastAction } from './hooks/useToastQueue';
 import { useTileOverlay } from './hooks/useTileOverlay';
+import { useDocCohortBadges } from './hooks/useDocCohortBadges';
 import { pushUndo } from './hooks/useUndoStack';
 import { useGlobalUndoShortcut } from './hooks/useGlobalUndoShortcut';
 import { useLaunchPipeline } from './hooks/useLaunchPipeline';
@@ -578,6 +579,9 @@ export default function App() {
   useEffect(() => { appLog.debug('App mounted (first useEffect)'); startPerfFlush(); }, [appLog]);
   const store = useAppData();
   const { data } = store;
+  // v1.3.50 — doc 코호트 "새 버전 있음" 배지 (가벼움: show 시점 스캔, store
+  // 미영속). 결과 Set 을 appState 로 내려 ItemCard 가 모서리 배지 표시.
+  const docCohortOutdated = useDocCohortBadges(data);
 
   // ── Favicon migration (Option B) ─────────────────────────────
   // Older builds saved URL-typed item icons as the *remote* URL (e.g.
@@ -3939,9 +3943,10 @@ export default function App() {
       tileOverlayGroup,
       cmdOpen,
     },
+    docCohortOutdated,
     searchQuery: query,
     justAddedItemIds,
-  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, monitors, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, data.settings.cardActionGesture, query, justAddedItemIds, nodeEditMode, deckBuilding, editingMemoId, dialog, tileOverlayGroup, cmdOpen]);
+  }), [activeMode, nodeGroups, nodeBuilding, editingNodeGroupId, deckItems, decks, deckAnchorItemIds, inactiveWindowIds, monitorCount, monitors, allItems, data.settings.monitorDirections, data.settings.closeAfterOpen, data.settings.cardActionGesture, query, justAddedItemIds, nodeEditMode, deckBuilding, editingMemoId, dialog, tileOverlayGroup, cmdOpen, docCohortOutdated]);
 
   const appActions = useMemo<AppActions>(() => ({
     showToast,
