@@ -92,6 +92,25 @@ html, body, #root {
 
 /* ─── Design tokens (8px radius default) ───────── */
 :root {
+  /* ── Spacing / sizing scale (v1.3.50) ──────────────────────────
+     색·radius 토큰은 있었지만 spacing/font-size 스케일이 없어 메뉴·
+     버튼 패딩이 raw px (사용자 지적: "토큰기반이 아니라 하드코딩").
+     테마 무관 상수라 :root 한 곳에만 정의. 4px 베이스 그리드. */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-8: 16px;
+  /* 메뉴/칩 본문 폰트 스케일 */
+  --font-xs: 10px;
+  --font-sm: 11px;
+  --font-md: 12px;
+  --font-lg: 13px;
+  /* 메뉴 컨테이너 최소 너비 */
+  --menu-min-width: 160px;
+
   /* Light Theme (Default, matching image 2) */
   --bg-rgba: rgba(255, 255, 255, 0.95);
   --surface: rgba(0, 0, 0, 0.03);
@@ -261,32 +280,31 @@ input:focus {
 }
 
 /* ─── Dropdown / context menu items ──────────────────────── */
-/* v1.3.48 — submenu 도 동일 스타일 적용. 이전엔 sub-content / sub-trigger
-   selector 가 빠져있어서 부모 메뉴와 폭/패딩 어긋남 (사용자 보고: "정렬
-   폰트크기 깨지지...토큰기반이 아니라 하드코딩"). 토큰화는 별도 디자인
-   시스템 작업 — 이번엔 selector 누락만 메꿔서 일관성 회복. */
+/* v1.3.48 — submenu(sub-content/sub-trigger) 도 동일 스타일 적용.
+   v1.3.50 — raw px → spacing/font 스케일 토큰 (사용자 지적 "토큰기반이
+   아니라 하드코딩" 정리). 메뉴 4 표면 한 곳에서 토큰만 바꾸면 일괄 조정. */
 [data-slot="dropdown-menu-item"],
 [data-slot="dropdown-menu-sub-trigger"],
 [data-slot="context-menu-item"] {
   display: flex !important;
   align-items: center !important;
-  gap: 8px !important;
-  padding: 8px 12px !important;
-  font-size: 12px !important;
+  gap: var(--space-4) !important;
+  padding: var(--space-4) var(--space-6) !important;
+  font-size: var(--font-md) !important;
 }
 
 /* ─── Dropdown / context menu content padding ────────────── */
 [data-slot="dropdown-menu-content"],
 [data-slot="dropdown-menu-sub-content"],
 [data-slot="context-menu-content"] {
-  padding: 4px !important;
-  min-width: 160px !important;
+  padding: var(--space-2) !important;
+  min-width: var(--menu-min-width) !important;
 }
 
 /* ─── Dropdown menu label (그룹 헤더, 위계 표시용) ─────────── */
 [data-slot="dropdown-menu-label"] {
-  padding: 6px 12px 2px !important;
-  font-size: 10px !important;
+  padding: var(--space-3) var(--space-6) var(--space-1) !important;
+  font-size: var(--font-xs) !important;
   font-weight: 700 !important;
   color: var(--text-dim) !important;
   letter-spacing: 0.04em !important;
