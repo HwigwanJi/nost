@@ -403,6 +403,16 @@ export function ItemDialog({
   const initialPhase: Phase = (() => {
     if (isWidgetMode) return isEdit ? 2 : 0;
     if (typeLocked) return 1;
+    // v1.3.51 — 드래그/스캔 prefill (type+value 이미 확정, 신규 추가) 은
+    // 곧장 PLACE(2) 로 열어 단일 Enter / "추가" 버튼 한 번에 생성.
+    // 버그: 이전엔 phase 0(TYPE)에서 시작 → 반드시 phase 1(VALUE)을 거쳐야
+    // 했는데, valueError(예: app 이 D:\ 비-exe, 폴더 strict regex 불일치)면
+    // phase 1 의 "다음" 버튼이 disabled 라 갇히고 Ctrl+Enter(valueError 무시)
+    // 만 탈출 가능했음. place 의 "추가" 버튼은 valueError 를 보지 않으므로
+    // prefill 을 place 로 열면 한 번에 생성 가능 + "quick action" 의도 정합.
+    // 추론 타입이 틀리면 < 로 돌아가 조정 가능 (Back).
+    const isPrefill = !!editItem && !isEdit;        // editItem 있는데 id 없음 = prefill
+    if (isPrefill && editItem.type && editItem.value) return 2;
     return 0;
   })();
   const [phase, setPhase] = useState<Phase>(initialPhase);
