@@ -317,6 +317,12 @@ export interface ElectronAPI {
   openImageViewer: (payload: { path: string; label?: string; accentColor?: string; theme?: 'light' | 'dark' }) => void;
   /** v1.3.50 — 뷰어 크롭 결과 (PNG data URL) 를 클립보드에 씀. */
   copyImageDataToClipboard: (dataUrl: string) => Promise<{ success: boolean; reason?: string }>;
+  /** v1.3.52 — 화면 캡처 → userData/images 저장. 'full'(커서 모니터) |
+   *  'window'(직전 활성 창). 결과 path 로 이미지 카드 등록. */
+  captureScreen: (mode: 'full' | 'window') => Promise<
+    | { ok: true; path: string; width: number; height: number }
+    | { ok: false; reason: string }
+  >;
 }
 
 export type DocCohortDialogAction =
@@ -493,4 +499,5 @@ export const electronAPI: ElectronAPI = window.electronAPI ?? {
   onContainerSlotPickerClosed: () => () => {},
   openImageViewer: noop,
   copyImageDataToClipboard: async () => ({ success: false, reason: 'dev-mode' }),
+  captureScreen: async () => ({ ok: false as const, reason: 'dev-mode' }),
 };

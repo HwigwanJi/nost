@@ -387,4 +387,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openImageViewer: (payload) => ipcRenderer.send('open-image-viewer', payload),
   // v1.3.50 — 뷰어 크롭 결과 (canvas dataURL) 를 클립보드로.
   copyImageDataToClipboard: (dataUrl) => ipcRenderer.invoke('copy-image-data-to-clipboard', dataUrl),
+  // v1.3.52 — 화면 캡처 → userData/images 저장 (capture-feature.md).
+  // mode: 'full'(커서 모니터 전체) | 'window'(직전 활성 창).
+  captureScreen: (mode) => ipcRenderer.invoke('capture-screen', mode),
 });

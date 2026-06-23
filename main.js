@@ -5311,6 +5311,81 @@ function registerIpcHandlers() {
     return { success: true, id };
   });
 
+  // ── Screen capture → image card (v1.3.52, capture-feature.md) ────
+  // mode: 'full'  = 커서 모니터 전체
+  //       'window'= 직전 활성 창 (런처 hide 시 OS 가 포커스를 직전 창으로
+  //                 되돌려줌 → detect().rect 가 곧 그 창). 좌표는 물리픽셀
+  //                 매핑 (DPI 주의 — capture-feature.md §7). 어긋나도 확인
+  //                 모달에서 재크롭 가능.
+  // 결과: userData/images/{uuid}.png 저장 후 { ok, path, width, height }.
+  // 컬러피커의 hide→grab→restore 패턴 재사용 (별도 구현 — eyedropper 영향 X).
+  ipcMain.handle('capture-screen', async (_e, mode) => {
+    const wasVisible = !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+    try {
+      if (wasVisible) { try { mainWindow.hide(); } catch {} }
+      // 한 프레임 + 포커스 전환 대기 (window 모드는 직전 창이 foreground 로).
+      await new Promise(r => setTimeout(r, 200));
+
+      const screen   = getScreen();
+      const cursorPt = screen.getCursorScreenPoint();
+      const target   = screen.getDisplayNearestPoint(cursorPt);
+      const bounds   = target.bounds;            // DIP
+      const sf       = target.scaleFactor || 1;
+      const physW    = Math.round(bounds.width  * sf);
+      const physH    = Math.round(bounds.height * sf);
+
+      let sources;
+      try {
+        sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: physW, height: physH } });
+      } catch (e) {
+        log.warn('[capture-screen] getSources failed', e?.message);
+        return { ok: false, reason: 'capture-failed' };
+      }
+      const allDisplays = screen.getAllDisplays();
+      const targetIndex = allDisplays.findIndex(d => d.id === target.id);
+      let src = sources.find(s => s.display_id && String(s.display_id) === String(target.id))
+             || (targetIndex >= 0 ? sources[targetIndex] : null)
+             || sources[0];
+      if (!src || src.thumbnail.isEmpty()) return { ok: false, reason: 'capture-blank' };
+
+      let img = src.thumbnail;                    // nativeImage physW×physH
+
+      if (mode === 'window') {
+        let det = null;
+        try { det = foregroundWindow.detect(); } catch (_) {}
+        const r = det && det.rect;
+        if (r && r.width > 0 && r.height > 0) {
+          // GetWindowRect = 물리픽셀(screen-absolute). 이 디스플레이의
+          // thumbnail 로 매핑: 디스플레이 물리 원점 차감 + clamp.
+          const originX = Math.round(bounds.x * sf);
+          const originY = Math.round(bounds.y * sf);
+          const cropX = Math.max(0, r.x - originX);
+          const cropY = Math.max(0, r.y - originY);
+          const cropW = Math.min(physW - cropX, r.width);
+          const cropH = Math.min(physH - cropY, r.height);
+          if (cropW > 2 && cropH > 2) {
+            try { img = img.crop({ x: cropX, y: cropY, width: cropW, height: cropH }); }
+            catch (e) { log.warn('[capture-screen] window crop failed, using full', e?.message); }
+          }
+        }
+      }
+
+      const size = img.getSize();
+      const buf  = img.toPNG();
+      const uuid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const filePath = path.join(imagesDir(), `${uuid}.png`);
+      fs.writeFileSync(filePath, buf);
+      return { ok: true, path: filePath, width: size.width, height: size.height };
+    } catch (e) {
+      log.warn('[capture-screen] failed:', e?.message);
+      return { ok: false, reason: String(e?.message ?? e) };
+    } finally {
+      if (wasVisible && mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.show(); } catch (_) {}
+      }
+    }
+  });
+
   // ── Screen-capture color picker ─────────────────────────────────
   // Replaces the in-renderer EyeDropper API which can only sample
   // pixels inside the launcher's own window. The flow:
