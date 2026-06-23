@@ -3,15 +3,21 @@ import type { AppMode } from '../types';
 import { Icon } from '@/components/ui/Icon';
 import { NostLogo } from '@/components/ui/NostLogo';
 import { triggers as tutorialTriggers } from '../tutorial/triggers';
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuShortcut,
+} from '@/components/ui/dropdown-menu';
 
 interface SidebarProps {
   activeMode: AppMode;
   onModeChange: (mode: AppMode) => void;
   recommendOpen?: boolean;
   onRecommendClick?: () => void;
+  /** v1.3.52 — 화면 캡처 → 카드. 'full'(전체 화면) | 'window'(활성 창). */
+  onCapture?: (mode: 'full' | 'window') => void;
 }
 
-export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendClick }: SidebarProps) {
+export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendClick, onCapture }: SidebarProps) {
   const [expanded, setExpanded] = useState(false);
 
   const sidebarWidth = expanded ? 160 : 44;
@@ -114,6 +120,51 @@ export function Sidebar({ activeMode, onModeChange, recommendOpen, onRecommendCl
           onClick={() => onModeChange(activeMode === 'clean' ? 'normal' : 'clean')}
           accentColor="var(--color-destructive)"
         />
+
+        {/* ── 캡처 (v1.3.52) — 드롭다운 4모드 (P1: 전체화면/활성창).
+            Alt+3/4 는 메뉴 in-accelerator (전역 단축키 아님 — Alt+4 앱
+            토글과 충돌 회피). 영역 드래그(직접지정/영역선택)는 P2. */}
+        {onCapture && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              title={!expanded ? '캡처' : undefined}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: expanded ? '8px 10px' : '8px 0',
+                justifyContent: expanded ? 'flex-start' : 'center',
+                borderRadius: 8, border: 'none', cursor: 'pointer',
+                fontFamily: 'inherit', fontSize: 11, fontWeight: 400,
+                background: 'transparent', color: 'var(--text-dim)',
+                transition: 'background 0.15s, color 0.15s',
+                whiteSpace: 'nowrap', overflow: 'hidden', width: '100%',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'var(--surface-hover)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-dim)'; }}
+            >
+              <Icon name="photo_camera" size={18} style={{ flexShrink: 0 }} />
+              {expanded && <span>캡처</span>}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="right"
+              align="start"
+              onKeyDown={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+                // Alt+3/4 in-menu accelerator. Alt 없이 3/4 도 허용.
+                if (e.key === '3') { e.preventDefault(); onCapture('window'); }
+                else if (e.key === '4') { e.preventDefault(); onCapture('full'); }
+              }}
+            >
+              <DropdownMenuItem onClick={() => onCapture('window')}>
+                활성 창
+                <DropdownMenuShortcut>Alt+3</DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onCapture('full')}>
+                전체 화면
+                <DropdownMenuShortcut>Alt+4</DropdownMenuShortcut>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
 
         <div style={{ height: 1, background: 'var(--border-rgba)', margin: '4px 6px' }} />
 

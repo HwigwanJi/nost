@@ -2754,6 +2754,34 @@ export default function App() {
     }
   }, [screenPicker, data.spaces]);
 
+  // ── 화면 캡처 → 확인 → 스페이스 지정 → 이미지 카드 (v1.3.52) ─────
+  // capture-feature.md P1b. 캡처는 main 의 capture-screen IPC (full/window).
+  // 확인 모달에서 [카드로 등록] → handlePickOnScreen 재사용 → 사용자가
+  // 스페이스 클릭 → handleSaveItem → image 카드 (cardEnter 애니메이션).
+  const [captureConfirm, setCaptureConfirm] = useState<{ path: string; width: number; height: number } | null>(null);
+
+  const handleCapture = useCallback(async (mode: 'full' | 'window') => {
+    const r = await electronAPI.captureScreen(mode);
+    if (!r.ok) {
+      showToast(mode === 'window' ? '활성 창 캡처에 실패했어요' : '화면 캡처에 실패했어요', { duration: 2400 });
+      return;
+    }
+    setCaptureConfirm({ path: r.path, width: r.width, height: r.height });
+  }, [showToast]);
+
+  const confirmCaptureToCard = useCallback(() => {
+    const c = captureConfirm;
+    if (!c) return;
+    setCaptureConfirm(null);
+    if (!quotaChecks.card()) return;
+    const ts = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const label = `캡처 ${pad(ts.getMonth() + 1)}/${pad(ts.getDate())} ${pad(ts.getHours())}:${pad(ts.getMinutes())}`;
+    // screenPicker 흐름 재사용 — 스페이스 지정 + cardEnter 애니메이션 공유.
+    handlePickOnScreen({ type: 'image', value: c.path, title: label } as Omit<LauncherItem, 'id'>);
+    showToast('카드로 등록할 스페이스를 클릭하세요', { duration: 2800 });
+  }, [captureConfirm, quotaChecks, handlePickOnScreen, showToast]);
+
   // Body attribute drives the glow CSS (see index.css). Set/cleared
   // on screenPicker change so we never leak the picking state across
   // unrelated UI work.
@@ -4461,6 +4489,7 @@ export default function App() {
             onModeChange={handleModeChange}
             recommendOpen={ghostCards.active}
             onRecommendClick={() => handleToggleRecommend()}
+            onCapture={handleCapture}
           />
 
           {/* ── Unified DnD: space grip (left-click) + card right-click drag ───── */}
@@ -5540,6 +5569,67 @@ export default function App() {
           showToast(n > 0 ? `${n}개를 영구 삭제했어요` : '휴지통이 이미 비어있어요');
         }}
       />
+
+      {/* ── 캡처 확인 모달 (v1.3.52) ─────────────────────────────
+          capture-screen 후 미리보기 + [카드로 등록]. 등록 → handlePickOnScreen
+          재사용으로 스페이스 지정 단계로. 메인 윈도우 내 인라인 모달
+          (캡처 직후 런처가 다시 show 된 상태라 satellite 불필요). */}
+      {captureConfirm && (
+        <div
+          onClick={e => { if (e.target === e.currentTarget) setCaptureConfirm(null); }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 9999,
+            background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'fadeIn 0.12s ease',
+          }}
+        >
+          <div style={{
+            background: 'var(--bg-rgba)', border: '1px solid var(--border-rgba)',
+            borderRadius: 12, padding: 16, width: 'min(72vw, 560px)',
+            boxShadow: '0 12px 40px rgba(0,0,0,0.4)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <Icon name="photo_camera" size={15} color="var(--accent)" />
+              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-color)' }}>캡처 확인</span>
+              <span style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 'auto' }}>
+                {captureConfirm.width}×{captureConfirm.height}
+              </span>
+            </div>
+            <img
+              src={`file:///${captureConfirm.path.replace(/\\/g, '/')}`}
+              alt=""
+              style={{
+                maxWidth: '100%', maxHeight: '52vh', borderRadius: 8,
+                display: 'block', margin: '0 auto',
+                border: '1px solid var(--border-rgba)', background: 'var(--surface)',
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+              <button
+                onClick={() => setCaptureConfirm(null)}
+                style={{
+                  padding: '7px 14px', fontSize: 11, fontWeight: 600,
+                  background: 'transparent', color: 'var(--text-color)',
+                  border: '1px solid var(--border-rgba)', borderRadius: 6,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >취소</button>
+              <button
+                onClick={confirmCaptureToCard}
+                style={{
+                  padding: '7px 16px', fontSize: 11, fontWeight: 700,
+                  background: 'var(--accent)', color: '#fff',
+                  border: 'none', borderRadius: 6, cursor: 'pointer',
+                  fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <Icon name="add_photo_alternate" size={14} />카드로 등록
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Dialogs ──────────────────────────────────────────── */}
       {/* ItemDialog is now hosted in a satellite BrowserWindow — see the
