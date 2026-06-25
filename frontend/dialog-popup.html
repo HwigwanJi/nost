@@ -38,21 +38,13 @@
         -webkit-font-smoothing: antialiased;
         font-variation-settings: 'FILL' 0, 'wght' 500, 'GRAD' 0, 'opsz' 24;
       }
+      /* v2 — the companion is a vertical rail docked to the dialog edge,
+         sized to fill this window. The rail/pellet handle their own layout;
+         #popup-root is just a transparent full-bleed canvas (empty regions
+         stay click-through). */
       #popup-root {
         position: absolute;
         inset: 0;
-        display: flex;
-        /* Chip strip is anchored to the TOP of the window. When the preset
-           dropdown opens, main grows the window downward — the chip strip
-           stays at the same screen Y, and the new empty area appears below
-           the chip strip where the dropdown menu opens.
-           Earlier we tried "grow upward / chips at bottom" but that pushed
-           the popup off the top of the screen on dialogs near the top, and
-           the math for menu clipping kept getting subtly wrong. Down is
-           simpler — the menu visibly overlaps the dialog title bar, but
-           it's on top in z-order so clicks still land on the menu. */
-        align-items: flex-start;
-        padding-top: 6px;
       }
     </style>
   </head>

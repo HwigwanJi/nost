@@ -35,6 +35,7 @@ let GetWindow = null;
 // parent) then GW_HWNDNEXT (next sibling). No EnumChildWindows callback
 // needed, which avoids koffi callback-registration version differences.
 const GW_HWNDNEXT = 2;
+const GW_OWNER    = 4;  // dialog's owner window (the app behind the dialog)
 const GW_CHILD    = 5;
 
 // File-dialog button-text heuristics. The Windows Common Item Dialog
@@ -282,7 +283,23 @@ function detect() {
       hwndNum = typeof addr === 'bigint' ? Number(addr & 0xFFFFFFFFn) : Number(addr);
     } catch { /* keep 0 */ }
 
-    return { title, className, isDialog, isFileDialog, hwnd: hwndNum, rect };
+    // Owner-window title — the app behind the dialog (e.g.
+    // "report.pdf - Adobe Acrobat"). Cheap context signal for the v2
+    // recommendation (app + filename hints) using already-bound calls.
+    // Best-effort: empty string if there's no owner or the read fails.
+    let ownerTitle = '';
+    if (isFileDialog) {
+      try {
+        const owner = GetWindow(hwnd, GW_OWNER);
+        if (owner) {
+          const ob = Buffer.alloc(TITLE_LEN * 2);
+          const on = GetWindowTextW(owner, ob, TITLE_LEN);
+          if (on > 0) ownerTitle = ob.toString('utf16le', 0, on * 2);
+        }
+      } catch { /* keep '' */ }
+    }
+
+    return { title, className, isDialog, isFileDialog, hwnd: hwndNum, rect, ownerTitle };
   } catch (e) {
     // Don't spam the log — a single warn is enough; the caller treats
     // null as no-op and we'll keep trying next tick.

@@ -47,6 +47,17 @@ export interface DialogPopupState {
   presets: PresetSummary[];
   activePresetId?: '1' | '2' | '3';
   dialogTitle?: string;
+  /** v2 — pushed from main so the satellite can match the app's theme +
+   *  accent (it can't run App.tsx, which injects these on the main window). */
+  theme?: 'light' | 'dark';
+  accentColor?: string;
+  /** v2 — single context-aware suggested destination, or null. */
+  recommendation?: {
+    path: string;
+    title: string;
+    color?: string | null;
+    reason: string;
+  } | null;
 }
 
 interface Api {
@@ -60,26 +71,21 @@ interface Api {
    *  the transparent extra area must be click-through, hence this
    *  toggle. */
   setCapture:   (capture: boolean) => void;
-  resetPosition: () => void;
 }
 const api = (window as unknown as { dialogPopup: Api }).dialogPopup;
 
-// Inline-style palette (no Tailwind in this entry).
-const C = {
-  bg:        'rgba(20, 20, 26, 0.96)',
-  bgLight:   'rgba(255, 255, 255, 0.96)',
-  border:    'rgba(255, 255, 255, 0.08)',
-  borderL:   'rgba(0, 0, 0, 0.08)',
-  text:      'rgba(255, 255, 255, 0.92)',
-  textL:     'rgba(0, 0, 0, 0.85)',
-  muted:     'rgba(255, 255, 255, 0.5)',
-  mutedL:    'rgba(0, 0, 0, 0.5)',
-  accent:    '#6366f1',
+// Design-system tokens (defined in tokens.css, light/dark via `.dark` on
+// documentElement). No hardcoded palette — colors are var(--*); the accent
+// is injected at runtime from the pushed `accentColor`. See tokens.css.
+const T = {
+  bg:     'var(--bg-rgba)',
+  border: 'var(--border-rgba)',
+  text:   'var(--text-color)',
+  muted:  'var(--text-muted)',
+  accent: 'var(--accent)',
+  hover:  'var(--surface-hover)',
+  surface:'var(--surface)',
 };
-
-function isLight(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: light)').matches;
-}
 
 export function DialogPopup() {
   const [state, setState] = useState<DialogPopupState | null>(null);
@@ -88,7 +94,6 @@ export function DialogPopup() {
   const [viewPresetId, setViewPresetId] = useState<'1' | '2' | '3' | null>(null);
   // null → Level 1 (space chips); otherwise Level 2 for the picked space.id.
   const [drillSpaceId, setDrillSpaceId] = useState<string | null>(null);
-  const [light, setLight] = useState(isLight());
   // Folder-id whose jumpTo IPC is in flight. The PS clipboard-paste
   // routine takes a beat (~300-800ms on first invocation per session
   // because it warms up SendInput), and without any visual cue the
@@ -96,6 +101,16 @@ export function DialogPopup() {
   // chip shows a spinner while this is set; cleared by a short timer
   // since jumpTo is fire-and-forget and we don't get a real done IPC.
   const [pendingFolderId, setPendingFolderId] = useState<string | null>(null);
+  // Pellet collapse. Starts EXPANDED so the rail is immediately visible +
+  // usable when a dialog appears, then auto-collapses to a small pellet
+  // after a beat unless the user hovers it. Hover re-expands. One timer,
+  // cleared on unmount — no animation-queue race (오답노트 C).
+  const [expanded, setExpanded] = useState(true);
+  const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    collapseTimer.current = setTimeout(() => setExpanded(false), 3000);
+    return () => { if (collapseTimer.current) clearTimeout(collapseTimer.current); };
+  }, []);
 
   useEffect(() => {
     const off = api.onState(s => {
@@ -104,25 +119,29 @@ export function DialogPopup() {
       // we keep whatever the user chose, so subsequent state refreshes
       // (e.g. data updates) don't yank them back to the active preset.
       setViewPresetId(prev => prev ?? s.activePresetId ?? '1');
+      // Apply theme + accent to documentElement — mirrors App.tsx, but the
+      // values arrive via IPC since this satellite doesn't run App.tsx.
+      const root = document.documentElement;
+      if (s.theme === 'light') root.classList.remove('dark');
+      else root.classList.add('dark');
+      if (s.accentColor) {
+        root.style.setProperty('--accent', s.accentColor);
+        root.style.setProperty('--accent-dim', s.accentColor + '33');
+      }
     });
     api.requestState();
     return off;
   }, []);
 
-  useEffect(() => {
-    const m = window.matchMedia('(prefers-color-scheme: light)');
-    const fn = () => setLight(m.matches);
-    m.addEventListener('change', fn);
-    return () => m.removeEventListener('change', fn);
-  }, []);
-
-  // Mouse-capture toggling. The popup window is sized larger than the
-  // visible chip strip (so the dropdown menu has room to open without
-  // a dynamic-resize roundtrip that proved flaky), and the empty space
-  // is rendered transparent + setIgnoreMouseEvents(true, forward) by
-  // main. Here we flip back to capture-on whenever the cursor enters
-  // an interactive region (chip strip OR open dropdown menu) so the
-  // user's clicks reach our handlers.
+  // Mouse-capture toggling + pellet expand. The window is rail-sized but the
+  // collapsed pellet only fills a corner; empty regions are transparent +
+  // setIgnoreMouseEvents(true, forward) by main. This forwarded-move handler
+  // (the proven path — it's how dropdown capture has always worked, and it
+  // fires even while click-through) flips capture ON over interactive regions
+  // AND expands the rail when the pointer is over the pellet/rail. Collapse is
+  // driven by the wrapper's onMouseLeave (real event, fires once capture is on
+  // = expanded), so we never need React onMouseEnter (which wouldn't fire
+  // while click-through).
   useEffect(() => {
     let captured = false;
     const onMove = (e: PointerEvent) => {
@@ -131,6 +150,10 @@ export function DialogPopup() {
       if (want !== captured) {
         captured = want;
         api.setCapture(want);
+      }
+      if (want) {
+        if (collapseTimer.current) clearTimeout(collapseTimer.current);
+        setExpanded(true);
       }
     };
     document.addEventListener('pointermove', onMove);
@@ -173,136 +196,190 @@ export function DialogPopup() {
 
   const drillSpace = drillSpaceId ? visibleSpaces.find(s => s.id === drillSpaceId) : null;
 
-  // v1.3.49 — 칩 스트립 가로 스크롤. 880px 고정 폭 창에 스페이스/폴더 칩이
-  // 넘치면 우측 칩이 잘려 보였음 (사용자: "클리핑"). overflowX:auto 는 있었지만
-  // scrollbarWidth:none + 휠→가로 매핑 없음이라 넘친 칩에 도달할 방법이 없었음.
-  // 세로 휠을 가로 스크롤로 변환 + 우측 fade 마스크로 "더 있음" 표시.
-  const stripRef = useRef<HTMLDivElement>(null);
-  const [scrollHint, setScrollHint] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
-  const updateScrollHint = useCallback(() => {
-    const el = stripRef.current;
-    if (!el) return;
-    const maxScroll = el.scrollWidth - el.clientWidth;
-    setScrollHint({ left: el.scrollLeft > 2, right: el.scrollLeft < maxScroll - 2 });
-  }, []);
-  // 칩 목록 변화 / drill 전환 시 힌트 재계산.
-  useEffect(() => { updateScrollHint(); }, [updateScrollHint, visibleSpaces.length, drillSpaceId]);
-  const onStripWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
-    const el = stripRef.current;
-    if (!el) return;
-    // 세로 휠이 더 크면 가로로 변환 (트랙패드 가로 제스처는 deltaX 그대로).
-    const delta = Math.abs(e.deltaY) > Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
-    if (delta !== 0) { el.scrollLeft += delta; updateScrollHint(); }
-  }, [updateScrollHint]);
-
-  // Theme.
-  const bg     = light ? C.bgLight : C.bg;
-  const border = light ? C.borderL : C.border;
-  const text   = light ? C.textL   : C.text;
-  const muted  = light ? C.mutedL  : C.muted;
+  // Theme — colors are design-system tokens (auto light/dark via `.dark`
+  // on documentElement, set from the pushed theme). `light` is derived from
+  // the same pushed theme, used only for the tint-alpha math below.
+  const light = state.theme === 'light';
+  const accentHex = state.accentColor || '#6366f1';
+  const bg     = T.bg;
+  const border = T.border;
+  const text   = T.text;
+  const muted  = T.muted;
 
   // L2 (drill into a space): subtle background tint so the user can
   // tell at a glance "I'm inside <space name>", not just from the back
   // button label. Uses the drilled space's colour at low opacity layered
   // over the base bg; system pseudo-space falls back to the accent.
   const stripTint = drillSpace
-    ? (drillSpace.color ? hexToRgba(drillSpace.color, light ? 0.10 : 0.18) : hexToRgba(C.accent, light ? 0.08 : 0.16))
+    ? (drillSpace.color ? hexToRgba(drillSpace.color, light ? 0.10 : 0.18) : hexToRgba(accentHex, light ? 0.08 : 0.16))
     : null;
   const stripBorder = drillSpace
-    ? (drillSpace.color ? hexToRgba(drillSpace.color, light ? 0.28 : 0.36) : hexToRgba(C.accent, light ? 0.24 : 0.32))
+    ? (drillSpace.color ? hexToRgba(drillSpace.color, light ? 0.28 : 0.36) : hexToRgba(accentHex, light ? 0.24 : 0.32))
     : border;
+
+  // Folder count across the visible preset's spaces — shown on the pellet.
+  const totalFolders = visibleSpaces.reduce((n, s) => n + s.folders.length, 0);
 
   return (
     <>
       <style>{`
         @keyframes nost-dpopup-spin { to { transform: rotate(360deg); } }
       `}</style>
+    {/* Full-bleed transparent canvas; the rail/pellet position themselves
+        within it. Empty regions stay click-through (main keeps the window
+        ignore-mouse + forward). onMouseLeave collapses — it fires reliably
+        once the rail is expanded (capture on). */}
     <div
-      data-popup-interactive
-      style={{
-        margin: '0 8px',
-        flex: 1,
-        height: 38,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '0 8px',
-        background: stripTint
-          ? `linear-gradient(${stripTint}, ${stripTint}), ${bg}`
-          : bg,
-        border: `1px solid ${stripBorder}`,
-        borderRadius: 10,
-        color: text,
-        // The whole strip is a native drag surface (-webkit-app-region)
-        // — anywhere the user clicks except an interactive child moves
-        // the window. v1.3.44: replaced the explicit drag-handle +
-        // pointer-event IPC bridge (which fought the poll tick and
-        // burned 60Hz IPC) with this OS-level drag. Buttons / chips
-        // below opt out via WebkitAppRegion: 'no-drag'.
-        WebkitAppRegion: 'drag',
-        cursor: 'grab',
-        // Critical: allow the dropdown menu to escape this strip
-        // vertically. Default `overflow: hidden` clipped the menu inside
-        // the strip's own bounds.
-        overflow: 'visible',
-        // backdrop-filter blur(20px) was removed in v1.3.44 — it forced
-        // the compositor to re-blur the underlying dialog on every
-        // frame and was the dominant lag source. The strip background
-        // is already 96% opaque so visual loss is minimal.
-        transition: 'background 180ms ease, border-color 180ms ease',
-      } as React.CSSProperties}
+      onMouseLeave={() => setExpanded(false)}
+      style={{ position: 'absolute', inset: 0 } as React.CSSProperties}
     >
-      {/* Left section: brand + back/title */}
-      {drillSpace ? (
-        <button
-          onClick={() => setDrillSpaceId(null)}
-          title="뒤로"
-          style={chipStyle(border, text, muted, false)}
-        >
-          <span className="ms-rounded" style={{ fontSize: 14 }}>arrow_back</span>
-          <span style={{ fontSize: 11, fontWeight: 700 }}>{drillSpace.name}</span>
-        </button>
-      ) : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingRight: 4, color: muted }}>
-          <span className="ms-rounded" style={{ fontSize: 14, color: C.accent }}>folder_open</span>
-          <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.02em' }}>
-            {state.dialogTitle ? truncateMiddle(state.dialogTitle, 22) : '저장 위치'}
-          </span>
-        </div>
-      )}
+      {/* Both layers are always mounted; `expanded` cross-fades + scales
+          between them (transform-origin = pellet corner) so the rail
+          smoothly grows out of the pellet. Only the active layer is
+          pointer-interactive. No floating popovers escape the rail (the
+          preset switcher expands INLINE), so nothing clips against the
+          window bounds — 오답노트: 쉘 벗어나는 요소 클리핑. */}
 
-      <div style={{ width: 1, alignSelf: 'stretch', background: border, margin: '0 2px' }} />
-
-      {/* Scrollable chip row */}
-      <div
-        ref={stripRef}
-        onWheel={onStripWheel}
-        onScroll={updateScrollHint}
+      {/* ── Collapsed pellet ───────────────────────────────────────── */}
+      <button
+        data-popup-interactive
+        onClick={() => { if (collapseTimer.current) clearTimeout(collapseTimer.current); setExpanded(true); }}
+        title={state.dialogTitle ? `저장 위치 — ${state.dialogTitle}` : '저장 위치'}
         style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 4,
-          flex: 1,
-          minWidth: 0,
-          overflowX: 'auto',
-          scrollbarWidth: 'none',
-          // v1.3.49 — 넘친 칩이 있는 쪽 가장자리를 fade 로 표시 (스크롤 가능
-          // 신호). 양쪽 상태에 따라 mask 동적 적용.
-          maskImage: scrollHint.left && scrollHint.right
-            ? 'linear-gradient(to right, transparent, black 24px, black calc(100% - 24px), transparent)'
-            : scrollHint.right
-              ? 'linear-gradient(to right, black calc(100% - 24px), transparent)'
-              : scrollHint.left
-                ? 'linear-gradient(to right, transparent, black 24px)'
-                : undefined,
-        }}
+          // Inset a touch from the window corner so the pellet's border +
+          // (next to the dialog) reads as intentional breathing room.
+          position: 'absolute', top: 6, left: 6,
+          width: 40, height: 40, borderRadius: 11,
+          background: bg, border: `1px solid ${border}`, color: text,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer', boxShadow: '0 6px 18px rgba(0, 0, 0, 0.28)',
+          WebkitAppRegion: 'no-drag',
+          transformOrigin: 'top left',
+          opacity: expanded ? 0 : 1,
+          transform: expanded ? 'scale(0.6)' : 'scale(1)',
+          pointerEvents: expanded ? 'none' : 'auto',
+          transition: 'opacity 140ms ease, transform 200ms cubic-bezier(0.16,1,0.3,1)',
+        } as React.CSSProperties}
       >
-        {drillSpace
-          ? (
-              drillSpace.folders.length > 0
+        <span className="ms-rounded" style={{ fontSize: 19, color: T.accent }}>folder_open</span>
+        {totalFolders > 0 && (
+          // Badge sits INSIDE the pellet (no negative offset) so it can't
+          // clip against the window bounds. 오답노트: 쉘 벗어나는 요소 클리핑.
+          <span style={{ position: 'absolute', top: 2, right: 2, minWidth: 15, height: 15, padding: '0 3px', borderRadius: 8, background: T.accent, color: '#fff', fontSize: 9, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1, border: `1.5px solid ${bg}` }}>{totalFolders}</span>
+        )}
+      </button>
+
+      {/* ── Expanded rail (docked to the dialog edge) ──────────────── */}
+      <div
+        data-popup-interactive
+        style={{
+          position: 'absolute',
+          inset: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          background: stripTint
+            ? `linear-gradient(${stripTint}, ${stripTint}), ${bg}`
+            : bg,
+          // Crisp border (fully visible) instead of a drop shadow — the rail
+          // fills the window edge-to-edge, so any shadow would clip against
+          // the bounds and read as cut-off. The border + dialog contrast
+          // give enough separation for a docked panel.
+          border: `1px solid ${stripBorder}`,
+          borderRadius: 12,
+          color: text,
+          // Nothing floats outside the rail anymore (inline preset switch),
+          // so clip to the rounded box; the body scrolls internally.
+          overflow: 'hidden',
+          transformOrigin: 'top left',
+          opacity: expanded ? 1 : 0,
+          transform: expanded ? 'scale(1)' : 'scale(0.7)',
+          pointerEvents: expanded ? 'auto' : 'none',
+          transition: 'opacity 160ms ease, transform 220ms cubic-bezier(0.16,1,0.3,1), background 180ms ease, border-color 180ms ease',
+        } as React.CSSProperties}
+      >
+        {/* Header: context (dialog title) + close */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 10px', borderBottom: `1px solid ${border}`, flexShrink: 0 }}>
+          <span className="ms-rounded" style={{ fontSize: 15, color: T.accent, flexShrink: 0 }}>folder_open</span>
+          <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.02em', color: muted, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {state.dialogTitle ? truncateMiddle(state.dialogTitle, 20) : '저장 위치'}
+          </span>
+          <button
+            onClick={() => api.dismiss()}
+            title="이 다이얼로그에서 닫기"
+            style={{ ...chipStyle(border, text, muted, true), padding: 0, width: 24, height: 24, justifyContent: 'center', flexShrink: 0 }}
+          >
+            <span className="ms-rounded" style={{ fontSize: 14 }}>close</span>
+          </button>
+        </div>
+
+        {/* Sub-header: back button (drilled) or preset switcher (root) */}
+        {drillSpace ? (
+          <button
+            onClick={() => setDrillSpaceId(null)}
+            title="뒤로"
+            style={{ ...chipStyle(border, text, muted, true), margin: '6px 8px 0', justifyContent: 'flex-start', gap: 6 }}
+          >
+            <span className="ms-rounded" style={{ fontSize: 15 }}>arrow_back</span>
+            <span style={{ fontSize: 11, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{drillSpace.name}</span>
+          </button>
+        ) : (state.presets.length > 1 && (
+          <div style={{ padding: '6px 8px 0', flexShrink: 0 }}>
+            <PresetDropdown
+              presets={state.presets}
+              activeId={state.activePresetId}
+              viewId={viewPresetId}
+              text={text}
+              muted={muted}
+              border={border}
+              onPick={(id) => { setViewPresetId(id); setDrillSpaceId(null); }}
+            />
+          </div>
+        ))}
+
+        {/* Context recommendation — "이 앱·이 파일이면 이 폴더". Only at root
+            (not while drilled). Accent-tinted, the single emphasized element.
+            Hidden when main couldn't pick one (no fake suggestion). */}
+        {!drillSpace && state.recommendation && (
+          <button
+            onClick={() => onClickFolder('__rec__', state.recommendation!.path)}
+            title={state.recommendation.path}
+            style={{
+              margin: '8px 8px 0', flexShrink: 0,
+              display: 'flex', flexDirection: 'column', gap: 3,
+              padding: '7px 9px', textAlign: 'left',
+              background: hexToRgba(accentHex, light ? 0.10 : 0.16),
+              border: `1px solid ${hexToRgba(accentHex, light ? 0.30 : 0.42)}`,
+              borderRadius: 9, color: text, cursor: 'pointer',
+              fontFamily: 'inherit', WebkitAppRegion: 'no-drag',
+              transition: 'background 120ms ease',
+            } as React.CSSProperties}
+            onMouseEnter={e => { e.currentTarget.style.background = hexToRgba(accentHex, light ? 0.16 : 0.24); }}
+            onMouseLeave={e => { e.currentTarget.style.background = hexToRgba(accentHex, light ? 0.10 : 0.16); }}
+          >
+            <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: '0.02em', color: muted }}>
+              추천 · {state.recommendation.reason}
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+              {pendingFolderId === '__rec__' ? (
+                <span aria-hidden style={{ width: 12, height: 12, borderRadius: '50%', border: '1.5px solid currentColor', borderTopColor: 'transparent', opacity: 0.7, animation: 'nost-dpopup-spin 700ms linear infinite', flexShrink: 0 }} />
+              ) : (
+                <span className="ms-rounded" style={{ fontSize: 13, color: T.accent, flexShrink: 0 }}>folder</span>
+              )}
+              <span style={{ fontSize: 12, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {state.recommendation.title}
+              </span>
+            </span>
+          </button>
+        )}
+
+        {/* Body — vertical chip list (scrolls internally when tall) */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {drillSpace
+            ? (drillSpace.folders.length > 0
                 ? drillSpace.folders.map(f => (
                     <Chip
                       key={f.id}
+                      block
                       label={f.title}
                       icon="folder"
                       tint={drillSpace.color}
@@ -311,21 +388,12 @@ export function DialogPopup() {
                       onClick={() => onClickFolder(f.id, f.path)}
                     />
                   ))
-                : (
-                  <span style={emptyHintStyle(muted, border)}>이 스페이스엔 폴더 카드가 없습니다.</span>
-                )
-            )
-          : <>
-              {/* Show ALL spaces in the preset — empty ones included, so
-                  the user's count matches what they see in the main app
-                  and they can drill in to learn "ah, this one has no
-                  folder cards yet". Filtering by `folders.length > 0`
-                  used to silently drop spaces and the chip count never
-                  matched the sidebar's. */}
-              {visibleSpaces.length > 0
+                : <span style={emptyHintStyle(muted, border)}>이 스페이스엔 폴더 카드가 없습니다.</span>)
+            : (visibleSpaces.length > 0
                 ? visibleSpaces.map(s => (
                     <Chip
                       key={s.id}
+                      block
                       label={s.name}
                       icon={s.icon || 'folder'}
                       tint={s.color}
@@ -334,65 +402,9 @@ export function DialogPopup() {
                       onClick={() => setDrillSpaceId(s.id)}
                     />
                   ))
-                : (
-                  <span style={emptyHintStyle(muted, border)}>이 프리셋엔 등록된 스페이스가 없습니다.</span>
-                )}
-            </>
-        }
+                : <span style={emptyHintStyle(muted, border)}>이 프리셋엔 등록된 스페이스가 없습니다.</span>)}
+        </div>
       </div>
-
-      {/* Preset switcher — small dropdown showing the active preset's
-          label. Clicking opens a menu of all presets so the user can flip
-          to "another workspace's folders" without leaving the popup.
-          Replaces the earlier segmented 1·2·3 control: a label is more
-          informative than a digit when the user has named their presets,
-          and a dropdown takes less horizontal space when more than two
-          presets are configured. */}
-      {state.presets.length > 1 && (
-        <>
-          <div style={{ width: 1, alignSelf: 'stretch', background: border, margin: '0 2px' }} />
-          <PresetDropdown
-            presets={state.presets}
-            activeId={state.activePresetId}
-            viewId={viewPresetId}
-            light={light}
-            text={text}
-            muted={muted}
-            border={border}
-            bg={bg}
-            onPick={(id) => {
-              setViewPresetId(id);
-              setDrillSpaceId(null);
-            }}
-          />
-        </>
-      )}
-
-      {/* Overflow menu — reset position (and room for future toolbar
-          settings). Sits BEFORE close because close is the more frequent
-          action and stays at the rightmost edge per platform convention. */}
-      <OverflowMenu
-        light={light}
-        text={text}
-        muted={muted}
-        border={border}
-        bg={bg}
-        onReset={() => api.resetPosition()}
-      />
-
-      {/* Close (this dialog only — popup reattaches to the next dialog) */}
-      <button
-        onClick={() => api.dismiss()}
-        title="이 다이얼로그에서 닫기"
-        style={{
-          ...chipStyle(border, text, muted, true),
-          padding: '0 6px',
-          width: 26,
-          justifyContent: 'center',
-        }}
-      >
-        <span className="ms-rounded" style={{ fontSize: 14 }}>close</span>
-      </button>
     </div>
     </>
   );
@@ -400,7 +412,7 @@ export function DialogPopup() {
 
 // ── helpers ────────────────────────────────────────────────────────────
 
-function chipStyle(border: string, text: string, muted: string, ghost: boolean): React.CSSProperties {
+function chipStyle(border: string, text: string, muted: string, ghost: boolean, block = false): React.CSSProperties {
   return {
     display: 'inline-flex',
     alignItems: 'center',
@@ -408,6 +420,9 @@ function chipStyle(border: string, text: string, muted: string, ghost: boolean):
     height: 26,
     padding: '0 10px',
     flexShrink: 0,
+    // Vertical-rail rows fill the width and left-align; horizontal chips
+    // stay inline pills.
+    ...(block ? { width: '100%', justifyContent: 'flex-start' as const } : null),
     background: 'transparent',
     border: ghost ? '1px solid transparent' : `1px solid ${border}`,
     borderRadius: 7,
@@ -424,7 +439,7 @@ function chipStyle(border: string, text: string, muted: string, ghost: boolean):
   } as React.CSSProperties;
 }
 
-function Chip({ label, icon, onClick, tint, muted, text, border, count, loading }: {
+function Chip({ label, icon, onClick, tint, muted, text, border, count, loading, block }: {
   label: string;
   icon: string;
   onClick: () => void;
@@ -432,6 +447,8 @@ function Chip({ label, icon, onClick, tint, muted, text, border, count, loading 
   muted: string;
   text: string;
   border: string;
+  /** Full-width left-aligned row (vertical rail) vs inline pill. */
+  block?: boolean;
   /** When set, appended as a small circular badge after the label.
    *  Replaces the earlier ugly inline "이스포츠 2" syntax with a clean
    *  count pill that mirrors the badge-count UI used elsewhere in the
@@ -447,14 +464,14 @@ function Chip({ label, icon, onClick, tint, muted, text, border, count, loading 
     <button
       onClick={onClick}
       onMouseEnter={e => {
-        e.currentTarget.style.background = tint ? hexToRgba(tint, 0.12) : 'rgba(255, 255, 255, 0.06)';
+        e.currentTarget.style.background = tint ? hexToRgba(tint, 0.12) : T.hover;
         e.currentTarget.style.borderColor = tint ? hexToRgba(tint, 0.4) : border;
       }}
       onMouseLeave={e => {
         e.currentTarget.style.background = 'transparent';
         e.currentTarget.style.borderColor = border;
       }}
-      style={chipStyle(border, text, muted, false)}
+      style={chipStyle(border, text, muted, false, block)}
     >
       {loading ? (
         <span
@@ -466,12 +483,14 @@ function Chip({ label, icon, onClick, tint, muted, text, border, count, loading 
             opacity: 0.7,
             animation: 'nost-dpopup-spin 700ms linear infinite',
             display: 'inline-block',
+            flexShrink: 0,
           }}
         />
       ) : (
-        <span className="ms-rounded" style={{ fontSize: 13, color: tint || C.accent, opacity: 0.9 }}>{icon}</span>
+        <span className="ms-rounded" style={{ fontSize: 13, color: tint || T.accent, opacity: 0.9, flexShrink: 0 }}>{icon}</span>
       )}
-      <span>{label}</span>
+      {/* Block rows: label grows + ellipsis, count pinned right. */}
+      <span style={block ? { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' } : undefined}>{label}</span>
       {count !== undefined && (
         <span
           aria-label={`${count}개`}
@@ -480,7 +499,7 @@ function Chip({ label, icon, onClick, tint, muted, text, border, count, loading 
             height: 16,
             padding: '0 5px',
             borderRadius: 8,
-            background: tint ? hexToRgba(tint, 0.22) : 'rgba(255,255,255,0.08)',
+            background: tint ? hexToRgba(tint, 0.22) : T.surface,
             color: tint || muted,
             fontSize: 10,
             fontWeight: 700,
@@ -488,6 +507,8 @@ function Chip({ label, icon, onClick, tint, muted, text, border, count, loading 
             alignItems: 'center',
             justifyContent: 'center',
             lineHeight: 1,
+            flexShrink: 0,
+            ...(block ? { marginLeft: 'auto' } : null),
             // Disabled-look when zero so the user can spot empty spaces
             // without reading the digit.
             opacity: count === 0 ? 0.45 : 1,
@@ -515,67 +536,44 @@ function emptyHintStyle(muted: string, border: string): React.CSSProperties {
 }
 
 /**
- * Self-contained preset dropdown.
- *
- * Layout: the popup window is normally a 50-px-tall strip directly above
- * the file dialog. When the menu opens, we ask main to GROW the window
- * downward (220 px) so the menu has room. The chip strip is anchored to
- * the TOP of the window (CSS `align-items: flex-start` on #popup-root),
- * so it stays at the same screen Y throughout. The dropdown menu opens
- * downward from the trigger (`top: calc(100% + 6px)`) into the new
- * empty space. The taller window will visually overlap the dialog's
- * title bar while open — acceptable, the menu is on top in z-order
- * and the dialog is fine once the user clicks somewhere.
+ * Self-contained preset switcher. In the v2 vertical rail it lives in the
+ * sub-header (full width) and expands INLINE (pushes the chip list down)
+ * rather than floating an absolute menu — so it can never clip against the
+ * rail/window bounds (오답노트: 쉘 벗어나는 요소 클리핑).
  */
-function PresetDropdown({ presets, activeId, viewId, light, text, muted, border, bg, onPick }: {
+function PresetDropdown({ presets, activeId, viewId, text, muted, border, onPick }: {
   presets: PresetSummary[];
   activeId?: '1' | '2' | '3';
   viewId: '1' | '2' | '3' | null;
-  light: boolean;
   text: string;
   muted: string;
   border: string;
-  bg: string;
   onPick: (id: '1' | '2' | '3') => void;
 }) {
   const [open, setOpen] = useState(false);
   const current = presets.find(p => p.id === viewId) ?? presets[0];
 
-  // (Previously called api.setExpanded here to dynamically resize the
-  // popup window. That mechanism is gone — the popup window is now
-  // permanently sized to fit the menu, with click-through on the
-  // transparent below-strip area.)
-
-  // Outside-click + ESC dismissal.
+  // ESC closes the inline list (outside-click handled by the rail collapse).
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (!t?.closest('[data-preset-dropdown]')) setOpen(false);
-    };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    window.addEventListener('mousedown', onDown);
-    window.addEventListener('keydown',  onKey);
-    return () => {
-      window.removeEventListener('mousedown', onDown);
-      window.removeEventListener('keydown',  onKey);
-    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
   return (
-    <div data-preset-dropdown style={{ position: 'relative', flexShrink: 0 }}>
+    <div data-preset-dropdown>
       <button
         onClick={() => setOpen(o => !o)}
         title="프리셋 전환"
         style={{
-          ...chipStyle(border, text, muted, false),
-          minWidth: 64,
-          background: open ? (light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)') : 'transparent',
+          ...chipStyle(border, text, muted, false, true),
+          background: open ? T.hover : 'transparent',
         }}
       >
-        <span style={{ fontSize: 10, fontWeight: 600, color: muted }}>P{current?.id ?? '?'}</span>
-        <span style={{ fontSize: 11 }}>{truncateMiddle(current?.label ?? '프리셋', 10)}</span>
-        <span className="ms-rounded" style={{ fontSize: 13, color: muted, marginLeft: 'auto' }}>
+        <span style={{ fontSize: 10, fontWeight: 600, color: muted, flexShrink: 0 }}>P{current?.id ?? '?'}</span>
+        <span style={{ fontSize: 11, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>{current?.label ?? '프리셋'}</span>
+        <span className="ms-rounded" style={{ fontSize: 13, color: muted, flexShrink: 0 }}>
           {open ? 'expand_less' : 'expand_more'}
         </span>
       </button>
@@ -583,22 +581,15 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
       {open && (
         <div
           style={{
-            position: 'absolute',
-            // Open DOWN from the trigger: the popup window grew downward
-            // to make room, so the menu lives in the new empty area
-            // below the chip strip.
-            top: 'calc(100% + 6px)',
-            right: 0,
-            minWidth: 160,
+            // Inline (in-flow) — pushes the body down, never floats out.
+            marginTop: 4,
             padding: 4,
             display: 'flex',
             flexDirection: 'column',
             gap: 2,
-            background: bg,
+            background: T.surface,
             border: `1px solid ${border}`,
             borderRadius: 8,
-            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.32)',
-            zIndex: 10,
             WebkitAppRegion: 'no-drag',
           } as React.CSSProperties}
         >
@@ -609,14 +600,14 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
               <button
                 key={p.id}
                 onClick={() => { onPick(p.id); setOpen(false); }}
-                onMouseEnter={e => { e.currentTarget.style.background = light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.07)'; }}
-                onMouseLeave={e => { e.currentTarget.style.background = isPicked ? (light ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)') : 'transparent'; }}
+                onMouseEnter={e => { e.currentTarget.style.background = T.hover; }}
+                onMouseLeave={e => { e.currentTarget.style.background = isPicked ? T.surface : 'transparent'; }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
                   gap: 8,
                   padding: '7px 10px',
-                  background: isPicked ? (light ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)') : 'transparent',
+                  background: isPicked ? T.surface : 'transparent',
                   border: 'none',
                   borderRadius: 5,
                   color: text,
@@ -640,102 +631,6 @@ function PresetDropdown({ presets, activeId, viewId, light, text, muted, border,
               </button>
             );
           })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Three-dot overflow menu. Currently houses only "원래 위치로" (reset to
- * default monitor-anchored position), but the menu shape is here so
- * future per-popup toolbar prefs (auto-hide, alignment, etc.) can land
- * without another button slot.
- */
-function OverflowMenu({ light, text, muted, border, bg, onReset }: {
-  light: boolean;
-  text: string;
-  muted: string;
-  border: string;
-  bg: string;
-  onReset: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as HTMLElement | null;
-      if (!t?.closest('[data-overflow-menu]')) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    window.addEventListener('mousedown', onDown);
-    window.addEventListener('keydown',  onKey);
-    return () => {
-      window.removeEventListener('mousedown', onDown);
-      window.removeEventListener('keydown',  onKey);
-    };
-  }, [open]);
-
-  return (
-    <div data-overflow-menu style={{ position: 'relative', flexShrink: 0 }}>
-      <button
-        onClick={() => setOpen(o => !o)}
-        title="옵션"
-        style={{
-          ...chipStyle(border, text, muted, true),
-          padding: '0 6px',
-          width: 26,
-          justifyContent: 'center',
-          background: open ? (light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)') : 'transparent',
-        }}
-      >
-        <span className="ms-rounded" style={{ fontSize: 14 }}>more_vert</span>
-      </button>
-      {open && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            right: 0,
-            minWidth: 140,
-            padding: 4,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 2,
-            background: bg,
-            border: `1px solid ${border}`,
-            borderRadius: 8,
-            boxShadow: '0 6px 20px rgba(0, 0, 0, 0.32)',
-            zIndex: 10,
-            WebkitAppRegion: 'no-drag',
-          } as React.CSSProperties}
-        >
-          <button
-            onClick={() => { onReset(); setOpen(false); }}
-            onMouseEnter={e => { e.currentTarget.style.background = light ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.07)'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '7px 10px',
-              background: 'transparent',
-              border: 'none',
-              borderRadius: 5,
-              color: text,
-              fontSize: 11,
-              fontFamily: 'inherit',
-              fontWeight: 500,
-              cursor: 'pointer',
-              textAlign: 'left',
-              WebkitAppRegion: 'no-drag',
-              transition: 'background 120ms ease',
-            } as React.CSSProperties}
-          >
-            <span className="ms-rounded" style={{ fontSize: 14, color: muted }}>restart_alt</span>
-            <span>원래 위치로</span>
-          </button>
         </div>
       )}
     </div>

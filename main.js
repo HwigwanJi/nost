@@ -1642,19 +1642,119 @@ function refreshFloatingVisuals() {
 // its own visibility — it only handles "user clicked ✕" via dialog-popup-
 // dismiss IPC.
 
-// The popup BrowserWindow is ALWAYS this tall. The visible chip strip
-// only occupies the top DIALOG_POPUP_STRIP_HEIGHT pixels — the rest is
-// transparent + click-through so the dropdown menu has room to open
-// without dynamic resize. Dynamic setBounds-based expansion was flaky
-// (some DPI configs and screen-edge clamps left the window at the
-// original 50 px even after a setBounds call), and a fixed-size window
-// with click-through is the same pattern badges use successfully.
-const DIALOG_POPUP_HEIGHT       = 220;  // total BrowserWindow height
-const DIALOG_POPUP_STRIP_HEIGHT = 50;   // visible chip-strip portion
-const DIALOG_POPUP_OFFSET       = 6;    // gap between strip bottom and dialog top
-const DIALOG_POLL_MS            = 600;  // detection poll cadence
+// v2 — the companion is a slim VERTICAL rail DOCKED to the dialog's edge
+// (Default Folder X model), replacing the old monitor-anchored 880px bar
+// that floated in "uncontrolled space" (사용자 지적). Width is fixed
+// (independent of dialog size, so narrow dialogs are safe); height tracks
+// the dialog, clamped so a tiny "열기" dialog doesn't collapse it and a
+// full-height one doesn't overflow the monitor (rail scrolls internally).
+// The window is sized to the rail; the renderer keeps empty regions
+// transparent + the window is click-through (collapsed pellet state), same
+// pattern the badges overlay uses.
+const DIALOG_RAIL_WIDTH = 216;  // fixed rail width (DIP)
+const DIALOG_RAIL_MIN_H = 240;  // floor so short dialogs don't squash the rail
+const DIALOG_RAIL_MAX_H = 600;  // ceiling so tall dialogs scroll instead of overflow
+const DIALOG_POLL_MS     = 600; // detection poll cadence
 
 let dialogLastRect = null;
+// v2 — title of the app window behind the dialog (e.g.
+// "report.pdf - Adobe Acrobat"). Cheap context signal for the
+// recommendation. Updated every tick from foregroundWindow.detect().
+let dialogLastOwnerTitle = '';
+
+// ── v2 context recommendation ───────────────────────────────────────
+//
+// "이 앱·이 파일이면 이 폴더" — one suggested destination at the top of the
+// rail. Signals, in priority order:
+//   1. save history for the same app (most recent folder)  → strongest
+//   2. filename keyword ↔ folder-card title match          → nost-unique
+//   3. global most-recent saved folder                     → fallback
+// All best-effort; returns null when nothing is confident enough (the
+// rail then just hides the card — 오답노트 G: silent gate 회피, 본체 칩은 유지).
+const DIALOG_HISTORY_MAX = 50;
+
+// Reduce an owner-window title to a stable app key. "report.pdf - Adobe
+// Acrobat Pro (64-bit)" → "adobe acrobat pro". Empty when no app segment.
+function appKeyFromOwnerTitle(ownerTitle) {
+  if (!ownerTitle) return '';
+  const parts = String(ownerTitle).split(' - ');
+  const app = (parts.length > 1 ? parts[parts.length - 1] : '').trim();
+  return app.replace(/\s*\(64-bit\)\s*$/i, '').replace(/\s+/g, ' ').toLowerCase();
+}
+
+// Filename-ish keywords from the owner title (the part before " - "),
+// for matching against folder-card titles. Tokens ≥ 2 chars.
+function keywordsFromOwnerTitle(ownerTitle) {
+  if (!ownerTitle) return [];
+  const head = String(ownerTitle).split(' - ')[0] || '';
+  return head
+    .replace(/\.[a-z0-9]{1,5}$/i, '')          // drop extension
+    .split(/[\s_\-.()[\]{}]+/)
+    .map(s => s.trim().toLowerCase())
+    .filter(s => s.length >= 2);
+}
+
+function allFolderCards(data) {
+  const out = [];
+  for (const p of (Array.isArray(data?.presets) ? data.presets : [])) {
+    for (const s of (p.spaces || [])) {
+      for (const i of (s.items || [])) {
+        if (i.type === 'folder' && i.value) {
+          out.push({ id: i.id, title: i.title || i.value, path: i.value, color: s.color });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Record a jump as a save into history, keyed by the current app.
+function recordDialogSave(folderPath) {
+  if (!folderPath) return;
+  const data = store.get('appData') || {};
+  const card = allFolderCards(data).find(f => f.path === folderPath);
+  const entry = {
+    key: appKeyFromOwnerTitle(dialogLastOwnerTitle),
+    path: folderPath,
+    title: card?.title || folderPath.split(/[\\/]/).filter(Boolean).pop() || folderPath,
+    color: card?.color || null,
+    at: Date.now(),
+  };
+  let hist = store.get('dialogSaveHistory');
+  hist = Array.isArray(hist) ? hist : [];
+  // Dedup by path (keep the newest), newest-first, cap to ring size.
+  hist = [entry, ...hist.filter(h => h.path !== folderPath)].slice(0, DIALOG_HISTORY_MAX);
+  store.set('dialogSaveHistory', hist);
+}
+
+function computeDialogRecommendation(ownerTitle) {
+  const data = store.get('appData') || {};
+  const hist = store.get('dialogSaveHistory');
+  const history = Array.isArray(hist) ? hist : [];
+  const appKey = appKeyFromOwnerTitle(ownerTitle);
+  const appLabel = (ownerTitle.split(' - ').pop() || '').trim().replace(/\s*\(64-bit\)\s*$/i, '');
+
+  // 1. Same-app history (history is newest-first).
+  if (appKey) {
+    const hit = history.find(h => h.key === appKey);
+    if (hit) return { path: hit.path, title: hit.title, color: hit.color, reason: `${appLabel} 최근` };
+  }
+
+  // 2. Filename keyword ↔ folder-card title.
+  const kws = keywordsFromOwnerTitle(ownerTitle);
+  if (kws.length) {
+    const folders = allFolderCards(data);
+    const m = folders.find(f => { const t = f.title.toLowerCase(); return kws.some(k => t.includes(k)); });
+    if (m) return { path: m.path, title: m.title, color: m.color, reason: '이름 일치' };
+  }
+
+  // 3. Global most-recent.
+  if (history[0]) {
+    const h = history[0];
+    return { path: h.path, title: h.title, color: h.color, reason: '최근 저장' };
+  }
+  return null;
+}
 
 function buildDialogPopupState() {
   // We send ALL presets so the popup can offer in-popup preset switching
@@ -1688,6 +1788,14 @@ function buildDialogPopupState() {
       label: p.label || `프리셋 ${p.id}`,
       spaces: (p.spaces || []).map(slimSpace),
     })),
+    // v2: satellite renders with design-system tokens (tokens.css). The
+    // accent + theme are runtime-only (App.tsx injects them on the main
+    // window); the popup window doesn't run App.tsx, so we push them here
+    // and the renderer applies `.dark` + `--accent` to documentElement.
+    theme: data?.settings?.theme === 'light' ? 'light' : 'dark',
+    accentColor: data?.settings?.accentColor || '#6366f1',
+    // v2 — single context-aware suggested destination (null when none).
+    recommendation: computeDialogRecommendation(dialogLastOwnerTitle),
   };
 }
 
@@ -1704,81 +1812,73 @@ function destroyDialogPopupWindow() {
   dialogPopupWin = null;
 }
 
-// Popup width is now fixed (was dialog.width + 240 when the popup
-// anchored to the dialog). Since v1.3.43+ the popup floats at a
-// monitor-relative position decoupled from the dialog, so dialog width
-// no longer informs popup width. 880 px fits the chip strip + preset
-// dropdown comfortably without dominating the screen.
-const DIALOG_POPUP_WIDTH = 880;
+// Memoize the last rect we docked to (rounded signature). The 600ms poll
+// re-calls positionDialogPopup every tick; we only setBounds when the
+// dialog actually moved/resized. Unlike the old monitor-key memoize, this
+// MUST track the rect (not just the monitor) because the rail follows the
+// dialog — but skipping when the rect is unchanged avoids per-tick churn.
+let dialogPopupLastRectSig = null;
 
-// Per-monitor saved position storage. Key = workArea signature so the
-// position survives across sessions and is tied to a specific physical
-// monitor arrangement. Value = { x, y } in DIP (setBounds coords).
-function getMonitorKey(workArea) {
-  return `${workArea.x},${workArea.y},${workArea.width}x${workArea.height}`;
+function dockRailBounds(rect) {
+  // `rect` is the dialog's PHYSICAL-pixel rect from GetWindowRect
+  // (foreground-window.js). setBounds needs DIP. screen.screenToDipRect
+  // does the per-monitor-DPI-correct conversion (handles the physical↔DIP
+  // origin offset on secondary high-DPI monitors, which naive
+  // /scaleFactor math gets wrong). [[feedback_dpi_positioning]] — this is
+  // the Windows→Electron direction, the legitimate one for our own window.
+  const screen = getScreen();
+  const physRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+  let d;
+  try {
+    d = screen.screenToDipRect(null, physRect); // Windows-only, DPI-correct
+  } catch (_) {
+    // Fallback (API missing / threw): approximate via the nearest display's
+    // scale factor. Single-DPI setups are exact; cross-DPI may be slightly
+    // off, but the rail still lands beside the dialog rather than at 0,0.
+    const near = screen.getDisplayNearestPoint({ x: Math.round(rect.x), y: Math.round(rect.y) });
+    const sf = near.scaleFactor || 1;
+    d = { x: rect.x / sf, y: rect.y / sf, width: rect.width / sf, height: rect.height / sf };
+  }
+  const display = screen.getDisplayMatching(d);
+  const wa = display.workArea;
+
+  // Height tracks the dialog, clamped, and never taller than the work area.
+  let h = Math.round(d.height);
+  h = Math.max(DIALOG_RAIL_MIN_H, Math.min(h, DIALOG_RAIL_MAX_H));
+  h = Math.min(h, wa.height);
+
+  // Vertical: top-aligned with the dialog, shifted in if it would spill
+  // past the work-area bottom/top.
+  let y = Math.round(d.y);
+  if (y + h > wa.y + wa.height) y = wa.y + wa.height - h;
+  if (y < wa.y) y = wa.y;
+
+  // Horizontal: dock to the RIGHT edge; flip to the LEFT if there's no
+  // room; if neither fits (dialog spans the full width) overlay just
+  // inside the right edge.
+  let x = Math.round(d.x + d.width);
+  if (x + DIALOG_RAIL_WIDTH > wa.x + wa.width) {
+    x = Math.round(d.x) - DIALOG_RAIL_WIDTH; // left flip
+  }
+  if (x < wa.x || x + DIALOG_RAIL_WIDTH > wa.x + wa.width) {
+    x = wa.x + wa.width - DIALOG_RAIL_WIDTH; // clamp inside right edge
+  }
+
+  return { x, y, width: DIALOG_RAIL_WIDTH, height: h };
 }
-
-function defaultPopupPosition(workArea) {
-  // Horizontally centred, vertically at the 5/6-down mark — i.e. 1/6
-  // of the work-area height up from the bottom. The strip's vertical
-  // centre sits at that line so the user perceives "near the bottom
-  // of the monitor" without overlapping the taskbar (workArea already
-  // excludes it).
-  const x = Math.round(workArea.x + (workArea.width - DIALOG_POPUP_WIDTH) / 2);
-  const y = Math.round(workArea.y + Math.floor(workArea.height * 5 / 6) - DIALOG_POPUP_STRIP_HEIGHT / 2);
-  return { x, y };
-}
-
-function clampPopupBounds(pos, workArea) {
-  // Keep the popup window fully inside the monitor's work area so the
-  // user can't lose it by dragging past an edge — or via a workArea
-  // shrink (taskbar moved, resolution changed) since last save.
-  const x = Math.max(workArea.x, Math.min(pos.x, workArea.x + workArea.width  - DIALOG_POPUP_WIDTH));
-  const y = Math.max(workArea.y, Math.min(pos.y, workArea.y + workArea.height - DIALOG_POPUP_HEIGHT));
-  return { x, y };
-}
-
-// Memoize the last monitor we positioned for, so the dialog poll's
-// every-600ms tick doesn't re-apply setBounds unnecessarily. The popup
-// is no longer dialog-anchored (monitor-anchored since v1.3.43), so as
-// long as the dialog stays on the same monitor the popup position is
-// stable. Re-applying setBounds on every tick was both wasteful AND
-// fought the user's drag (next tick after dragstart would snap the
-// popup back to the saved position).
-let dialogPopupLastMonitorKey = null;
 
 function positionDialogPopup(rect, opts = {}) {
   if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !rect) return;
   dialogLastRect = rect;
 
-  // DPI SSOT: Electron decides "which monitor" via getDisplayMatching
-  // against the dialog rect; the matched display's workArea (DIP) is
-  // the source of truth for placement math because setBounds expects
-  // DIP. Note we are NOT positioning via PS here — this is a native
-  // Electron BrowserWindow, so the SSOT for its coords is Electron's
-  // own screen API (consistent DIP coords for setBounds).
-  const screen = getScreen();
-  const display = screen.getDisplayMatching({
-    x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-  });
-  const wa = display.workArea;
-  const monitorKey = getMonitorKey(wa);
-
-  // Skip the setBounds entirely if we've already positioned for this
-  // monitor. force=true bypasses for create / reset paths where we
-  // really do want to re-apply. This eliminates the per-tick fight
-  // with native drag-to-move.
-  if (!opts.force && monitorKey === dialogPopupLastMonitorKey) return;
-
-  const saved = (store.get('dialogPopupPositions') || {})[monitorKey];
-  const pos = clampPopupBounds(saved || defaultPopupPosition(wa), wa);
+  const sig = `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.width)}x${Math.round(rect.height)}`;
+  // Skip if the dialog hasn't moved/resized since the last tick. force=true
+  // bypasses for the create path.
+  if (!opts.force && sig === dialogPopupLastRectSig) return;
 
   try {
-    dialogPopupWin.setBounds({
-      x: pos.x, y: pos.y,
-      width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
-    });
-    dialogPopupLastMonitorKey = monitorKey;
+    dialogPopupWin.setBounds(dockRailBounds(rect));
+    dialogPopupLastRectSig = sig;
   } catch (_) { /* monitor went away mid-set; ignore */ }
 }
 
@@ -1794,8 +1894,8 @@ function createDialogPopupWindow(rect, dialogTitle) {
   } catch (_) {}
 
   dialogPopupWin = new BrowserWindow({
-    width: DIALOG_POPUP_WIDTH,
-    height: DIALOG_POPUP_HEIGHT,
+    width: DIALOG_RAIL_WIDTH,
+    height: DIALOG_RAIL_MIN_H,
     x: 0, y: 0,
     frame: false, transparent: true, resizable: false,
     alwaysOnTop: true, skipTaskbar: true, focusable: false,
@@ -1828,36 +1928,13 @@ function createDialogPopupWindow(rect, dialogTitle) {
     dialogPopupWin.show();
   });
 
-  // Native drag-to-move via -webkit-app-region in the renderer.
-  // BrowserWindow fires 'moved' (with debouncing built in) after each
-  // mouse-up of a native drag — that's where we persist. No per-frame
-  // IPC churn, no fight with the poll tick (the poll tick skips
-  // re-positioning while monitor is unchanged; see positionDialogPopup).
-  dialogPopupWin.on('moved', () => {
-    if (!dialogPopupWin || dialogPopupWin.isDestroyed()) return;
-    const b = dialogPopupWin.getBounds();
-    const display = getScreen().getDisplayMatching(b);
-    const wa = display.workArea;
-    const clamped = clampPopupBounds({ x: b.x, y: b.y }, wa);
-    if (clamped.x !== b.x || clamped.y !== b.y) {
-      try {
-        dialogPopupWin.setBounds({
-          x: clamped.x, y: clamped.y,
-          width: DIALOG_POPUP_WIDTH, height: DIALOG_POPUP_HEIGHT,
-        });
-      } catch (_) {}
-    }
-    const positions = store.get('dialogPopupPositions') || {};
-    positions[getMonitorKey(wa)] = clamped;
-    store.set('dialogPopupPositions', positions);
-    // The drag may have crossed monitor boundaries — remember the new
-    // monitor so the poll tick doesn't immediately try to re-position.
-    dialogPopupLastMonitorKey = getMonitorKey(wa);
-  });
-
+  // v2 — the rail is DOCKED to the dialog (follows it every tick), so it
+  // is no longer user-draggable. The old 'moved' drag-persistence handler
+  // and per-monitor saved positions are gone; the poll tick is the single
+  // source of placement.
   dialogPopupWin.on('closed', () => {
     dialogPopupWin = null;
-    dialogPopupLastMonitorKey = null;
+    dialogPopupLastRectSig = null;
   });
   return dialogPopupWin;
 }
@@ -2132,6 +2209,8 @@ async function tickDialogPoll() {
   }
 
   const t = (detected.title || '');
+  // Keep the owner-app title current for the recommendation engine.
+  dialogLastOwnerTitle = detected.ownerTitle || '';
 
   // User dismissed THIS dialog's popup — don't reattach.
   if (detected.hwnd && detected.hwnd === dialogDismissedHwnd) return;
@@ -5007,6 +5086,9 @@ function registerIpcHandlers() {
    *  "Current thread must be set to single thread apartment (STA) mode"
    *  exception and nothing pastes. */
   ipcMain.on('jump-to-dialog-folder', (_, folderPath) => {
+    // Learn this destination for the current app so the recommendation can
+    // surface it next time (v2). Best-effort; never blocks the jump.
+    try { recordDialogSave(folderPath); } catch (_) {}
     // Hand the dialog HWND through too — the PS script SetForegroundWindows
     // it before the keystroke sequence, so a user who clicked the popup (or
     // another app) since opening the dialog still gets the paste delivered
@@ -5130,26 +5212,9 @@ function registerIpcHandlers() {
     closingActions: ['close'],
   });
 
-  // Reset to default position. Drag-to-move itself now goes through
-  // Electron's native -webkit-app-region drag (BrowserWindow 'moved'
-  // event persists the result) — no per-frame IPC like v1.3.43 had.
-  ipcMain.on('dialog-popup-reset-position', () => {
-    if (!dialogPopupWin || dialogPopupWin.isDestroyed() || !dialogLastRect) return;
-    const display = getScreen().getDisplayMatching({
-      x: dialogLastRect.x, y: dialogLastRect.y,
-      width: dialogLastRect.width, height: dialogLastRect.height,
-    });
-    const wa  = display.workArea;
-    const key = getMonitorKey(wa);
-    const positions = store.get('dialogPopupPositions') || {};
-    if (positions[key]) {
-      delete positions[key];
-      store.set('dialogPopupPositions', positions);
-    }
-    // Force re-position since the monitor key is unchanged but the
-    // intent is to overwrite the current bounds with defaults.
-    positionDialogPopup(dialogLastRect, { force: true });
-  });
+  // v2 — the rail is docked to the dialog and follows it, so there is no
+  // user-movable position to reset. The old 'dialog-popup-reset-position'
+  // IPC + per-monitor saved positions were removed with the float model.
 
   // Start the dialog detection poll. Runs for the app lifetime — cheap
   // (one PS invocation every 600ms with a tiny payload). When no dialog

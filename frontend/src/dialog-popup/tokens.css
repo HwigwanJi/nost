@@ -1,0 +1,37 @@
+/* Design-system color tokens for the dialog-popup satellite.
+ *
+ * The popup is a separate BrowserWindow that does NOT run App.tsx and does
+ * NOT import index.css (which pulls Tailwind + shadcn + a global reset that
+ * would fight this transparent click-through window). So the design tokens
+ * never reached it — the old code hardcoded colors in a `C` object, which
+ * violated the design-system SSOT (사용자: "색상은 토큰으로, 하드코딩 금지").
+ *
+ * This file is the SSOT-faithful extraction: values MIRROR EXACTLY
+ * frontend/src/index.css `:root` / `.dark`. Keep them in sync. Deliberately
+ * excludes the shadcn HSL block — notably `--accent`, which in index.css is
+ * a GRAY (240 4.8% 95.9%). The real accent is the user's chosen hex (indigo
+ * by default), injected at runtime by the renderer from the pushed
+ * `accentColor` state (mirrors App.tsx). Do not add `--accent` here.
+ */
+:root {
+  --bg-rgba: rgba(255, 255, 255, 0.95);
+  --surface: rgba(0, 0, 0, 0.03);
+  --surface-hover: rgba(0, 0, 0, 0.05);
+  --border-rgba: rgba(0, 0, 0, 0.08);
+  --border-focus: rgba(0, 0, 0, 0.15);
+  --text-color: rgba(0, 0, 0, 0.85);
+  --text-muted: rgba(0, 0, 0, 0.45);
+  --text-dim: rgba(0, 0, 0, 0.25);
+  --radius: 8px;
+}
+
+.dark {
+  --bg-rgba: rgba(5, 5, 8, 0.96);
+  --surface: rgba(255, 255, 255, 0.05);
+  --surface-hover: rgba(255, 255, 255, 0.08);
+  --border-rgba: rgba(255, 255, 255, 0.08);
+  --border-focus: rgba(255, 255, 255, 0.2);
+  --text-color: rgba(255, 255, 255, 0.85);
+  --text-muted: rgba(255, 255, 255, 0.4);
+  --text-dim: rgba(255, 255, 255, 0.2);
+}

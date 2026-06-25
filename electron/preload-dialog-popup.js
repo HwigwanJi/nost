@@ -41,9 +41,4 @@ contextBridge.exposeInMainWorld('dialogPopup', {
    *  the dropdown room to open without dynamic resize, so we need
    *  click-through on the transparent extra area. */
   setCapture: (capture) => ipcRenderer.send('dialog-popup-set-capture', !!capture),
-
-  /** Reset to default position (centred horizontally, 1/4 from the
-   *  bottom edge of the current monitor's work area). Clears the
-   *  saved position for that monitor. */
-  resetPosition: () => ipcRenderer.send('dialog-popup-reset-position'),
 });

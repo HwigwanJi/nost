@@ -163,6 +163,7 @@
 | 튜토리얼 단축키 교육 | `plans/tutorial-shortcut-teaching.md` | 단축키 챕터 SSOT |
 | ESC 키 스택 (closest closer) | `plans/escape-stack-audit.md` | ESC 누르면 무엇이 닫히는지의 LIFO 스택 |
 | autoHide / alwaysOnTop 정책 | `plans/focus-state-audit.md` | 창 활성화 / blur / 다이얼로그 보호 SSOT |
+| 저장 다이얼로그 컴패니언 v2 | `plans/save-dialog-companion-v2.md` | dock 레일 + 컨텍스트 추천 + 타이핑 점프 기획 (A+B+C) |
 | 모드/모달 충돌 정책 | `plans/conflict-avoidance-policy.md` | `canPerform()` 매트릭스, 새 trigger 추가 시 §3 갱신 |
 | **신규 (2026-05-14):** | | |
 | 자주 하는 작업 체크리스트 | `plans/checklists.md` | 카드 타입 / IPC / 모달 / 설정 / 알림 5개 표준 절차 |
